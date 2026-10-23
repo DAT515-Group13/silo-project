@@ -38,6 +38,30 @@ kubeconfig*
 secrets/
 *.secret.yaml
 .azure/
+.envrc
+.direnv/
+
+# Talos: talosctl gen config writes cluster CA keys and join tokens into these files
+talosconfig
+secrets.yaml
+controlplane.yaml
+worker.yaml
+_out/
+
+# Terraform state can hold credentials
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# Database dumps and backups contain user data
+*.dump
+*.sql
+*.sql.gz
+backups/
+*.sqlite
+*.sqlite3
 
 # IDE and OS
 .vscode/*
@@ -48,15 +72,17 @@ secrets/
 .DS_Store
 Thumbs.db
 
-# Claude Code: personal and local state stays private. The shared .claude/settings.json
-# (and any .claude/agents, commands, skills) can be committed; it must never hold secrets.
-.claude/settings.local.json
-.claude/worktrees/
-.claude/scheduled_tasks.json
-.claude/projects/
+# Claude Code: kept out of the repo entirely
+.claude/
 CLAUDE.local.md
+
+# Python tooling caches
+.hypothesis/
+.cache/
+pip-wheel-metadata/
 
 # Docker and local
 docker-compose.override.yml
 *.log
 tmp/
+uploads/
