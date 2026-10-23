@@ -1,0 +1,120 @@
+name: Project CI/CD
+
+# pull request to main -> test, build image, deploy to dev
+# push to main         -> test, build image, deploy to prod
+# manual run           -> deploy the selected branch to the chosen environment (use it for staging)
+on:
+  pull_request:
+    paths:
+      - "silo/**"
+      - ".github/workflows/project-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "silo/**"
+      - ".github/workflows/project-ci.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deploy the selected branch to this environment"
+        type: choice
+        options: [dev, staging, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.p.outputs.target }}
+      image: ${{ steps.p.outputs.image }}
+    steps:
+      - id: p
+        env:
+          EVENT: ${{ github.event_name }}
+          CHOSEN: ${{ inputs.environment }}
+          REPO: ${{ github.repository }}
+        run: |
+          case "$EVENT" in
+            workflow_dispatch) target="$CHOSEN" ;;
+            push)              target="prod" ;;
+            *)                 target="dev" ;;
+          esac
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${REPO,,}/silo" >> "$GITHUB_OUTPUT"
+          echo "Deploy target: $target"
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: silo/requirements*.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest -q
+
+  build:
+    needs: [plan, test]
+    # Never build or deploy code from forked repositories.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          build-args: APP_VERSION=${{ github.sha }}
+          tags: ${{ needs.plan.outputs.image }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: [plan, build]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Runs inside the university network: only this job can reach the cluster API.
+    runs-on: [self-hosted, linux, silo]
+    timeout-minutes: 10
+    environment: ${{ needs.plan.outputs.target }}
+    concurrency:
+      group: deploy-${{ needs.plan.outputs.target }}
+      cancel-in-progress: false
+    env:
+      TARGET: ${{ needs.plan.outputs.target }}
+      IMAGE: ${{ needs.plan.outputs.image }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          echo "Deploying $IMAGE to $TARGET"
+          kubectl kustomize "k8s/overlays/${TARGET}" \
+            | sed "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
+            | kubectl apply -f -
+          kubectl -n "$TARGET" rollout status deployment/silo --timeout=180s
+          kubectl -n "$TARGET" get deployment silo -o wide
+      - name: Smoke test
+        run: scripts/smoke-test.sh "$TARGET" "${{ github.sha }}"

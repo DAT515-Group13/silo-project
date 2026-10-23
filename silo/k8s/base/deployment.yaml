@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: silo
+  labels:
+    app.kubernetes.io/name: silo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: silo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: silo
+    spec:
+      # Only needed while the GHCR package is private. Harmless if it is public.
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: silo
+          # CI replaces IMAGE_PLACEHOLDER with ghcr.io/<owner>/<repo>/silo:<git sha>
+          image: IMAGE_PLACEHOLDER
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: silo-config # generated per environment in k8s/overlays/*
+          env:
+            - name: AZURE_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: silo-azure # created by scripts/k8s-create-secrets.sh
+                  key: AZURE_STORAGE_CONNECTION_STRING
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe: # cheap: no dependency checks, otherwise an Azure outage restarts healthy pods
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe: # checks that Azure Blob is reachable
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

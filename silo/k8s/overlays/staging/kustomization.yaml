@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: staging
+resources:
+  - ../../base
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: silo-config
+    literals:
+      - ENVIRONMENT=staging
+      - AZURE_CONTAINER=files
+patches:
+  # Reachable from inside the university network at http://<node-ip>:30082
+  - target:
+      kind: Service
+      name: silo
+    patch: |-
+      - op: add
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/0/nodePort
+        value: 30082

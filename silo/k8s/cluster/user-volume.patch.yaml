@@ -1,0 +1,11 @@
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: silo-local-data
+volumeType: partition
+provisioning:
+  diskSelector:
+    match: disk.size > 9u * GB && disk.size < 20u * GB && !system_disk
+  minSize: 5GiB
+  maxSize: 9GiB
+filesystem:
+  type: ext4
