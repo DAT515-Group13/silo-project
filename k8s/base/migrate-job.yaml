@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: silo-migrate
+  labels:
+    app.kubernetes.io/name: silo-migrate
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        # Not app.kubernetes.io/name=silo, or the Service would route traffic to this pod.
+        app.kubernetes.io/name: silo-migrate
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: IMAGE_PLACEHOLDER
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: silo-config
+            - secretRef:
+                name: silo-app
+          env:
+            - name: AZURE_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: silo-azure
+                  key: AZURE_STORAGE_CONNECTION_STRING
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -7,6 +7,10 @@ generatorOptions:
   disableNameSuffixHash: true
 configMapGenerator:
   - name: silo-config
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/component: config
     literals:
       - ENVIRONMENT=prod
       - AZURE_CONTAINER=files
