@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Teams{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Teams</h1>
+
+{% if errors %}
+<div class="alert alert-danger">
+  <ul class="mb-0">{% for message in errors %}<li>{{ message }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if teams %}
+<ul class="list-group mb-4">
+  {% for team in teams %}
+  <li class="list-group-item d-flex justify-content-between align-items-center">
+    <a href="/teams/{{ team.id }}">{{ team.name }}</a>
+    {% if team.owner_id == user.id %}<span class="badge text-bg-secondary">owner</span>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-body-secondary">You are not a member of any team yet.</p>
+{% endif %}
+
+{% if can_create %}
+<h2 class="h5">Create a team</h2>
+<form method="post" action="/teams" class="row g-2">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="col-sm-6">
+    <label class="visually-hidden" for="name">Team name</label>
+    <input class="form-control" id="name" name="name" value="{{ name }}" maxlength="100"
+           placeholder="Team name" required>
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-primary">Create</button>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

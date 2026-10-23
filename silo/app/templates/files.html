@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{#- Placeholder until the file service exists: shows the storage usage and says what is missing. -#}
+{% block title %}Files{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Files</h1>
+
+<p class="mb-1">Storage: {{ used_bytes | filesizeformat }} of {{ quota_bytes | filesizeformat }}</p>
+<progress class="d-block w-100 mb-4" max="{{ quota_bytes }}" value="{{ used_bytes }}"></progress>
+
+<div class="alert alert-info">
+  Uploading, downloading and sharing files is not available yet. Meanwhile you can manage
+  your <a href="/teams">teams</a> and your <a href="/account">account</a>.
+</div>
+{% endblock %}

@@ -1,0 +1,305 @@
+"""Shared fixtures.
+
+Tests that need PostgreSQL carry the marker ``db``. Only they touch the database: the server comes
+from ``TEST_DATABASE_URL`` and its schema is rebuilt once per session with ``alembic upgrade
+head``. After each ``db`` test every table is emptied, so tests cannot affect each other and
+concurrency tests can use real, separate connections (no rollback per test).
+
+The ``blob_store`` fixture (an ``InMemoryBlobStore``) comes from ``tests/fixtures_storage.py``.
+"""
+
+import asyncio
+import os
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from alembic import command
+from alembic.config import Config
+from fastapi import FastAPI
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
+
+from app.config import Settings
+from app.main import create_app
+from app.middleware import cookie_names
+from app.models import Base, File, FileShare, Role, User, UserStatus
+from app.permissions import CurrentUser
+from app.routers.common import get_current_api_user, get_optional_page_user
+from app.security import create_csrf_token, hash_password
+from app.services import sessions
+from tests.fakes import InMemoryBlobStore
+
+pytest_plugins = ["tests.fixtures_storage"]
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# Default: the compose PostgreSQL with user and password "silo". The password in .env.dev.example
+# is a CHANGE placeholder, so set TEST_DATABASE_URL to match your own .env.dev.
+DEFAULT_TEST_DATABASE_URL = "postgresql+asyncpg://silo:silo@localhost:5432/silo_test"
+ALL_TABLES = ", ".join(Base.metadata.tables)
+TEST_PASSWORD = "correct-horse-battery-staple"
+
+
+def make_settings(**overrides: Any) -> Settings:
+    """Build valid test settings without reading the environment; keyword arguments override."""
+    values: dict[str, Any] = {
+        "app_env": "test",
+        "base_url": "http://testserver",
+        "database_url": DEFAULT_TEST_DATABASE_URL,
+        "azure_storage_connection_string": "UseTestValue",
+        "azure_storage_container": "silo-test",
+        "jwt_secret": "j" * 32,
+        "jwt_issuer": "silo",
+        "jwt_audience": "silo-test",
+        "csrf_secret": "c" * 32,
+        "cookie_secure": False,
+        "initial_admin_username": "admin",
+        "initial_admin_password": "test-admin-password",
+        "max_file_size_bytes": 10 * 1024 * 1024,
+    }
+    return Settings(_env_file=None, **{**values, **overrides})  # type: ignore[call-arg]
+
+
+# --- Database ------------------------------------------------------------------------------------
+
+
+def _server_url() -> str:
+    """The database URL tests use (TEST_DATABASE_URL or the compose default)."""
+    return os.environ.get("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
+
+
+async def _prepare_database(url: str) -> None:
+    """Create the test database if it is missing and wipe the ``public`` schema."""
+    target = make_url(url)
+    admin = create_async_engine(
+        target.set(database="postgres"), isolation_level="AUTOCOMMIT", poolclass=NullPool
+    )
+    async with admin.connect() as connection:
+        exists = await connection.scalar(
+            text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": target.database}
+        )
+        if not exists:
+            await connection.execute(text(f'CREATE DATABASE "{target.database}"'))
+    await admin.dispose()
+
+    # A fresh schema, so leftovers of an older run (or older migration) cannot hide a problem.
+    engine = create_async_engine(url, poolclass=NullPool)
+    async with engine.begin() as connection:
+        await connection.execute(text("DROP SCHEMA public CASCADE"))
+        await connection.execute(text("CREATE SCHEMA public"))
+    await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def database_url() -> Iterator[str]:
+    """URL of a migrated, empty test database (built once per session, only for ``db`` tests)."""
+    url = _server_url()
+    asyncio.run(_prepare_database(url))
+    # The Alembic environment reads DATABASE_URL (D13).
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = url
+    try:
+        # Absolute paths, so pytest can be started from any directory.
+        config = Config(str(ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(ROOT / "migrations"))
+        command.upgrade(config, "head")
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+    yield url
+
+
+async def _truncate(url: str) -> None:
+    engine = create_async_engine(url, poolclass=NullPool)
+    async with engine.begin() as connection:
+        await connection.execute(text(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY CASCADE"))
+    await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _clean_database(request: pytest.FixtureRequest) -> Iterator[None]:
+    """For ``db`` tests: build the schema first, empty every table afterwards."""
+    if request.node.get_closest_marker("db") is None:
+        yield
+        return
+    url = request.getfixturevalue("database_url")
+    yield
+    asyncio.run(_truncate(url))
+
+
+@pytest.fixture
+async def db_engine(request: pytest.FixtureRequest) -> AsyncIterator[AsyncEngine]:
+    """An engine on the test database, created per test so it belongs to the test's event loop."""
+    engine = create_async_engine(request.getfixturevalue("database_url"), poolclass=NullPool)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+def db_sessionmaker(db_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Session factory on the test database; services open their own transactions with it."""
+    return async_sessionmaker(db_engine, expire_on_commit=False)
+
+
+@pytest.fixture(scope="session")
+def test_password_hash() -> str:
+    """Argon2 hash of ``TEST_PASSWORD``, computed once (hashing is deliberately slow)."""
+    return asyncio.run(hash_password(TEST_PASSWORD))
+
+
+UserFactory = Callable[..., Awaitable[User]]
+
+
+@pytest.fixture
+def user_factory(
+    db_sessionmaker: async_sessionmaker[AsyncSession], test_password_hash: str
+) -> UserFactory:
+    """Create users in the test database.
+
+    ``await user_factory(username="anna", role=Role.team_lead, status=UserStatus.active)``.
+    Every user has the password ``TEST_PASSWORD`` unless ``password_hash`` is given. Users are
+    active regular users by default, which is what most tests need.
+    """
+
+    async def create(
+        username: str = "anna",
+        role: Role = Role.user,
+        status: UserStatus = UserStatus.active,
+        **fields: Any,
+    ) -> User:
+        user = User(
+            username=username.lower(),
+            password_hash=fields.pop("password_hash", test_password_hash),
+            role=role,
+            status=status,
+            **fields,
+        )
+        async with db_sessionmaker() as session, session.begin():
+            session.add(user)
+            await session.flush()
+            # Load the server-side defaults (created_at, ...) while the session is open.
+            await session.refresh(user)
+        return user
+
+    return create
+
+
+FileFactory = Callable[..., Awaitable[File]]
+
+
+@pytest.fixture
+def file_factory(db_sessionmaker: async_sessionmaker[AsyncSession]) -> FileFactory:
+    """Insert file rows directly: ``await file_factory(owner_id, team_id=None, size_bytes=10)``.
+
+    Only the metadata row (and optionally a share with ``team_id``); no blob is written. The
+    blob name is random, as in the real upload flow.
+    """
+
+    async def create(owner_id: int, team_id: int | None = None, **fields: Any) -> File:
+        values = {
+            "filename": "report.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 10,
+            "blob_name": uuid.uuid4().hex,
+            **fields,
+        }
+        async with db_sessionmaker() as session, session.begin():
+            file = File(owner_id=owner_id, **values)
+            session.add(file)
+            await session.flush()
+            if team_id is not None:
+                session.add(FileShare(file_id=file.id, team_id=team_id))
+            await session.refresh(file)
+        return file
+
+    return create
+
+
+# --- App and client ------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.fixture
+def settings(request: pytest.FixtureRequest) -> Settings:
+    """Valid settings. ``db`` tests get the real test database; other tests a dummy URL."""
+    if request.node.get_closest_marker("db") is not None:
+        return make_settings(database_url=request.getfixturevalue("database_url"))
+    return make_settings()
+
+
+@pytest.fixture
+def app(settings: Settings, blob_store: InMemoryBlobStore) -> FastAPI:
+    """The real app with injected settings and fake blob store."""
+    return create_app(settings=settings, blob_store=blob_store, initial_admin=False)
+
+
+ActAs = Callable[..., CurrentUser]
+
+
+@pytest.fixture
+def act_as(app: FastAPI) -> ActAs:
+    """Pretend a user is logged in on both surfaces, without tokens or a database.
+
+    ``user = act_as(Role.user, user_id=1)``. Only for tests that fail or finish before the
+    service touches the database (permission checks, validation, role checks).
+    """
+
+    def login(role: Role = Role.user, user_id: int = 1, username: str = "anna") -> CurrentUser:
+        user = CurrentUser(id=user_id, username=username, role=role, session_id=uuid.uuid4())
+        app.dependency_overrides[get_current_api_user] = lambda: user
+        app.dependency_overrides[get_optional_page_user] = lambda: user
+        return user
+
+    return login
+
+
+BearerFor = Callable[[User], Awaitable[dict[str, str]]]
+
+
+@pytest.fixture
+def bearer_for(db_sessionmaker: async_sessionmaker[AsyncSession], settings: Settings) -> BearerFor:
+    """``headers = await bearer_for(user)``: a real session and its Authorization header."""
+
+    async def create(user: User) -> dict[str, str]:
+        async with db_sessionmaker() as session, session.begin():
+            tokens = await sessions.create_session(session, settings, user)
+        return {"Authorization": f"Bearer {tokens.access_token}"}
+
+    return create
+
+
+def page_csrf(settings: Settings, user: CurrentUser) -> tuple[dict[str, str], dict[str, str]]:
+    """Cookie and Origin headers plus form data with a valid CSRF token for ``user``'s session."""
+    token = create_csrf_token(settings.csrf_secret.get_secret_value(), str(user.session_id))
+    headers = {
+        "Cookie": f"{cookie_names(settings).csrf}={token}",
+        "Origin": settings.base_url,
+    }
+    return headers, {"csrf_token": token}
+
+
+@pytest.fixture
+async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """ASGI client. The lifespan runs, so the engine and session factory exist."""
+    # raise_app_exceptions=False so the 500 handler can be tested.
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c

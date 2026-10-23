@@ -1,0 +1,32 @@
+# Local development: the app and PostgreSQL only.
+# There is no blob storage service: the app talks to real Azure with the settings from .env.dev.
+#
+#   cp .env.dev.example .env.dev      # then fill in the Azure values and your own secrets
+#   docker compose up --build
+
+services:
+  db:
+    image: postgres:16
+    env_file: .env.dev # POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+    volumes:
+      - silo-db:/var/lib/postgresql/data
+    ports:
+      # Bound to localhost only: the database is for the developer, not for the network.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    env_file: .env.dev
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  silo-db:

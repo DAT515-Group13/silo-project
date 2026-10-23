@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "silo"
+version = "0.1.0"
+description = "Silo: multi-user file storage service"
+requires-python = ">=3.12,<3.13"
+# Direct dependencies only, pinned with ==; transitive ones are resolved by pip.
+dependencies = [
+    "fastapi==0.147.0",
+    "pyjwt==2.15.1",
+    "argon2-cffi==25.1.0",
+    "uvicorn==0.54.0",
+    "python-multipart==0.0.32",
+    "sqlalchemy[asyncio]==2.1.5",
+    "asyncpg==0.32.0",
+    "alembic==1.20.0",
+    "pydantic-settings==2.16.0",
+    "slowapi==0.1.10",
+    "jinja2==3.1.6",
+    "azure-storage-blob==12.31.0",
+    "aiohttp==3.14.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+    "ruff==0.17.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+# `azure` tests need real Azure credentials and are skipped without them.
+markers = [
+    "azure: integration tests against real Azure Blob Storage",
+    "db: tests that need a running PostgreSQL; run them with `pytest -m db`",
+]

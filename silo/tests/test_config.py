@@ -1,0 +1,157 @@
+"""Settings and startup validation."""
+
+import pytest
+from pydantic import ValidationError
+
+from app.config import Settings
+from app.models import Role
+
+SECRET_A = "a-secret-with-at-least-32-bytes-1234"
+SECRET_B = "another-secret-with-32-bytes-or-more"
+# Values that must never appear in an error message.
+SENSITIVE = [SECRET_A, SECRET_B, "postgresql+asyncpg://u:p@h/d", "AccountKey=abc", "adminpw"]
+
+VALID_ENV = {
+    "APP_ENV": "local",
+    "BASE_URL": "http://localhost:8000",
+    "DATABASE_URL": "postgresql+asyncpg://u:p@h/d",
+    "AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountKey=abc",
+    "AZURE_STORAGE_CONTAINER": "silo-local-test",
+    "JWT_SECRET": SECRET_A,
+    "JWT_ISSUER": "silo",
+    "JWT_AUDIENCE": "silo-local",
+    "CSRF_SECRET": SECRET_B,
+    "INITIAL_ADMIN_USERNAME": "Admin",
+    "INITIAL_ADMIN_PASSWORD": "adminpw",
+    "MAX_FILE_SIZE_BYTES": "1048576",
+    "COOKIE_SECURE": "false",
+}
+
+
+def make(monkeypatch: pytest.MonkeyPatch, **overrides: str | None) -> Settings:
+    """Build Settings from a clean environment; a value of None removes the variable."""
+    # Start without any inherited variable that could change the result.
+    for name in [*VALID_ENV, *Settings.model_fields]:
+        monkeypatch.delenv(name.upper(), raising=False)
+    for name, value in {**VALID_ENV, **overrides}.items():
+        if value is not None:
+            monkeypatch.setenv(name, value)
+    return Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def error_text(monkeypatch: pytest.MonkeyPatch, **overrides: str | None) -> str:
+    """Return the validation error text for an invalid configuration."""
+    with pytest.raises(ValidationError) as info:
+        make(monkeypatch, **overrides)
+    return str(info.value)
+
+
+def test_valid_configuration_uses_spec_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Defaults match the specified values."""
+    s = make(monkeypatch)
+    assert s.registration_mode == "approval"
+    assert (s.jwt_access_minutes, s.refresh_token_days, s.session_max_days) == (15, 7, 30)
+    assert s.upload_chunk_bytes == 4 * 1024 * 1024
+    assert (s.sas_url_ttl_seconds, s.public_link_max_hours) == (300, 168)
+    assert (s.login_max_failed, s.login_lock_minutes, s.password_min_length) == (5, 15, 12)
+    assert s.enable_docs is False
+    assert s.jwt_secret_previous is None
+
+
+def test_cookie_secure_defaults_to_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    """COOKIE_SECURE is true unless explicitly turned off."""
+    assert make(monkeypatch, COOKIE_SECURE=None).cookie_secure is True
+
+
+def test_initial_admin_username_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """INITIAL_ADMIN_USERNAME follows the username rule and is lowercased."""
+    assert make(monkeypatch).initial_admin_username == "admin"
+
+
+def test_invalid_initial_admin_username_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An admin username that breaks the username rule stops the startup."""
+    assert "initial_admin_username" in error_text(monkeypatch, INITIAL_ADMIN_USERNAME="a b")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "APP_ENV",
+        "BASE_URL",
+        "DATABASE_URL",
+        "AZURE_STORAGE_CONNECTION_STRING",
+        "AZURE_STORAGE_CONTAINER",
+        "JWT_SECRET",
+        "JWT_ISSUER",
+        "JWT_AUDIENCE",
+        "CSRF_SECRET",
+        "INITIAL_ADMIN_USERNAME",
+        "INITIAL_ADMIN_PASSWORD",
+        "MAX_FILE_SIZE_BYTES",
+    ],
+)
+def test_missing_required_variable_is_refused(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Every required variable must be set."""
+    assert name.lower() in error_text(monkeypatch, **{name: None})
+
+
+@pytest.mark.parametrize("name", ["JWT_SECRET", "CSRF_SECRET", "JWT_SECRET_PREVIOUS"])
+def test_short_secret_is_refused(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Secrets must be at least 32 bytes."""
+    assert f"{name} must be at least 32 bytes" in error_text(monkeypatch, **{name: "short"})
+
+
+def test_secret_length_is_measured_in_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """16 two-byte characters are 32 bytes and therefore accepted."""
+    assert make(monkeypatch, JWT_SECRET="é" * 16)
+
+
+def test_equal_jwt_and_csrf_secret_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """JWT_SECRET and CSRF_SECRET must differ."""
+    assert "JWT_SECRET and CSRF_SECRET must be different" in error_text(
+        monkeypatch, CSRF_SECRET=SECRET_A
+    )
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [("COOKIE_SECURE", "false"), ("ENABLE_DOCS", "true"), ("REGISTRATION_MODE", "open")],
+)
+def test_unsafe_setting_is_refused_in_staging_and_prod(
+    monkeypatch: pytest.MonkeyPatch, env: str, variable: str, value: str
+) -> None:
+    """staging and prod refuse COOKIE_SECURE=false, ENABLE_DOCS=true, REGISTRATION_MODE=open."""
+    assert variable in error_text(monkeypatch, APP_ENV=env, **{variable: value})
+
+
+def test_unsafe_setting_is_allowed_locally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same settings are fine for local, test and dev."""
+    assert make(monkeypatch, ENABLE_DOCS="true", REGISTRATION_MODE="open")
+
+
+def test_staging_with_safe_settings_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A correctly configured staging environment is accepted."""
+    assert make(monkeypatch, APP_ENV="staging", COOKIE_SECURE="true")
+
+
+def test_error_messages_never_contain_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Messages name the variable, never its value."""
+    texts = [
+        error_text(monkeypatch, JWT_SECRET="short", CSRF_SECRET="short"),
+        error_text(monkeypatch, CSRF_SECRET=SECRET_A),
+        error_text(monkeypatch, APP_ENV="prod", COOKIE_SECURE="false", ENABLE_DOCS="true"),
+        error_text(monkeypatch, MAX_FILE_SIZE_BYTES="not-a-number", APP_ENV="nonsense"),
+        error_text(monkeypatch, DATABASE_URL=None, INITIAL_ADMIN_PASSWORD=None),
+    ]
+    for text in texts:
+        for value in SENSITIVE:
+            assert value not in text
+
+
+def test_quota_for_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each role has its own quota; defaults are 1, 5 and 10 GiB."""
+    s = make(monkeypatch, QUOTA_USER_BYTES="10")
+    assert s.quota_for_role(Role.user) == 10
+    assert s.quota_for_role(Role.team_lead) == 5 * 1024**3
+    assert s.quota_for_role(Role.admin) == 10 * 1024**3

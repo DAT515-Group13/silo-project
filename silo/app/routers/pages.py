@@ -1,0 +1,344 @@
+"""HTML pages and form actions.
+
+Implemented here: the start page, login, register, logout, the account page and a placeholder
+file list. Team pages are in ``team_pages.py``, admin pages in ``admin_pages.py``. The other file
+pages are still skeletons that answer 501 until B fills them in. Each form action calls the same
+service function as its JSON counterpart. Every POST is protected by ``CsrfChecked`` (CSRF token
+and Origin check).
+"""
+
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Form, Query, Request, Response
+from pydantic import ValidationError
+
+from app.errors import (
+    AccountDisabled,
+    AccountPending,
+    AccountRejected,
+    InvalidCredentials,
+    NotFound,
+    UsernameTaken,
+    ValidationFailed,
+)
+from app.middleware import mark_logged_out, safe_next, set_auth_cookies
+from app.ratelimit import limit
+from app.routers.common import (
+    CsrfChecked,
+    DbSession,
+    OptionalPageUser,
+    PageAuditCtx,
+    PageUser,
+    SettingsDep,
+    client_ip,
+    not_implemented,
+    render_page,
+    request_id,
+    see_other,
+    validation_messages,
+)
+from app.schemas.auth import REGISTRATION_ACCEPTED_MESSAGE, LoginIn, RegisterIn
+from app.services import auth, sessions, users
+
+router = APIRouter(include_in_schema=False)
+
+LOGIN_FAILED_MESSAGE = "Invalid username or password."
+
+
+# --- Start page and login --------------------------------------------------------------------
+
+
+@router.get("/")
+async def index(user: OptionalPageUser) -> Response:
+    """Send logged-in visitors to their files and everybody else to the login page."""
+    return see_other("/files" if user else "/login")
+
+
+@router.get("/login")
+async def login_page(
+    request: Request,
+    user: OptionalPageUser,
+    settings: SettingsDep,
+    next_url: Annotated[str | None, Query(alias="next")] = None,
+    registered: bool = False,
+) -> Response:
+    """Show the login form. A visitor who is logged in already is sent on to ``next``."""
+    target = safe_next(next_url)
+    if user:
+        return see_other(target)
+    return render_page(
+        request,
+        settings,
+        None,
+        "login.html",
+        {
+            "next": target,
+            "username": "",
+            "error": None,
+            "registered": registered,
+            "registration_open": settings.registration_mode != "closed",
+        },
+    )
+
+
+@router.post("/login", dependencies=[CsrfChecked])
+@limit("auth")
+async def login_submit(
+    request: Request,
+    session: DbSession,
+    settings: SettingsDep,
+    username: Annotated[str, Form()] = "",
+    password: Annotated[str, Form()] = "",
+    next_url: Annotated[str, Form(alias="next")] = "",
+) -> Response:
+    """Log in: on success set the cookies and go to ``next``; on failure show the form again.
+
+    Wrong credentials, a locked account and an unknown username all show the same message.
+    A correct password for a pending, rejected or disabled account shows the account state.
+    """
+    target = safe_next(next_url)
+    context = {
+        "next": target,
+        "username": username.strip().lower()[:32],
+        "registered": False,
+        "registration_open": settings.registration_mode != "closed",
+    }
+    try:
+        # LoginIn caps the lengths, so a huge password is not hashed (it is simply wrong).
+        form = LoginIn.model_validate({"username": username, "password": password})
+        tokens = await auth.login(
+            session,
+            settings,
+            form.username,
+            form.password,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            request_id=request_id(request),
+        )
+    except ValidationError:
+        return render_page(
+            request,
+            settings,
+            None,
+            "login.html",
+            {**context, "error": LOGIN_FAILED_MESSAGE},
+            status_code=401,
+        )
+    except (InvalidCredentials, AccountPending, AccountRejected, AccountDisabled) as exc:
+        return render_page(
+            request,
+            settings,
+            None,
+            "login.html",
+            {**context, "error": exc.detail},
+            status_code=exc.status_code,
+        )
+
+    response = see_other(target)
+    set_auth_cookies(response, settings, tokens)
+    return response
+
+
+# --- Register --------------------------------------------------------------------------------
+
+
+@router.get("/register")
+async def register_page(
+    request: Request, user: OptionalPageUser, settings: SettingsDep
+) -> Response:
+    """Show the registration form (404 in ``closed`` mode)."""
+    if settings.registration_mode == "closed":
+        raise NotFound
+    if user:
+        return see_other("/files")
+    return render_page(
+        request,
+        settings,
+        None,
+        "register.html",
+        {
+            "username": "",
+            "errors": [],
+            "done": None,
+            "password_min_length": settings.password_min_length,
+        },
+    )
+
+
+@router.post("/register", dependencies=[CsrfChecked])
+@limit("auth")
+async def register_submit(
+    request: Request,
+    session: DbSession,
+    settings: SettingsDep,
+    username: Annotated[str, Form()] = "",
+    password: Annotated[str, Form()] = "",
+) -> Response:
+    """Register an account.
+
+    ``open`` mode: go to the login page. ``approval`` mode: always the same confirmation,
+    whether or not the username was taken (no enumeration).
+    """
+    context = {
+        "username": username.strip().lower()[:32],
+        "done": None,
+        "password_min_length": settings.password_min_length,
+    }
+
+    def again(errors: list[str], status_code: int) -> Response:
+        return render_page(
+            request,
+            settings,
+            None,
+            "register.html",
+            {**context, "errors": errors},
+            status_code=status_code,
+        )
+
+    if settings.registration_mode == "closed":
+        raise NotFound
+    try:
+        form = RegisterIn.model_validate({"username": username, "password": password})
+        user = await auth.register(
+            session,
+            settings,
+            form.username,
+            form.password,
+            ip=client_ip(request),
+            request_id=request_id(request),
+        )
+    except ValidationError as exc:
+        return again(validation_messages(exc), 422)
+    except ValidationFailed as exc:
+        return again([item["message"] for item in exc.errors], 422)
+    except UsernameTaken:
+        return again(["That username is already taken."], 409)
+
+    if user is not None:  # open mode: the account is active
+        return see_other("/login?registered=1")
+    return render_page(
+        request,
+        settings,
+        None,
+        "register.html",
+        {**context, "errors": [], "done": REGISTRATION_ACCEPTED_MESSAGE},
+    )
+
+
+# --- Logout and account ----------------------------------------------------------------------
+
+
+@router.post("/logout", dependencies=[CsrfChecked])
+@limit("write")
+async def logout_submit(
+    request: Request,
+    user: PageUser,
+    ctx: PageAuditCtx,
+    session: DbSession,
+) -> Response:
+    """Revoke the current session, delete the cookies and go to the login page."""
+    await auth.logout(session, user, ctx)
+    mark_logged_out(request)
+    return see_other("/login")
+
+
+@router.get("/account")
+@limit("read")
+async def account_page(
+    request: Request, user: PageUser, session: DbSession, settings: SettingsDep
+) -> Response:
+    """Show the user's storage usage and active sessions."""
+    rows = await sessions.list_active(session, user.id)
+    account = await users.get_user(session, user.id)
+    return render_page(
+        request,
+        settings,
+        user,
+        "account.html",
+        {
+            "sessions": rows,
+            "used_bytes": account.used_bytes,
+            "quota_bytes": settings.quota_for_role(account.role),
+        },
+    )
+
+
+@router.post("/account/logout-all", dependencies=[CsrfChecked])
+@limit("write")
+async def logout_all_submit(
+    request: Request,
+    user: PageUser,
+    ctx: PageAuditCtx,
+    session: DbSession,
+) -> Response:
+    """Revoke all sessions of the user, including this one."""
+    await auth.logout_all(session, user, ctx)
+    mark_logged_out(request)
+    return see_other("/login")
+
+
+@router.post("/account/sessions/{session_id}/revoke", dependencies=[CsrfChecked])
+@limit("write")
+async def revoke_session_submit(
+    request: Request,
+    session_id: uuid.UUID,
+    user: PageUser,
+    ctx: PageAuditCtx,
+    session: DbSession,
+) -> Response:
+    """Revoke one of the user's own sessions; revoking the current one logs out."""
+    await auth.revoke_own_session(session, user, session_id, ctx)
+    if session_id != user.session_id:
+        return see_other("/account")
+    mark_logged_out(request)
+    return see_other("/login")
+
+
+# --- File pages ------------------------------------------------------------------------------
+
+
+@router.get("/files")
+@limit("read")
+async def files_page(
+    request: Request, user: PageUser, session: DbSession, settings: SettingsDep
+) -> Response:
+    """Placeholder of the file list: the storage usage and a note that files are coming.
+
+    Login and the start page redirect here, so it must be a real page and not a 501 error.
+    """
+    account = await users.get_user(session, user.id)
+    return render_page(
+        request,
+        settings,
+        user,
+        "files.html",
+        {"used_bytes": account.used_bytes, "quota_bytes": settings.quota_for_role(account.role)},
+    )
+
+
+# Skeletons of B's other file pages: not implemented yet.
+STUB_GET_PAGES = [
+    "/files/{file_id}",
+    "/files/{file_id}/download",
+]
+
+STUB_POST_ACTIONS = [
+    "/files/upload",
+    "/files/{file_id}/rename",
+    "/files/{file_id}/delete",
+    "/files/{file_id}/share",
+    "/files/{file_id}/unshare",
+    "/files/{file_id}/links",
+    "/links/{link_id}/revoke",
+]
+
+
+async def _page() -> None:
+    not_implemented()
+
+
+for _path in STUB_GET_PAGES:
+    router.add_api_route(_path, _page, methods=["GET"])
+for _path in STUB_POST_ACTIONS:
+    router.add_api_route(_path, _page, methods=["POST"])

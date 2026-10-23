@@ -1,0 +1,33 @@
+# Keep the build context small and keep secrets and local state out of the image.
+.git
+.github
+.claude
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage*
+htmlcov
+
+# Secrets and environment files
+.env
+.env.*
+!.env.dev.example
+*.pem
+*.key
+kubeconfig*
+.kube
+
+# Not needed in the image
+tests
+docs
+k8s
+monitoring
+docker-compose*.yml
+Dockerfile
+.dockerignore
+README.md

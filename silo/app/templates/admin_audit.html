@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Admin: audit log{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Audit log</h1>
+  <a class="btn btn-outline-secondary btn-sm" href="/admin">Users</a>
+</div>
+
+<form method="get" action="/admin/audit" class="row g-2 mb-3">
+  <div class="col-md-3">
+    <label class="form-label small" for="action">Action</label>
+    <input class="form-control form-control-sm" id="action" name="action" value="{{ filters.action }}" placeholder="auth.login">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label small" for="outcome">Outcome</label>
+    <select class="form-select form-select-sm" id="outcome" name="outcome">
+      <option value="">Any</option>
+      {% for value in outcomes %}
+      <option value="{{ value }}" {% if value == filters.outcome %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-2">
+    <label class="form-label small" for="actor_id">Actor ID</label>
+    <input class="form-control form-control-sm" id="actor_id" name="actor_id" value="{{ filters.actor_id }}" inputmode="numeric">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label small" for="target_type">Target type</label>
+    <input class="form-control form-control-sm" id="target_type" name="target_type" value="{{ filters.target_type }}">
+  </div>
+  <div class="col-md-3">
+    <label class="form-label small" for="target_id">Target ID</label>
+    <input class="form-control form-control-sm" id="target_id" name="target_id" value="{{ filters.target_id }}">
+  </div>
+  <div class="col-md-3">
+    <label class="form-label small" for="from">From (UTC)</label>
+    <input class="form-control form-control-sm" id="from" name="from" type="datetime-local" value="{{ filters['from'] }}">
+  </div>
+  <div class="col-md-3">
+    <label class="form-label small" for="to">To (UTC, exclusive)</label>
+    <input class="form-control form-control-sm" id="to" name="to" type="datetime-local" value="{{ filters.to }}">
+  </div>
+  <div class="col-md-2 align-self-end">
+    <button type="submit" class="btn btn-secondary btn-sm">Filter</button>
+    <a class="btn btn-link btn-sm" href="/admin/audit">Reset</a>
+  </div>
+</form>
+
+<p class="text-body-secondary">{{ total }} entr{{ "y" if total == 1 else "ies" }}</p>
+<table class="table table-sm">
+  <thead>
+    <tr><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>Outcome</th><th>Target</th><th>IP</th><th>Details</th></tr>
+  </thead>
+  <tbody>
+    {% for entry in entries %}
+    <tr>
+      <td>{{ entry.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+      <td>{{ entry.actor_username or entry.actor_type.value }}{% if entry.actor_id %} (#{{ entry.actor_id }}){% endif %}</td>
+      <td>{{ entry.action }}</td>
+      <td>{{ entry.outcome.value }}</td>
+      <td>{% if entry.target_type %}{{ entry.target_type }} {{ entry.target_label or entry.target_id }}{% endif %}</td>
+      <td>{{ entry.ip or "-" }}</td>
+      <td class="small text-break">{{ entry.details | tojson if entry.details else "" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if pages > 1 %}
+<nav aria-label="Audit pages">
+  <ul class="pagination">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?{{ filter_query }}{{ '&' if filter_query }}page={{ page - 1 }}">Previous</a></li>{% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ pages }}</span></li>
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?{{ filter_query }}{{ '&' if filter_query }}page={{ page + 1 }}">Next</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}

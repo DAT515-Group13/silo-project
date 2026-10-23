@@ -1,0 +1,45 @@
+<!doctype html>
+{#- Base layout. No inline scripts or styles: the Content-Security-Policy forbids them.
+    Every form must contain <input type="hidden" name="csrf_token" value="{{ csrf_token }}">. -#}
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Silo{% endblock %} - Silo</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='bootstrap.min.css') }}">
+</head>
+<body>
+  <nav class="navbar navbar-expand bg-body-tertiary border-bottom mb-4">
+    <div class="container">
+      <a class="navbar-brand" href="/">Silo</a>
+      <ul class="navbar-nav me-auto">
+        {% if user %}
+        <li class="nav-item"><a class="nav-link" href="/files">Files</a></li>
+        <li class="nav-item"><a class="nav-link" href="/teams">Teams</a></li>
+        <li class="nav-item"><a class="nav-link" href="/account">Account</a></li>
+        {% if user.role.value == "admin" %}
+        <li class="nav-item"><a class="nav-link" href="/admin">Admin</a></li>
+        {% endif %}
+        {% endif %}
+      </ul>
+      <ul class="navbar-nav align-items-center">
+        {% if user %}
+        <li class="nav-item navbar-text me-3">{{ user.username }}</li>
+        <li class="nav-item">
+          <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-outline-secondary btn-sm">Log out</button>
+          </form>
+        </li>
+        {% else %}
+        <li class="nav-item"><a class="nav-link" href="/login">Log in</a></li>
+        <li class="nav-item"><a class="nav-link" href="/register">Register</a></li>
+        {% endif %}
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

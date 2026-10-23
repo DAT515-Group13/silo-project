@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+venv/
+env/
+.python-version
+
+# Tools and tests
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# Secrets and env files (only the example is committed)
+.env
+.env.*
+!.env.dev.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+kubeconfig*
+*.kubeconfig
+.kube/
+secrets/
+*.secret.yaml
+.azure/
+
+# IDE and OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Claude Code: personal and local state stays private. The shared .claude/settings.json
+# (and any .claude/agents, commands, skills) can be committed; it must never hold secrets.
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.json
+.claude/projects/
+CLAUDE.local.md
+
+# Docker and local
+docker-compose.override.yml
+*.log
+tmp/

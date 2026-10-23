@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}{{ team.name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">{{ team.name }}</h1>
+  {% if can_delete %}
+  <form method="post" action="/teams/{{ team.id }}/delete">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn btn-outline-danger btn-sm">Delete team</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if notice %}<div class="alert alert-info">{{ notice }}</div>{% endif %}
+{% if errors %}
+<div class="alert alert-danger">
+  <ul class="mb-0">{% for message in errors %}<li>{{ message }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<h2 class="h5">Members</h2>
+<table class="table align-middle">
+  <thead><tr><th>Username</th><th>Member since</th><th></th></tr></thead>
+  <tbody>
+    {% for member in members %}
+    <tr>
+      <td>
+        {{ member.username }}
+        {% if member.user_id == team.owner_id %}<span class="badge text-bg-secondary">owner</span>{% endif %}
+      </td>
+      <td>{{ member.added_at.strftime("%Y-%m-%d") }}</td>
+      <td class="text-end">
+        {% if member.user_id != team.owner_id and (is_owner or member.user_id == user.id) %}
+        <form method="post" action="/teams/{{ team.id }}/members/{{ member.user_id }}/remove">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-outline-danger btn-sm">
+            {% if member.user_id == user.id %}Leave team{% else %}Remove{% endif %}
+          </button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if is_owner %}
+<form method="post" action="/teams/{{ team.id }}/members" class="row g-2 mb-4">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="col-sm-5">
+    <label class="visually-hidden" for="username">Username</label>
+    <input class="form-control" id="username" name="username" value="{{ username }}"
+           maxlength="32" placeholder="Username" autocomplete="off" required>
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-primary">Add member</button>
+  </div>
+</form>
+{% endif %}
+
+<h2 class="h5">Shared files ({{ total }})</h2>
+{% if files %}
+<table class="table">
+  <thead><tr><th>Name</th><th>Owner</th><th>Size</th><th>Uploaded</th></tr></thead>
+  <tbody>
+    {% for file in files %}
+    <tr>
+      <td><a href="/files/{{ file.id }}">{{ file.filename }}</a></td>
+      <td>{{ file.owner.username }}</td>
+      <td>{{ file.size_bytes | filesizeformat }}</td>
+      <td>{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if pages > 1 %}
+<nav aria-label="Shared files pages">
+  <ul class="pagination">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page - 1 }}">Previous</a></li>{% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ pages }}</span></li>
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page + 1 }}">Next</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% else %}
+<p class="text-body-secondary">No files are shared with this team yet.</p>
+{% endif %}
+{% endblock %}

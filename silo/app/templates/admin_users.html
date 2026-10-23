@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Admin: users{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Users</h1>
+  <div>
+    <a class="btn btn-outline-secondary btn-sm" href="/admin/files">All files</a>
+    <a class="btn btn-outline-secondary btn-sm" href="/admin/audit">Audit log</a>
+  </div>
+</div>
+
+<form method="get" action="/admin" class="row g-2 mb-3">
+  <div class="col-auto">
+    <label class="visually-hidden" for="status">Status</label>
+    <select class="form-select" id="status" name="status">
+      <option value="">All statuses</option>
+      {% for value in statuses %}
+      <option value="{{ value }}" {% if value == status %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto"><button type="submit" class="btn btn-secondary">Filter</button></div>
+</form>
+
+<p class="text-body-secondary">{{ total }} user(s)</p>
+
+<table class="table align-middle">
+  <thead>
+    <tr><th>User</th><th>Role</th><th>Status</th><th>Storage</th><th>Files</th><th>Last login</th><th>Actions</th></tr>
+  </thead>
+  <tbody>
+    {% for item in items %}
+    {% set target = item.user %}
+    <tr>
+      <td>
+        {{ target.username }}
+        {% if target.id == user.id %}<span class="badge text-bg-primary">you</span>{% endif %}
+      </td>
+      <td>{{ target.role.value }}</td>
+      <td>{{ target.status.value }}</td>
+      <td>{{ target.used_bytes | filesizeformat }}</td>
+      <td>{{ item.file_count }}</td>
+      <td>{{ target.last_login_at.strftime("%Y-%m-%d %H:%M") ~ " UTC" if target.last_login_at else "-" }}</td>
+      <td>
+        {% if target.status.value == "pending" %}
+        <form method="post" action="/admin/users/{{ target.id }}/approve" class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-success btn-sm">Approve</button>
+        </form>
+        <form method="post" action="/admin/users/{{ target.id }}/reject" class="d-inline-flex gap-1">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="visually-hidden" for="reason-{{ target.id }}">Reason</label>
+          <input class="form-control form-control-sm" id="reason-{{ target.id }}" name="reason"
+                 maxlength="500" placeholder="Reason (optional)">
+          <button type="submit" class="btn btn-outline-danger btn-sm">Reject</button>
+        </form>
+        {% else %}
+        <form method="post" action="/admin/users/{{ target.id }}" class="d-inline-flex gap-1 mb-1">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="visually-hidden" for="role-{{ target.id }}">Role</label>
+          <select class="form-select form-select-sm" id="role-{{ target.id }}" name="role">
+            {% for value in roles %}
+            <option value="{{ value }}" {% if value == target.role.value %}selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+          </select>
+          {% if target.status.value in ("active", "disabled") %}
+          <label class="visually-hidden" for="state-{{ target.id }}">Status</label>
+          <select class="form-select form-select-sm" id="state-{{ target.id }}" name="status">
+            {% for value in ("active", "disabled") %}
+            <option value="{{ value }}" {% if value == target.status.value %}selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+          <button type="submit" class="btn btn-outline-primary btn-sm">Save</button>
+        </form>
+        <form method="post" action="/admin/users/{{ target.id }}/revoke-sessions" class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-outline-secondary btn-sm">Sign out everywhere</button>
+        </form>
+        {% endif %}
+        <form method="post" action="/admin/users/{{ target.id }}/delete" class="d-inline-flex gap-1 align-items-center">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input class="form-check-input" type="checkbox" id="confirm-{{ target.id }}" name="confirm" value="yes" required>
+          <label class="form-check-label small" for="confirm-{{ target.id }}">
+            Delete with {{ item.file_count }} file(s)
+          </label>
+          <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="small text-body-secondary">
+  Deleting removes the user's files, also those shared with teams. Disabling is usually the better choice.
+</p>
+
+{% if pages > 1 %}
+<nav aria-label="User pages">
+  <ul class="pagination">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?status={{ status }}&amp;page={{ page - 1 }}">Previous</a></li>{% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ pages }}</span></li>
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?status={{ status }}&amp;page={{ page + 1 }}">Next</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}

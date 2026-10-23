@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Account{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Account</h1>
+
+<dl class="row">
+  <dt class="col-sm-3">Username</dt>
+  <dd class="col-sm-9">{{ user.username }}</dd>
+  <dt class="col-sm-3">Role</dt>
+  <dd class="col-sm-9">{{ user.role.value }}</dd>
+  <dt class="col-sm-3">Storage</dt>
+  <dd class="col-sm-9">
+    {{ used_bytes | filesizeformat }} of {{ quota_bytes | filesizeformat }}
+    <progress class="d-block w-100" max="{{ quota_bytes }}" value="{{ used_bytes }}"></progress>
+  </dd>
+</dl>
+
+<h2 class="h5 mt-4">Active sessions</h2>
+<table class="table align-middle">
+  <thead>
+    <tr><th>Device</th><th>IP</th><th>Signed in</th><th>Last used</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for row in sessions %}
+    <tr>
+      <td>
+        {{ (row.user_agent or "unknown") | truncate(60) }}
+        {% if row.id == user.session_id %}<span class="badge text-bg-primary">this session</span>{% endif %}
+      </td>
+      <td>{{ row.ip or "-" }}</td>
+      <td>{{ row.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+      <td>{{ row.last_used_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+      <td class="text-end">
+        <form method="post" action="/account/sessions/{{ row.id }}/revoke">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-outline-danger btn-sm">Sign out</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<form method="post" action="/account/logout-all">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn btn-danger">Sign out everywhere</button>
+</form>
+{% endblock %}

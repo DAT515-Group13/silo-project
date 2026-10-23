@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Admin: files{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">All files</h1>
+  <a class="btn btn-outline-secondary btn-sm" href="/admin">Users</a>
+</div>
+<p class="text-body-secondary">{{ total }} file(s). Metadata only: admins cannot download other users' files.</p>
+
+<table class="table">
+  <thead><tr><th>Name</th><th>Owner</th><th>Type</th><th>Size</th><th>Uploaded</th></tr></thead>
+  <tbody>
+    {% for file in files %}
+    <tr>
+      <td>{{ file.filename }}</td>
+      <td>{{ file.owner.username }}</td>
+      <td>{{ file.content_type }}</td>
+      <td>{{ file.size_bytes | filesizeformat }}</td>
+      <td>{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if pages > 1 %}
+<nav aria-label="File pages">
+  <ul class="pagination">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page - 1 }}">Previous</a></li>{% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ pages }}</span></li>
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page + 1 }}">Next</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}
