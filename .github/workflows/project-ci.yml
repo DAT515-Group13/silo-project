@@ -44,7 +44,20 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: silo
+          POSTGRES_PASSWORD: silo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U silo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -57,7 +70,7 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Test
-        run: pytest -q -m "not db and not azure"
+        run: pytest -q -m "not azure"
 
   build:
     needs: [plan, test]
