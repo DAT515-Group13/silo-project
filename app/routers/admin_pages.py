@@ -18,8 +18,10 @@ from app.models import Outcome, Role, UserStatus
 from app.permissions import CurrentUser, is_admin
 from app.ratelimit import limit
 from app.routers.common import (
+    MAX_ID,
     CsrfChecked,
     DbSession,
+    IntId,
     PageAuditCtx,
     PageNumber,
     PageUser,
@@ -110,7 +112,7 @@ async def users_page(
 @limit("admin")
 async def update_user_submit(
     request: Request,
-    user_id: int,
+    user_id: IntId,
     user: AdminUser,
     ctx: PageAuditCtx,
     session: DbSession,
@@ -121,7 +123,8 @@ async def update_user_submit(
     try:
         form = AdminUserPatchIn.model_validate({"role": role or None, "status": status or None})
     except ValidationError as exc:
-        raise _invalid("role", " ".join(validation_messages(exc))) from exc
+        field = str(exc.errors()[0]["loc"][-1])  # the first form field that is not valid
+        raise _invalid(field, " ".join(validation_messages(exc))) from exc
     await users.update_user(session, user, user_id, ctx, role=form.role, status=form.status)
     return see_other("/admin")
 
@@ -129,7 +132,7 @@ async def update_user_submit(
 @router.post("/admin/users/{user_id}/approve", dependencies=ADMIN_POST)
 @limit("admin")
 async def approve_user_submit(
-    request: Request, user_id: int, user: AdminUser, ctx: PageAuditCtx, session: DbSession
+    request: Request, user_id: IntId, user: AdminUser, ctx: PageAuditCtx, session: DbSession
 ) -> Response:
     """Approve a pending account."""
     await users.approve_user(session, user, user_id, ctx)
@@ -140,7 +143,7 @@ async def approve_user_submit(
 @limit("admin")
 async def reject_user_submit(
     request: Request,
-    user_id: int,
+    user_id: IntId,
     user: AdminUser,
     ctx: PageAuditCtx,
     session: DbSession,
@@ -158,7 +161,7 @@ async def reject_user_submit(
 @router.post("/admin/users/{user_id}/revoke-sessions", dependencies=ADMIN_POST)
 @limit("admin")
 async def revoke_sessions_submit(
-    request: Request, user_id: int, user: AdminUser, ctx: PageAuditCtx, session: DbSession
+    request: Request, user_id: IntId, user: AdminUser, ctx: PageAuditCtx, session: DbSession
 ) -> Response:
     """Log the user out on every device."""
     await users.revoke_user_sessions(session, user, user_id, ctx)
@@ -169,7 +172,7 @@ async def revoke_sessions_submit(
 @limit("admin")
 async def delete_user_submit(
     request: Request,
-    user_id: int,
+    user_id: IntId,
     user: AdminUser,
     ctx: PageAuditCtx,
     session: DbSession,
@@ -243,6 +246,8 @@ async def audit_page(
     try:
         outcome_filter = Outcome(outcome) if outcome else None
         actor_filter = int(actor_id) if actor_id else None
+        if actor_filter is not None and not 1 <= actor_filter <= MAX_ID:
+            raise ValueError("actor_id out of range")
     except ValueError as exc:
         raise _invalid("filter", "A filter value is not valid.") from exc
     filters = AuditFilters(

@@ -7,20 +7,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from app.config import Settings, get_settings
-from tests.conftest import TEST_PASSWORD, UserFactory, make_settings
+from app.config import Settings
+from tests.conftest import GOOD_PASSWORD, TEST_PASSWORD, UserFactory, use_mode
 
 pytestmark = [pytest.mark.db, pytest.mark.anyio]
-
-GOOD_PASSWORD = "a-long-enough-password"
-
-
-def use_mode(app: FastAPI, settings: Settings, mode: str) -> None:
-    """Run the app with another REGISTRATION_MODE (same database)."""
-    changed = make_settings(
-        database_url=settings.database_url.get_secret_value(), registration_mode=mode
-    )
-    app.dependency_overrides[get_settings] = lambda: changed
 
 
 async def login(
@@ -108,7 +98,7 @@ async def test_register_validation_errors_do_not_echo_the_password(
     assert "secret-value-1234" not in response.text
 
 
-async def test_register_short_password_is_422(app: FastAPI, client: httpx.AsyncClient) -> None:
+async def test_register_short_password_is_422(client: httpx.AsyncClient) -> None:
     """The password policy runs in the service and answers with a field-level 422."""
     response = await client.post(
         "/api/v1/auth/register", json={"username": "anna", "password": "short"}
@@ -214,6 +204,7 @@ async def test_sessions_list_matches_example_9_6(
     """The list shows own active sessions and marks the one used for the request."""
     await user_factory(username="anna")
     first = await login(client)
+    assert first.status_code == 200
     second = await login(client)
     response = await client.get("/api/v1/auth/sessions", headers=bearer(second))
     assert response.status_code == 200
@@ -222,7 +213,6 @@ async def test_sessions_list_matches_example_9_6(
     assert set(rows[0]) == {"id", "created_at", "last_used_at", "ip", "user_agent", "current"}
     assert sum(row["current"] for row in rows) == 1
     assert rows[0]["ip"] == "127.0.0.1"
-    assert first.status_code == 200
 
 
 async def test_delete_session_own_and_foreign(

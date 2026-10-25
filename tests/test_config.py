@@ -9,7 +9,15 @@ from app.models import Role
 SECRET_A = "a-secret-with-at-least-32-bytes-1234"
 SECRET_B = "another-secret-with-32-bytes-or-more"
 # Values that must never appear in an error message.
-SENSITIVE = [SECRET_A, SECRET_B, "postgresql+asyncpg://u:p@h/d", "AccountKey=abc", "adminpw"]
+SENSITIVE = [
+    SECRET_A,
+    SECRET_B,
+    "postgresql+asyncpg://u:p@h/d",
+    "AccountKey=abc",
+    "adminpw",
+    "short",  # invalid input values must not be echoed either
+    "not-a-number",
+]
 
 VALID_ENV = {
     "APP_ENV": "local",
@@ -63,13 +71,9 @@ def test_cookie_secure_defaults_to_true(monkeypatch: pytest.MonkeyPatch) -> None
     assert make(monkeypatch, COOKIE_SECURE=None).cookie_secure is True
 
 
-def test_initial_admin_username_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
-    """INITIAL_ADMIN_USERNAME follows the username rule and is lowercased."""
+def test_initial_admin_username_follows_the_username_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """INITIAL_ADMIN_USERNAME is lowercased; one that breaks the rule stops the startup."""
     assert make(monkeypatch).initial_admin_username == "admin"
-
-
-def test_invalid_initial_admin_username_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An admin username that breaks the username rule stops the startup."""
     assert "initial_admin_username" in error_text(monkeypatch, INITIAL_ADMIN_USERNAME="a b")
 
 
@@ -116,23 +120,30 @@ def test_equal_jwt_and_csrf_secret_is_refused(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.parametrize("env", ["staging", "prod"])
 @pytest.mark.parametrize(
     ("variable", "value"),
-    [("COOKIE_SECURE", "false"), ("ENABLE_DOCS", "true"), ("REGISTRATION_MODE", "open")],
+    [
+        ("COOKIE_SECURE", "false"),
+        ("ENABLE_DOCS", "true"),
+        ("REGISTRATION_MODE", "open"),
+        ("BASE_URL", "http://silo.example"),
+    ],
 )
 def test_unsafe_setting_is_refused_in_staging_and_prod(
     monkeypatch: pytest.MonkeyPatch, env: str, variable: str, value: str
 ) -> None:
-    """staging and prod refuse COOKIE_SECURE=false, ENABLE_DOCS=true, REGISTRATION_MODE=open."""
+    """staging and prod refuse insecure cookies, docs, open registration and an http BASE_URL."""
     assert variable in error_text(monkeypatch, APP_ENV=env, **{variable: value})
 
 
 def test_unsafe_setting_is_allowed_locally(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The same settings are fine for local, test and dev."""
+    """The same settings are fine for APP_ENV=local."""
     assert make(monkeypatch, ENABLE_DOCS="true", REGISTRATION_MODE="open")
 
 
 def test_staging_with_safe_settings_starts(monkeypatch: pytest.MonkeyPatch) -> None:
     """A correctly configured staging environment is accepted."""
-    assert make(monkeypatch, APP_ENV="staging", COOKIE_SECURE="true")
+    assert make(
+        monkeypatch, APP_ENV="staging", COOKIE_SECURE="true", BASE_URL="https://silo.example"
+    )
 
 
 def test_error_messages_never_contain_values(monkeypatch: pytest.MonkeyPatch) -> None:

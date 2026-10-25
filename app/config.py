@@ -88,6 +88,10 @@ class Settings(BaseSettings):
                 problems.append(f"COOKIE_SECURE must be true when APP_ENV is {self.app_env}.")
             if self.enable_docs:
                 problems.append(f"ENABLE_DOCS must be false when APP_ENV is {self.app_env}.")
+            if not self.base_url.startswith("https://"):
+                problems.append(
+                    f"BASE_URL must start with https:// when APP_ENV is {self.app_env}."
+                )
             if self.registration_mode == "open":
                 problems.append(
                     f"REGISTRATION_MODE must not be 'open' when APP_ENV is {self.app_env}."

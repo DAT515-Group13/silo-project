@@ -8,7 +8,15 @@ from fastapi import APIRouter, Request
 
 from app.models import Team
 from app.ratelimit import limit
-from app.routers.common import ApiUser, AuditCtx, DbSession, PageNumber, PageSize, file_out
+from app.routers.common import (
+    ApiUser,
+    AuditCtx,
+    DbSession,
+    IntId,
+    PageNumber,
+    PageSize,
+    file_out,
+)
 from app.schemas.common import Page
 from app.schemas.files import FileOut
 from app.schemas.teams import AddMemberIn, MemberOut, TeamDetailOut, TeamIn, TeamOut
@@ -44,7 +52,7 @@ async def create_team(
 @router.get("/teams/{team_id}", response_model=TeamDetailOut)
 @limit("read")
 async def get_team(
-    request: Request, team_id: int, user: ApiUser, session: DbSession
+    request: Request, team_id: IntId, user: ApiUser, session: DbSession
 ) -> TeamDetailOut:
     """A team with its members. Members only, everybody else gets 404."""
     detail = await teams.get_team(session, user, team_id)
@@ -58,7 +66,7 @@ async def get_team(
 @router.delete("/teams/{team_id}", status_code=204)
 @limit("write")
 async def delete_team(
-    request: Request, team_id: int, user: ApiUser, ctx: AuditCtx, session: DbSession
+    request: Request, team_id: IntId, user: ApiUser, ctx: AuditCtx, session: DbSession
 ) -> None:
     """Delete a team (owner or admin). Files stay; their shares with the team go."""
     await teams.delete_team(session, user, team_id, ctx)
@@ -68,7 +76,7 @@ async def delete_team(
 @limit("read")
 async def list_team_files(
     request: Request,
-    team_id: int,
+    team_id: IntId,
     user: ApiUser,
     session: DbSession,
     page: PageNumber = 1,
@@ -85,7 +93,7 @@ async def list_team_files(
 @limit("write")
 async def add_member(
     request: Request,
-    team_id: int,
+    team_id: IntId,
     body: AddMemberIn,
     user: ApiUser,
     ctx: AuditCtx,
@@ -99,8 +107,8 @@ async def add_member(
 @limit("write")
 async def remove_member(
     request: Request,
-    team_id: int,
-    user_id: int,
+    team_id: IntId,
+    user_id: IntId,
     user: ApiUser,
     ctx: AuditCtx,
     session: DbSession,

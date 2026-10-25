@@ -1,8 +1,8 @@
 """Table definitions and the database helpers."""
 
-from app.config import Settings
 from app.db import create_engine, create_session_factory
 from app.models import Base
+from tests.conftest import make_settings
 
 EXPECTED_TABLES = {
     "users",
@@ -43,20 +43,7 @@ def test_all_timestamps_are_timezone_aware() -> None:
 
 def test_engine_and_session_factory_are_created_without_connecting() -> None:
     """Creating the engine opens no connection; sessions do not expire objects on commit."""
-    settings = Settings(
-        app_env="test",
-        base_url="http://localhost",
-        database_url="postgresql+asyncpg://u:p@localhost/db",
-        azure_storage_connection_string="x",
-        azure_storage_container="c",
-        jwt_secret="j" * 32,
-        jwt_issuer="silo",
-        jwt_audience="silo-test",
-        csrf_secret="c" * 32,
-        initial_admin_username="admin",
-        initial_admin_password="pw",
-        max_file_size_bytes=1,
-    )
+    settings = make_settings()
     engine = create_engine(settings)
     factory = create_session_factory(engine)
     assert engine.url.drivername == "postgresql+asyncpg"

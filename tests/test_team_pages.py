@@ -4,32 +4,17 @@ Tests without the ``db`` marker stop before the database (login, CSRF, role chec
 tests log in with a real session in the access cookie.
 """
 
-from collections.abc import Awaitable, Callable
-
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.middleware import cookie_names
-from app.models import Role, User
-from app.security import create_csrf_token
-from app.services import sessions
-from tests.conftest import ActAs, UserFactory, page_csrf
+from app.models import Role
+from tests.conftest import ActAs, PageLogin, UserFactory, page_csrf
 
 pytestmark = pytest.mark.anyio
 
-PageLogin = Callable[[User], Awaitable[tuple[dict[str, str], dict[str, str]]]]
-
 
 # --- No database needed --------------------------------------------------------------------------
-
-
-async def test_teams_page_needs_a_login(client: httpx.AsyncClient) -> None:
-    """Without a session the team list redirects to /login."""
-    response = await client.get("/teams", follow_redirects=False)
-    assert response.status_code == 303
-    assert response.headers["location"] == "/login?next=/teams"
 
 
 async def test_plain_user_gets_403_when_creating_a_team(
@@ -57,24 +42,6 @@ async def test_create_team_needs_a_csrf_token(
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
-
-
-@pytest.fixture
-def page_login(db_sessionmaker: async_sessionmaker[AsyncSession], settings: Settings) -> PageLogin:
-    """``headers, form = await page_login(user)``: access cookie, CSRF cookie and form field."""
-
-    async def login(user: User) -> tuple[dict[str, str], dict[str, str]]:
-        async with db_sessionmaker() as session, session.begin():
-            tokens = await sessions.create_session(session, settings, user)
-        names = cookie_names(settings)
-        csrf = create_csrf_token(settings.csrf_secret.get_secret_value(), str(tokens.session_id))
-        headers = {
-            "Cookie": f"{names.access}={tokens.access_token}; {names.csrf}={csrf}",
-            "Origin": settings.base_url,
-        }
-        return headers, {"csrf_token": csrf}
-
-    return login
 
 
 async def post(

@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.errors import InvalidToken, NotFound, RefreshInProgress
@@ -17,11 +16,9 @@ from app.models import AuditLog, AuthSession, RefreshToken, Role, User, UserStat
 from app.security import decode_access_token, hash_token
 from app.services import sessions
 from app.services.sessions import RevokeReason
-from tests.conftest import UserFactory
+from tests.conftest import Sessionmaker, UserFactory
 
 pytestmark = [pytest.mark.db, pytest.mark.anyio]
-
-Sessionmaker = async_sessionmaker[AsyncSession]
 
 
 async def login(
@@ -213,7 +210,7 @@ async def test_unknown_expired_and_revoked_tokens_are_invalid(
 async def test_disabled_user_cannot_refresh(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """Step 4: a user who is no longer active gets no new tokens."""
+    """A user who is no longer active gets no new tokens."""
     user = await user_factory()
     tokens = await login(db_sessionmaker, settings, user)
     async with db_sessionmaker() as db, db.begin():

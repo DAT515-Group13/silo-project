@@ -5,11 +5,12 @@ from ``TEST_DATABASE_URL`` and its schema is rebuilt once per session with ``ale
 head``. After each ``db`` test every table is emptied, so tests cannot affect each other and
 concurrency tests can use real, separate connections (no rollback per test).
 
-The ``blob_store`` fixture (an ``InMemoryBlobStore``) comes from ``tests/fixtures_storage.py``.
+The ``blob_store`` fixture is an ``InMemoryBlobStore``, a new one for every test.
 """
 
 import asyncio
 import os
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
@@ -30,7 +31,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.main import create_app
 from app.middleware import cookie_names
 from app.models import Base, File, FileShare, Role, User, UserStatus
@@ -40,9 +41,11 @@ from app.security import create_csrf_token, hash_password
 from app.services import sessions
 from tests.fakes import InMemoryBlobStore
 
-pytest_plugins = ["tests.fixtures_storage"]
-
 ROOT = Path(__file__).resolve().parent.parent
+
+# Page forms: the Origin header of this site and the hidden CSRF field of a rendered form.
+ORIGIN = {"Origin": "http://testserver"}
+TOKEN_FIELD = re.compile(r'name="csrf_token" value="([^"]+)"')
 
 # Default: the compose PostgreSQL with user and password "silo". The password in .env.dev.example
 # is a CHANGE placeholder, so set TEST_DATABASE_URL to match your own .env.dev.
@@ -71,12 +74,56 @@ def make_settings(**overrides: Any) -> Settings:
     return Settings(_env_file=None, **{**values, **overrides})  # type: ignore[call-arg]
 
 
+Sessionmaker = async_sessionmaker[AsyncSession]
+GOOD_PASSWORD = "a-long-enough-password"
+
+
+def use_mode(app: FastAPI, settings: Settings, mode: str) -> None:
+    """Run the app with another REGISTRATION_MODE (same database)."""
+    changed = make_settings(
+        database_url=settings.database_url.get_secret_value(), registration_mode=mode
+    )
+    app.dependency_overrides[get_settings] = lambda: changed
+
+
+def token_of(response: httpx.Response) -> str:
+    """The CSRF token a rendered form carries in its hidden field."""
+    match = TOKEN_FIELD.search(response.text)
+    assert match, "no csrf_token field in the page"
+    return match.group(1)
+
+
+@pytest.fixture(autouse=True)
+def _clean_settings_env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ignore app variables set in the shell, so settings are the same on every machine.
+
+    Tests marked ``azure`` are left alone: they read the real Azure variables.
+    """
+    if request.node.get_closest_marker("azure") is not None:
+        return
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name.upper(), raising=False)
+
+
+@pytest.fixture
+def blob_store() -> InMemoryBlobStore:
+    """The fake blob store injected into the app (a new, empty one for every test)."""
+    return InMemoryBlobStore()
+
+
 # --- Database ------------------------------------------------------------------------------------
 
 
 def _server_url() -> str:
     """The database URL tests use (TEST_DATABASE_URL or the compose default)."""
     return os.environ.get("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
+
+
+def _require_test_database(url: str) -> None:
+    """Refuse any database whose name does not end in _test: the setup drops its schema."""
+    name = make_url(url).database or ""
+    if not name.endswith("_test"):
+        raise RuntimeError(f"TEST_DATABASE_URL must name a database ending in _test, not {name!r}.")
 
 
 async def _prepare_database(url: str) -> None:
@@ -105,6 +152,7 @@ async def _prepare_database(url: str) -> None:
 def database_url() -> Iterator[str]:
     """URL of a migrated, empty test database (built once per session, only for ``db`` tests)."""
     url = _server_url()
+    _require_test_database(url)
     asyncio.run(_prepare_database(url))
     # The Alembic environment reads DATABASE_URL (D13).
     previous = os.environ.get("DATABASE_URL")
@@ -293,6 +341,27 @@ def page_csrf(settings: Settings, user: CurrentUser) -> tuple[dict[str, str], di
         "Origin": settings.base_url,
     }
     return headers, {"csrf_token": token}
+
+
+PageLogin = Callable[[User], Awaitable[tuple[dict[str, str], dict[str, str]]]]
+
+
+@pytest.fixture
+def page_login(db_sessionmaker: Sessionmaker, settings: Settings) -> PageLogin:
+    """``headers, form = await page_login(user)``: access cookie, CSRF cookie and form field."""
+
+    async def login(user: User) -> tuple[dict[str, str], dict[str, str]]:
+        async with db_sessionmaker() as session, session.begin():
+            tokens = await sessions.create_session(session, settings, user)
+        names = cookie_names(settings)
+        csrf = create_csrf_token(settings.csrf_secret.get_secret_value(), str(tokens.session_id))
+        headers = {
+            "Cookie": f"{names.access}={tokens.access_token}; {names.csrf}={csrf}",
+            "Origin": settings.base_url,
+        }
+        return headers, {"csrf_token": csrf}
+
+    return login
 
 
 @pytest.fixture

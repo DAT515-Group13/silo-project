@@ -4,13 +4,13 @@ Only ``lock_duration`` is pure; everything else needs PostgreSQL (marker ``db``)
 """
 
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from argon2 import PasswordHasher
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from app.errors import (
@@ -28,10 +28,7 @@ from app.security import decode_access_token
 from app.services import auth, sessions
 from app.services.audit import AuditContext
 from app.services.users import ensure_initial_admin
-from tests.conftest import TEST_PASSWORD, UserFactory, make_settings
-
-Sessionmaker = async_sessionmaker[AsyncSession]
-GOOD_PASSWORD = "a-long-enough-password"
+from tests.conftest import GOOD_PASSWORD, TEST_PASSWORD, Sessionmaker, UserFactory, make_settings
 
 
 async def count_users(sm: Sessionmaker) -> int:
@@ -405,10 +402,15 @@ async def test_initial_admin_is_safe_when_replicas_start_together(
 @pytest.mark.db
 @pytest.mark.anyio
 async def test_existing_user_with_the_admin_name_is_left_alone(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
+    db_sessionmaker: Sessionmaker,
+    settings: Settings,
+    user_factory: UserFactory,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """An existing user with the configured name is left alone (no password overwrite)."""
+    """An existing user with the configured name is left alone (no password overwrite), loudly."""
     await user_factory(username=settings.initial_admin_username, role=Role.user)
-    async with db_sessionmaker() as db:
-        assert await ensure_initial_admin(db, settings) is False
+    with caplog.at_level(logging.WARNING, logger="silo"):
+        async with db_sessionmaker() as db:
+            assert await ensure_initial_admin(db, settings) is False
+    assert "not an admin" in caplog.text
     assert (await get_user(db_sessionmaker, settings.initial_admin_username)).role is Role.user

@@ -7,14 +7,11 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import ActorType, AuditLog, Outcome, Role
-from tests.conftest import BearerFor, FileFactory, UserFactory
+from tests.conftest import BearerFor, FileFactory, Sessionmaker, UserFactory
 
 pytestmark = [pytest.mark.anyio, pytest.mark.db]
-
-Sessionmaker = async_sessionmaker[AsyncSession]
 
 
 async def add_entries(sm: Sessionmaker, *entries: dict) -> None:
@@ -34,15 +31,16 @@ async def test_admin_sees_every_file_as_metadata(
     root = await user_factory(username="root", role=Role.admin)
     anna = await user_factory(username="anna")
     bob = await user_factory(username="bob")
-    await file_factory(anna.id, filename="a.txt")
-    await file_factory(bob.id, filename="b.txt")
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    await file_factory(anna.id, filename="a.txt", created_at=start)
+    await file_factory(bob.id, filename="b.txt", created_at=start + timedelta(hours=1))
 
     body = (await client.get("/api/v1/admin/files", headers=await bearer_for(root))).json()
     assert body["total"] == 2
-    assert {(i["filename"], i["owner"]["username"]) for i in body["items"]} == {
-        ("a.txt", "anna"),
+    assert [(i["filename"], i["owner"]["username"]) for i in body["items"]] == [
         ("b.txt", "bob"),
-    }
+        ("a.txt", "anna"),
+    ]
     assert all(i["is_owner"] is False and "blob_name" not in i for i in body["items"])
 
 
@@ -101,4 +99,4 @@ async def test_audit_entries_have_the_section_5_fields(
     entry = body["items"][0]
     assert entry["actor_type"] == "user"
     assert (entry["actor_id"], entry["actor_username"]) == (root.id, "root")
-    assert entry["ip"] is None or isinstance(entry["ip"], str)
+    assert entry["ip"] == "127.0.0.1"

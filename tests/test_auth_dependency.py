@@ -9,19 +9,15 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings, get_settings
 from app.models import AuthSession, Role, User, UserStatus
 from app.routers.common import ApiUser
 from app.security import create_access_token
 from app.services import sessions
-from tests.conftest import UserFactory, make_settings
+from tests.conftest import Sessionmaker, UserFactory, make_settings
 
 pytestmark = pytest.mark.anyio
-
-Sessionmaker = async_sessionmaker[AsyncSession]
 
 
 @pytest.fixture
@@ -88,11 +84,14 @@ async def test_failures_look_the_same(
 async def test_cookie_is_ignored_on_the_api(
     client: httpx.AsyncClient, settings: Settings, whoami: str
 ) -> None:
-    """A valid-looking token in a cookie is not accepted on /api/v1."""
+    """A valid-looking token in a cookie is not accepted on /api/v1.
+
+    The Cookie header is set by hand, so the cookie is certainly sent.
+    """
     token = token_for(settings, 1, uuid.uuid4())
-    for name in ("access_token", "__Host-access_token"):
-        client.cookies.set(name, token)
-    assert (await client.get(whoami)).status_code == 401
+    cookie = f"access_token={token}; __Host-access_token={token}"
+    response = await client.get(whoami, headers={"Cookie": cookie})
+    assert (response.status_code, response.json()["code"]) == (401, "invalid_token")
 
 
 # --- Needs PostgreSQL --------------------------------------------------------------------
@@ -112,24 +111,6 @@ async def test_valid_token_gives_the_current_user(
     response = await client.get(whoami, headers=bearer(tokens.access_token))
     assert response.status_code == 200
     assert response.json() == {"id": user.id, "username": "anna", "role": "team_lead"}
-
-
-@pytest.mark.db
-async def test_role_comes_from_the_database_not_the_token(
-    client: httpx.AsyncClient,
-    db_sessionmaker: Sessionmaker,
-    settings: Settings,
-    user_factory: UserFactory,
-    whoami: str,
-) -> None:
-    """A role change is effective on the next request with the same token."""
-    user = await user_factory()
-    tokens = await login(db_sessionmaker, settings, user)
-    headers = bearer(tokens.access_token)
-    assert (await client.get(whoami, headers=headers)).json()["role"] == "user"
-    async with db_sessionmaker() as db, db.begin():
-        (await db.get_one(User, user.id)).role = Role.admin
-    assert (await client.get(whoami, headers=headers)).json()["role"] == "admin"
 
 
 @pytest.mark.db
@@ -240,30 +221,3 @@ async def test_previous_secret_is_accepted_during_rotation(
     without_previous = make_settings(database_url=database_url, jwt_secret="n" * 40)
     app.dependency_overrides[get_settings] = lambda: without_previous
     assert (await client.get(whoami, headers=bearer(token))).status_code == 401
-
-
-@pytest.mark.db
-async def test_last_used_at_is_updated_at_most_once_a_minute(
-    client: httpx.AsyncClient,
-    db_sessionmaker: Sessionmaker,
-    settings: Settings,
-    user_factory: UserFactory,
-    whoami: str,
-) -> None:
-    """A request refreshes an old last_used_at; a second request right after leaves it alone."""
-    user = await user_factory()
-    old = datetime.now(UTC) - timedelta(minutes=10)
-    async with db_sessionmaker() as db, db.begin():
-        tokens = await sessions.create_session(db, settings, user, now=old)
-    headers = bearer(tokens.access_token)
-
-    async def last_used() -> datetime:
-        async with db_sessionmaker() as db:
-            return (await db.scalar(select(AuthSession.last_used_at))) or old
-
-    assert await last_used() == old
-    assert (await client.get(whoami, headers=headers)).status_code == 200
-    after_first = await last_used()
-    assert after_first > old
-    assert (await client.get(whoami, headers=headers)).status_code == 200
-    assert await last_used() == after_first

@@ -10,23 +10,20 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from app.config import Settings, get_settings
+from app.config import Settings
 from app.middleware import cookie_names
 from app.models import UserStatus
-from tests.conftest import TEST_PASSWORD, UserFactory, make_settings
+from tests.conftest import (
+    GOOD_PASSWORD,
+    ORIGIN,
+    TEST_PASSWORD,
+    TOKEN_FIELD,
+    UserFactory,
+    token_of,
+    use_mode,
+)
 
 pytestmark = pytest.mark.anyio
-
-ORIGIN = {"Origin": "http://testserver"}
-TOKEN_FIELD = re.compile(r'name="csrf_token" value="([^"]+)"')
-GOOD_PASSWORD = "a-long-enough-password"
-
-
-def token_of(response: httpx.Response) -> str:
-    """The CSRF token a rendered form carries in its hidden field."""
-    match = TOKEN_FIELD.search(response.text)
-    assert match, "no csrf_token field in the page"
-    return match.group(1)
 
 
 async def post_form(
@@ -37,13 +34,6 @@ async def post_form(
     return await client.post(
         path, data={**data, "csrf_token": token_of(page)}, headers=ORIGIN, follow_redirects=False
     )
-
-
-def use_mode(app: FastAPI, settings: Settings, mode: str) -> None:
-    changed = make_settings(
-        database_url=settings.database_url.get_secret_value(), registration_mode=mode
-    )
-    app.dependency_overrides[get_settings] = lambda: changed
 
 
 # --- No database needed ----------------------------------------------------------------------
@@ -63,10 +53,9 @@ async def test_login_page_has_a_form_with_a_csrf_token(
 
 
 async def test_login_page_sanitizes_next(client: httpx.AsyncClient) -> None:
-    """An outside address in ?next= is replaced by /files (open redirect guard)."""
-    for bad in ("//evil.example", "https://evil.example", "javascript:alert(1)"):
-        response = await client.get("/login", params={"next": bad})
-        assert 'name="next" value="/files"' in response.text
+    """The page passes ?next= through safe_next (the cases are in test_safe_next)."""
+    response = await client.get("/login", params={"next": "//evil.example"})
+    assert 'name="next" value="/files"' in response.text
     response = await client.get("/login", params={"next": "/files/abc"})
     assert 'name="next" value="/files/abc"' in response.text
 
@@ -80,12 +69,6 @@ async def test_register_page_follows_the_registration_mode(
     assert (await client.get("/register")).status_code == 404
     use_mode(app, settings, "open")
     assert (await client.get("/register")).status_code == 200
-
-
-async def test_account_page_needs_a_login(client: httpx.AsyncClient) -> None:
-    """Without a session the account page redirects to /login and remembers the page."""
-    response = await client.get("/account", follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/login?next=/account")
 
 
 async def test_start_page_sends_visitors_to_login(client: httpx.AsyncClient) -> None:
@@ -138,19 +121,6 @@ async def test_register_form_validates_without_the_database(client: httpx.AsyncC
     assert response.status_code == 422
     assert "Username must be 3-32 characters" in response.text
     assert "secret-value-1234" not in response.text
-
-
-async def test_files_page_needs_a_login(client: httpx.AsyncClient) -> None:
-    """The placeholder file list redirects to /login without a session, like the other pages."""
-    response = await client.get("/files", follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/login?next=/files")
-
-
-async def test_other_file_pages_are_still_skeletons(client: httpx.AsyncClient) -> None:
-    """B's other file pages answer 501 as an HTML page until B implements them."""
-    response = await client.get("/files/7f3a1c2e-5b9d-4e8a-9c41-2d6f0b8a1e33")
-    assert response.status_code == 501
-    assert response.headers["content-type"].startswith("text/html")
 
 
 # --- Needs PostgreSQL ------------------------------------------------------------------------
@@ -212,21 +182,6 @@ async def test_login_sets_cookies_and_goes_to_next(
     account = await client.get("/account")
     assert account.status_code == 200
     assert "anna" in account.text and "this session" in account.text
-
-
-@pytest.mark.db
-async def test_files_placeholder_shows_the_storage_usage(
-    client: httpx.AsyncClient, user_factory: UserFactory
-) -> None:
-    """After login the default target /files is a real page, not a 501 error."""
-    await user_factory(username="anna")
-    await post_form(
-        client, "/login", {"username": "anna", "password": TEST_PASSWORD}, token_from="/login"
-    )
-    response = await client.get("/files")
-    assert response.status_code == 200
-    assert "not available yet" in response.text
-    assert "0 Bytes of 1.1 GB" in response.text  # filesizeformat of 0 and the 1 GiB user quota
 
 
 @pytest.mark.db

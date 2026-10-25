@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
 from fastapi import Depends, HTTPException, Query, Request, Response
+from fastapi import Path as PathParam
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.templating import Jinja2Templates
@@ -365,5 +366,9 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 Store = Annotated[BlobStore, Depends(get_blob_store)]
 
 # page >= 1 and 1 <= size <= 100.
-PageNumber = Annotated[int, Query(ge=1)]
+PageNumber = Annotated[int, Query(ge=1, le=1_000_000)]
 PageSize = Annotated[int, Query(ge=1, le=100)]
+
+# Database IDs are 32-bit integers: a larger value in a URL would be an error from the driver (500).
+MAX_ID = 2_147_483_647
+IntId = Annotated[int, PathParam(ge=1, le=MAX_ID)]

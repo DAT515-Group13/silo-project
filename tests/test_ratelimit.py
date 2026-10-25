@@ -67,25 +67,16 @@ def test_user_key_uses_the_user_id_or_falls_back_to_the_ip() -> None:
     assert ratelimit._user_key(request({})) == "198.51.100.1"
 
 
-async def test_eleventh_request_in_a_minute_is_429(app: FastAPI) -> None:
-    """The auth class allows 10 requests per minute and IP; the 11th is 429."""
-    add_limited_route(app, "auth")
-    async with client_from(app) as client:
-        for _ in range(10):
-            assert (await client.get("/api/v1/_limited")).status_code == 200
-        response = await client.get("/api/v1/_limited")
-    assert response.status_code == 429
-    assert response.json() == {"detail": "Too many requests.", "code": "rate_limited"}
-    assert response.headers["retry-after"] == "60"
-
-
-async def test_limits_are_per_ip(app: FastAPI) -> None:
-    """One client reaching its limit does not block another IP."""
+async def test_eleventh_request_in_a_minute_is_429_per_ip(app: FastAPI) -> None:
+    """The auth class allows 10 requests per minute and IP; the 11th is 429. Other IPs are free."""
     add_limited_route(app, "auth")
     async with client_from(app, "203.0.113.5") as busy, client_from(app, "203.0.113.6") as other:
-        for _ in range(11):
-            await busy.get("/api/v1/_limited")
-        assert (await busy.get("/api/v1/_limited")).status_code == 429
+        for _ in range(10):
+            assert (await busy.get("/api/v1/_limited")).status_code == 200
+        response = await busy.get("/api/v1/_limited")
+        assert response.status_code == 429
+        assert response.json() == {"detail": "Too many requests.", "code": "rate_limited"}
+        assert response.headers["retry-after"] == "60"
         assert (await other.get("/api/v1/_limited")).status_code == 200
 
 

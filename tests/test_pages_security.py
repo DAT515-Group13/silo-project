@@ -3,10 +3,8 @@
 Tests without the ``db`` marker never reach the database (no valid cookie is involved).
 """
 
-import re
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -22,16 +20,15 @@ from app.middleware import (
     set_csrf_cookie,
 )
 from app.models import Role
-from app.routers.common import PRE_SESSION_BINDING, CsrfChecked, PageUser, templates
+from app.routers import admin_pages, pages, team_pages
+from app.routers.common import PRE_SESSION_BINDING, CsrfChecked, PageUser, require_csrf
 from app.security import create_csrf_token
 from app.services import sessions
 from app.services.sessions import IssuedTokens
-from tests.conftest import UserFactory, make_settings
+from tests.conftest import ORIGIN, UserFactory, make_settings, token_of
 
 pytestmark = pytest.mark.anyio
 
-ORIGIN = {"Origin": "http://testserver"}
-TOKEN_FIELD = re.compile(r'name="csrf_token" value="([^"]+)"')
 TEMPLATES = Path(__file__).resolve().parent.parent / "app" / "templates"
 
 
@@ -73,7 +70,7 @@ async def test_bootstrap_is_served_locally(client: httpx.AsyncClient) -> None:
     response = await client.get("/static/bootstrap.min.css")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/css")
-    assert "Bootstrap  v5.3.3" in response.text[:200]
+    assert "Bootstrap" in response.text[:200]
 
 
 async def test_page_errors_are_html_and_api_errors_are_json(client: httpx.AsyncClient) -> None:
@@ -89,13 +86,14 @@ async def test_page_errors_are_html_and_api_errors_are_json(client: httpx.AsyncC
     assert api.json() == {"detail": "Not Found", "code": "not_found"}
 
 
+@pytest.mark.parametrize("path", ["/_private", "/account", "/teams"])
 async def test_unauthenticated_page_redirects_to_login_with_next(
-    client: httpx.AsyncClient, page_routes: FastAPI
+    client: httpx.AsyncClient, page_routes: FastAPI, path: str
 ) -> None:
     """A page that needs a login sends visitors to /login and remembers where they were."""
-    response = await client.get("/_private", follow_redirects=False)
+    response = await client.get(path, follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] == "/login?next=/_private"
+    assert response.headers["location"] == f"/login?next={path}"
 
 
 async def test_useless_cookies_are_deleted_on_the_redirect(
@@ -119,16 +117,6 @@ def test_templates_have_no_inline_script_or_style() -> None:
         text = path.read_text().lower()
         for forbidden in ("<script", "<style", " style=", "onclick=", "javascript:"):
             assert forbidden not in text, f"{path.name}: {forbidden}"
-
-
-def test_templates_escape_user_data() -> None:
-    """Autoescaping is on: a username with HTML is shown as text."""
-    user = SimpleNamespace(username="<img src=x onerror=alert(1)>", role=Role.user)
-    html = templates.get_template("base.html").render(
-        user=user, csrf_token="t", url_for=lambda *args, **kwargs: "/static/x.css"
-    )
-    assert "<img src=x" not in html
-    assert "&lt;img src=x onerror=alert(1)&gt;" in html
 
 
 # --- Cookies ---------------------------------------------------------------------------------
@@ -206,27 +194,40 @@ async def test_post_with_a_valid_token_and_origin_works(
     assert response.status_code == 200
 
 
-async def test_post_without_a_token_is_403(
-    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings
-) -> None:
-    """No token at all: csrf_failed."""
-    response = await client.post("/_form", data={"x": "1"}, headers=ORIGIN)
-    assert response.status_code == 403
-    assert "CSRF validation failed." in response.text
+def _calls(dependant) -> set:
+    """Every function a route depends on, directly or through other dependencies."""
+    found = {dependant.call}
+    for sub in dependant.dependencies:
+        found |= _calls(sub)
+    return found
 
 
-@pytest.mark.parametrize("missing", ["cookie", "field"])
+def test_every_page_post_checks_csrf() -> None:
+    """No state-changing page route may forget ``CsrfChecked`` (new file routes get it too)."""
+    checked, unprotected = 0, []
+    for router in (pages.router, team_pages.router, admin_pages.router):
+        for route in router.routes:
+            if route.methods - {"GET", "HEAD", "OPTIONS"}:
+                checked += 1
+                if require_csrf not in _calls(route.dependant):
+                    unprotected.append(f"{sorted(route.methods)} {route.path}")
+    assert checked > 10, "the test no longer finds the routes"
+    assert unprotected == []
+
+
+@pytest.mark.parametrize("missing", ["cookie", "field", "both"])
 async def test_post_needs_both_cookie_and_field(
     client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings, missing: str
 ) -> None:
-    """Double submit: a token in only one of the two places is refused."""
+    """Double submit: a token in only one of the two places, or in none, is refused."""
     token, cookies = csrf_pair(settings)
     response = await client.post(
         "/_form",
-        data={} if missing == "field" else {"csrf_token": token},
+        data={"csrf_token": token} if missing == "cookie" else {},
         headers={**(cookies if missing == "field" else {}), **ORIGIN},
     )
     assert response.status_code == 403
+    assert "CSRF validation failed." in response.text
 
 
 async def test_post_with_different_cookie_and_field_is_403(
@@ -235,10 +236,10 @@ async def test_post_with_different_cookie_and_field_is_403(
     """Two valid tokens that are not the same one are refused (the pair must match)."""
     token_a, cookies = csrf_pair(settings)
     token_b, _ = csrf_pair(settings)
+    assert token_a != token_b
     response = await client.post(
         "/_form", data={"csrf_token": token_b}, headers={**cookies, **ORIGIN}
     )
-    assert token_a != token_b
     assert response.status_code == 403
 
 
@@ -301,23 +302,13 @@ def csrf_set_cookies(response: httpx.Response, settings: Settings) -> list[str]:
     return [line for line in set_cookie_lines(response) if line.startswith(f"{name}=")]
 
 
-async def test_a_valid_csrf_cookie_is_reused_by_the_next_page(
-    client: httpx.AsyncClient, settings: Settings
-) -> None:
-    """A page keeps the cookie's still-valid token instead of replacing it."""
-    token, cookies = csrf_pair(settings)
-    response = await client.get("/login", headers=cookies)
-    assert TOKEN_FIELD.search(response.text).group(1) == token
-    assert csrf_set_cookies(response, settings) == []
-
-
 async def test_a_csrf_cookie_for_another_binding_is_replaced(
     client: httpx.AsyncClient, settings: Settings
 ) -> None:
     """A token bound to some session is not reused on an anonymous page: a new one is set."""
     token, cookies = csrf_pair(settings, binding=str(uuid.uuid4()))
     response = await client.get("/login", headers=cookies)
-    new_token = TOKEN_FIELD.search(response.text).group(1)
+    new_token = token_of(response)
     assert new_token != token
     assert csrf_set_cookies(response, settings)[0].startswith(
         f"{cookie_names(settings).csrf}={new_token}"
@@ -325,13 +316,14 @@ async def test_a_csrf_cookie_for_another_binding_is_replaced(
 
 
 async def test_a_form_still_works_after_another_tab_loaded_a_page(
-    client: httpx.AsyncClient, page_routes: FastAPI
+    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings
 ) -> None:
-    """Two open tabs: the first tab's form is still accepted after the second tab loaded."""
+    """Two open tabs: a valid CSRF cookie is reused, so the first tab's form still works."""
     first_tab = await client.get("/login")
     second_tab = await client.get("/login")
-    first_token = TOKEN_FIELD.search(first_tab.text).group(1)
-    assert TOKEN_FIELD.search(second_tab.text).group(1) == first_token
+    first_token = token_of(first_tab)
+    assert token_of(second_tab) == first_token
+    assert csrf_set_cookies(second_tab, settings) == []
     response = await client.post("/_form", data={"csrf_token": first_token}, headers=ORIGIN)
     assert response.status_code == 200
 

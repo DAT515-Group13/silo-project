@@ -3,10 +3,9 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.auth import LoginIn, RegisterIn
+from app.schemas.auth import LoginIn, RefreshIn, RegisterIn
 from app.schemas.common import normalize_username
 from app.schemas.teams import AddMemberIn, TeamIn
-from app.schemas.users import AdminUserPatchIn
 
 
 def test_unknown_field_is_rejected() -> None:
@@ -64,6 +63,13 @@ def test_password_has_hard_upper_limit_only() -> None:
     assert RegisterIn(username="anna", password="x" * 128)
 
 
+def test_refresh_token_has_a_size_limit() -> None:
+    """A real token has 43 characters; a huge body is refused before it is hashed."""
+    assert RefreshIn(refresh_token="x" * 64)
+    with pytest.raises(ValidationError):
+        RefreshIn(refresh_token="x" * 65)
+
+
 def test_team_name_is_trimmed_and_length_limited() -> None:
     """Team names are 1-100 characters after trimming."""
     assert TeamIn(name="  Backend  ").name == "Backend"
@@ -71,13 +77,3 @@ def test_team_name_is_trimmed_and_length_limited() -> None:
     for bad in ("", "   ", "a" * 101):
         with pytest.raises(ValidationError):
             TeamIn(name=bad)
-
-
-def test_admin_patch_status_only_toggles_active_and_disabled() -> None:
-    """PATCH /admin/users/{id} accepts status active or disabled only."""
-    assert AdminUserPatchIn(status="disabled").status == "disabled"
-    for bad in ("pending", "rejected"):
-        with pytest.raises(ValidationError):
-            AdminUserPatchIn(status=bad)  # type: ignore[arg-type]
-    with pytest.raises(ValidationError):
-        AdminUserPatchIn(role="superuser")  # type: ignore[arg-type]

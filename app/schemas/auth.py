@@ -2,9 +2,9 @@
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import Role
 from app.schemas.common import InputModel, LoginUsername, Password, Username
@@ -38,7 +38,8 @@ class RegistrationAcceptedOut(BaseModel):
 class RefreshIn(InputModel):
     """Body of ``POST /auth/refresh``."""
 
-    refresh_token: str
+    # Real tokens have 43 characters; the cap keeps a huge body from being hashed.
+    refresh_token: Annotated[str, Field(max_length=64)]
 
 
 class UserBriefOut(BaseModel):
