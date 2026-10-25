@@ -18,6 +18,7 @@ from app.ratelimit import limit
 from app.routers.common import (
     CsrfChecked,
     DbSession,
+    IntId,
     PageAuditCtx,
     PageNumber,
     PageUser,
@@ -125,7 +126,7 @@ async def _team_page(
     session: DbSession,
     settings: Settings,
     user: CurrentUser,
-    team_id: int,
+    team_id: IntId,
     *,
     page: int = 1,
     notice: str | None = None,
@@ -168,7 +169,7 @@ async def _team_page(
 @limit("read")
 async def team_page(
     request: Request,
-    team_id: int,
+    team_id: IntId,
     user: PageUser,
     session: DbSession,
     settings: SettingsDep,
@@ -183,7 +184,7 @@ async def team_page(
 @router.post("/teams/{team_id}/delete", dependencies=[CsrfChecked])
 @limit("write")
 async def delete_team_submit(
-    request: Request, team_id: int, user: PageUser, ctx: PageAuditCtx, session: DbSession
+    request: Request, team_id: IntId, user: PageUser, ctx: PageAuditCtx, session: DbSession
 ) -> Response:
     """Delete the team (owner or admin) and go back to the team list."""
     await teams.delete_team(session, user, team_id, ctx)
@@ -194,7 +195,7 @@ async def delete_team_submit(
 @limit("write")
 async def add_member_submit(
     request: Request,
-    team_id: int,
+    team_id: IntId,
     user: PageUser,
     ctx: PageAuditCtx,
     session: DbSession,
@@ -224,8 +225,8 @@ async def add_member_submit(
 @limit("write")
 async def remove_member_submit(
     request: Request,
-    team_id: int,
-    member_id: int,
+    team_id: IntId,
+    member_id: IntId,
     user: PageUser,
     ctx: PageAuditCtx,
     session: DbSession,

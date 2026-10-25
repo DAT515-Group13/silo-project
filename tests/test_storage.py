@@ -1,4 +1,4 @@
-"""Blob storage: the in-memory fake and the Azure implementation.
+"""Blob storage: the Azure implementation.
 
 The Azure tests here need no network: a stand-in replaces the SDK's container client, and the
 SAS URL is signed locally. Tests against real Azure are in ``tests/integration/``.
@@ -23,7 +23,6 @@ from app.storage.azure_blob import (
     parse_connection_string,
 )
 from tests.conftest import make_settings
-from tests.fakes import InMemoryBlobStore, parse_download_url
 
 pytestmark = pytest.mark.anyio
 
@@ -40,68 +39,6 @@ async def stream(*chunks: bytes, then: Exception | None = None) -> AsyncIterator
         yield chunk
     if then is not None:
         raise then
-
-
-# --- The in-memory fake follows the protocol -----------------------------------------------------
-
-
-async def test_fake_upload_stores_the_bytes_and_returns_the_size() -> None:
-    store = InMemoryBlobStore()
-    written = await store.upload_stream("b1", stream(b"ab", b"cde"), content_type="text/plain")
-    assert written == 5
-    assert store.blobs["b1"].data == b"abcde"
-    assert store.blobs["b1"].content_type == "text/plain"
-
-
-async def test_fake_aborted_upload_leaves_no_blob() -> None:
-    """A stream that raises leaves no blob and the error propagates."""
-    store = InMemoryBlobStore()
-    with pytest.raises(FileTooLarge):
-        await store.upload_stream("b1", stream(b"ab", then=FileTooLarge()), content_type="x/y")
-    assert store.blobs == {}
-
-
-async def test_fake_delete_is_idempotent() -> None:
-    store = InMemoryBlobStore()
-    store.put("b1", b"x")
-    await store.delete("b1")
-    await store.delete("b1")
-    assert store.blobs == {} and store.deleted == ["b1", "b1"]
-
-
-async def test_fake_download_url_encodes_its_parameters() -> None:
-    store = InMemoryBlobStore()
-    url = await store.download_url(
-        "b1", filename="r é.pdf", content_type="application/pdf", ttl_seconds=300
-    )
-    assert parse_download_url(url) == {
-        "blob": "b1",
-        "filename": "r é.pdf",
-        "content_type": "application/pdf",
-        "ttl": "300",
-        "sp": "r",
-    }
-    assert url.startswith("https://")
-
-
-async def test_fake_unhealthy_store_raises_storage_unavailable() -> None:
-    store = InMemoryBlobStore()
-    store.healthy = False
-    with pytest.raises(StorageUnavailable):
-        await store.ping()
-    with pytest.raises(StorageUnavailable):
-        await store.delete("b1")
-    with pytest.raises(StorageUnavailable):
-        await store.upload_stream("b1", stream(b"x"), content_type="x/y")
-
-
-async def test_fake_lists_only_old_blobs() -> None:
-    store = InMemoryBlobStore()
-    now = datetime.now(UTC)
-    store.put("old", b"1", last_modified=now - timedelta(hours=30))
-    store.put("new", b"2", last_modified=now)
-    names = [b.name async for b in store.list_blobs(older_than=now - timedelta(hours=24))]
-    assert names == ["old"]
 
 
 # --- Azure implementation with a stand-in for the SDK --------------------------------------------

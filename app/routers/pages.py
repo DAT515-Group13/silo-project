@@ -341,4 +341,4 @@ async def _page() -> None:
 for _path in STUB_GET_PAGES:
     router.add_api_route(_path, _page, methods=["GET"])
 for _path in STUB_POST_ACTIONS:
-    router.add_api_route(_path, _page, methods=["POST"])
+    router.add_api_route(_path, _page, methods=["POST"], dependencies=[CsrfChecked])

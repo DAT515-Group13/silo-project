@@ -239,9 +239,9 @@ def _csrf_mac(secret: str, binding: str, nonce: str) -> str:
 def create_csrf_token(secret: str, binding: str) -> str:
     """Create a signed double-submit token: ``<nonce>.<HMAC(secret, binding + nonce)>``.
 
-    ``binding`` ties the token to its owner: the session ID for logged-in users, or a random
-    pre-session value for the login and register forms. The same token goes into a cookie and a
-    hidden form field.
+    ``binding`` ties the token to its owner: the session ID for logged-in users, or the constant
+    ``PRE_SESSION_BINDING`` for the login and register forms (protected by the Origin check).
+    The same token goes into a cookie and a hidden form field.
     """
     nonce = secrets.token_urlsafe(16)
     return f"{nonce}.{_csrf_mac(secret, binding, nonce)}"
@@ -257,4 +257,5 @@ def verify_csrf_token(token: str, *, secret: str, binding: str) -> bool:
     if not separator or not nonce:
         return False
     # Constant-time comparison, so response time does not reveal how much of the MAC matched.
-    return hmac.compare_digest(mac, _csrf_mac(secret, binding, nonce))
+    # Bytes, not str: compare_digest raises TypeError for a str with non-ASCII characters.
+    return hmac.compare_digest(mac.encode(), _csrf_mac(secret, binding, nonce).encode())

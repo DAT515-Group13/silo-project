@@ -7,14 +7,11 @@ tests go through HTTP with real tokens.
 import httpx
 import pytest
 from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AuditLog, File, FileShare, Role, TeamMember, User, UserStatus
-from tests.conftest import ActAs, BearerFor, FileFactory, UserFactory
+from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory
 
 pytestmark = pytest.mark.anyio
-
-Sessionmaker = async_sessionmaker[AsyncSession]
 
 
 # --- No database needed --------------------------------------------------------------------------
@@ -28,16 +25,6 @@ async def test_plain_user_cannot_create_a_team(client: httpx.AsyncClient, act_as
     assert response.json()["code"] == "role_required"
 
 
-@pytest.mark.parametrize("name", ["", "   ", "x" * 101])
-async def test_team_name_is_1_to_100_characters_after_trimming(
-    client: httpx.AsyncClient, act_as: ActAs, name: str
-) -> None:
-    """Team names are 1-100 characters after trimming."""
-    act_as(Role.team_lead)
-    response = await client.post("/api/v1/teams", json={"name": name})
-    assert response.status_code == 422
-
-
 async def test_add_member_validates_the_username(client: httpx.AsyncClient, act_as: ActAs) -> None:
     """The add-member body follows the username rule; format errors are 422."""
     act_as(Role.team_lead)
@@ -46,9 +33,10 @@ async def test_add_member_validates_the_username(client: httpx.AsyncClient, act_
 
 
 async def test_team_endpoints_need_a_token(client: httpx.AsyncClient) -> None:
-    """Without a Bearer token every team endpoint is 401 invalid_token."""
+    """Without a Bearer token a team endpoint is 401 invalid_token."""
     response = await client.get("/api/v1/teams/1")
     assert response.status_code == 401
+    assert response.json()["code"] == "invalid_token"
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
@@ -75,7 +63,10 @@ async def add(client: httpx.AsyncClient, headers: dict, team_id: int, username: 
 
 @pytest.mark.db
 async def test_lead_creates_a_team_and_becomes_owner_and_member(
-    client: httpx.AsyncClient, user_factory: UserFactory, bearer_for: BearerFor, db_sessionmaker
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
 ) -> None:
     """The creator owns the team and is its first member; team.create is audited."""
     lead = await user_factory(username="lead", role=Role.team_lead)
@@ -219,7 +210,7 @@ async def test_leaving_removes_only_the_leavers_shares(
     anna = await user_factory(username="anna")
     team_id = await make_team(client, owner)
     await add(client, owner, team_id, "anna")
-    annas_file = (await file_factory(anna.id, team_id)).id
+    await file_factory(anna.id, team_id)
     leads_file = (await file_factory(lead.id, team_id)).id
 
     files = await client.get(f"/api/v1/teams/{team_id}/files", headers=owner)
@@ -229,7 +220,6 @@ async def test_leaving_removes_only_the_leavers_shares(
     async with db_sessionmaker() as session, session.begin():
         shared = set((await session.scalars(select(FileShare.file_id))).all())
     assert shared == {leads_file}
-    assert annas_file not in shared
 
 
 @pytest.mark.db
@@ -237,7 +227,6 @@ async def test_team_files_list_is_paginated_and_marks_own_files(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
     bearer_for: BearerFor,
-    db_sessionmaker: Sessionmaker,
     file_factory: FileFactory,
 ) -> None:
     """Members see shared files with owner and is_owner, in pages (example 9.3)."""

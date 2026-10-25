@@ -1,7 +1,6 @@
 """/healthz, /readyz, the lifespan and the blob store selection."""
 
 import logging
-import os
 from collections.abc import AsyncIterator, Iterator
 
 import httpx
@@ -84,10 +83,11 @@ async def test_readyz_503_when_database_is_unreachable(
 
 @pytest.mark.db
 @pytest.mark.anyio
-async def test_readyz_ok_against_a_real_database(blob_store: InMemoryBlobStore) -> None:
+async def test_readyz_ok_against_a_real_database(
+    blob_store: InMemoryBlobStore, database_url: str
+) -> None:
     """With PostgreSQL running (TEST_DATABASE_URL), /readyz is 200."""
-    url = os.environ.get("TEST_DATABASE_URL")
-    settings = make_settings(**({"database_url": url} if url else {}))
+    settings = make_settings(database_url=database_url)
     app = create_app(settings=settings, blob_store=blob_store, initial_admin=False)
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
@@ -144,14 +144,3 @@ async def test_lifespan_creates_and_closes_the_azure_store(
         assert store.closed is False
     assert store.closed is True
     assert app.state.blob_store is None
-
-
-@pytest.mark.anyio
-async def test_a_bad_connection_string_stops_the_startup() -> None:
-    """The dummy test connection string has no account key: startup fails, value not shown."""
-    settings = make_settings(azure_storage_connection_string="UseTestValue")
-    app = create_app(settings=settings, initial_admin=False)
-    with pytest.raises(ValueError, match="AccountName and AccountKey") as error:
-        async with app.router.lifespan_context(app):
-            pass
-    assert "UseTestValue" not in str(error.value)

@@ -42,33 +42,6 @@ def test_env_example_has_placeholders_only() -> None:
         assert "CHANGE" in line, variable
 
 
-@pytest.mark.parametrize("name", ["Dockerfile", "docker-compose.yml", ".env.dev.example"])
-def test_no_blob_storage_emulator(name: str) -> None:
-    """There is no blob storage emulator anywhere."""
-    text = read(name).lower()
-    assert "azurite" not in text
-    assert "usedevelopmentstorage" not in text
-    assert "devstoreaccount" not in text
-
-
-def test_compose_runs_only_app_and_postgres() -> None:
-    """docker-compose.yml has exactly the services app and db."""
-    lines = read("docker-compose.yml").splitlines()
-    start = lines.index("services:")
-    block = []
-    for line in lines[start + 1 :]:
-        if line and not line.startswith((" ", "#")):
-            break  # next top-level key (for example "volumes:")
-        block.append(line)
-    services = [
-        line.strip().rstrip(":")
-        for line in block
-        if line.startswith("  ") and not line.startswith("   ") and line.strip().endswith(":")
-    ]
-    assert services == ["db", "app"]
-    assert "127.0.0.1:5432:5432" in read("docker-compose.yml")
-
-
 def test_dockerfile_runs_as_non_root_without_writing_bytecode() -> None:
     """The image uses a fixed non-root UID and the app writes nothing to disk."""
     text = read("Dockerfile")

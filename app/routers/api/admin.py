@@ -13,9 +13,11 @@ from fastapi import APIRouter, Query, Request
 from app.models import AuditLog, Outcome, User, UserStatus
 from app.ratelimit import limit
 from app.routers.common import (
+    MAX_ID,
     ApiUser,
     AuditCtx,
     DbSession,
+    IntId,
     PageNumber,
     PageSize,
     Store,
@@ -86,7 +88,7 @@ async def list_users(
 @router.post("/users/{user_id}/approve", status_code=204)
 @limit("admin")
 async def approve_user(
-    request: Request, user_id: int, user: ApiUser, ctx: AuditCtx, session: DbSession
+    request: Request, user_id: IntId, user: ApiUser, ctx: AuditCtx, session: DbSession
 ) -> None:
     """Approve a pending account. Other states: 409 `invalid_user_state`."""
     await users.approve_user(session, user, user_id, ctx)
@@ -96,7 +98,7 @@ async def approve_user(
 @limit("admin")
 async def reject_user(
     request: Request,
-    user_id: int,
+    user_id: IntId,
     user: ApiUser,
     ctx: AuditCtx,
     session: DbSession,
@@ -111,7 +113,7 @@ async def reject_user(
 @limit("admin")
 async def update_user(
     request: Request,
-    user_id: int,
+    user_id: IntId,
     body: AdminUserPatchIn,
     user: ApiUser,
     ctx: AuditCtx,
@@ -131,7 +133,7 @@ async def update_user(
 @router.post("/users/{user_id}/revoke-sessions", status_code=204)
 @limit("admin")
 async def revoke_user_sessions(
-    request: Request, user_id: int, user: ApiUser, ctx: AuditCtx, session: DbSession
+    request: Request, user_id: IntId, user: ApiUser, ctx: AuditCtx, session: DbSession
 ) -> None:
     """Log the user out on every device."""
     await users.revoke_user_sessions(session, user, user_id, ctx)
@@ -141,7 +143,7 @@ async def revoke_user_sessions(
 @limit("admin")
 async def delete_user(
     request: Request,
-    user_id: int,
+    user_id: IntId,
     user: ApiUser,
     ctx: AuditCtx,
     session: DbSession,
@@ -178,7 +180,7 @@ async def list_audit(
     session: DbSession,
     action: str | None = None,
     outcome: Outcome | None = None,
-    actor_id: int | None = None,
+    actor_id: Annotated[int | None, Query(ge=1, le=MAX_ID)] = None,
     target_type: str | None = None,
     target_id: str | None = None,
     from_: Annotated[datetime | None, Query(alias="from")] = None,

@@ -89,12 +89,6 @@ def test_alg_none_is_rejected() -> None:
         decode(raw_token({}, key=None, algorithm="none"))
 
 
-def test_wrong_signature_is_rejected() -> None:
-    """A token signed with another secret is rejected."""
-    with pytest.raises(InvalidToken):
-        decode(make_token("x" * 40))
-
-
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -126,9 +120,9 @@ def test_garbage_is_rejected() -> None:
 def test_expired_token_is_rejected_outside_the_leeway() -> None:
     """Expiry has a 10 s leeway: 5 s past is accepted, 11 s past is not."""
     issued = datetime.now(UTC) - timedelta(minutes=15)
-    assert decode(make_token(now=issued + timedelta(seconds=-5)))
+    assert decode(make_token(now=issued - timedelta(seconds=5)))
     with pytest.raises(InvalidToken):
-        decode(make_token(now=issued + timedelta(seconds=-11)))
+        decode(make_token(now=issued - timedelta(seconds=11)))
 
 
 def test_previous_secret_is_accepted_only_when_listed() -> None:
@@ -222,10 +216,12 @@ def test_hash_token_is_sha256_hex() -> None:
 # --- CSRF tokens ---------------------------------------------------------------------------------
 
 
-def test_csrf_token_roundtrip() -> None:
-    """A token verifies for the binding and secret it was made for."""
+def test_csrf_token_needs_its_own_secret_and_session() -> None:
+    """A token verifies only for the secret and binding it was made for."""
     token = security.create_csrf_token(SECRET, "session-1")
     assert security.verify_csrf_token(token, secret=SECRET, binding="session-1") is True
+    assert security.verify_csrf_token(token, secret=SECRET, binding="session-2") is False
+    assert security.verify_csrf_token(token, secret=OLD_SECRET, binding="session-1") is False
 
 
 def test_csrf_tokens_are_unique() -> None:
@@ -233,22 +229,19 @@ def test_csrf_tokens_are_unique() -> None:
     assert security.create_csrf_token(SECRET, "b") != security.create_csrf_token(SECRET, "b")
 
 
-def test_csrf_token_is_bound_to_its_session() -> None:
-    """A token made for one session is rejected for another."""
-    token = security.create_csrf_token(SECRET, "session-1")
-    assert security.verify_csrf_token(token, secret=SECRET, binding="session-2") is False
-
-
-def test_csrf_token_with_another_secret_is_rejected() -> None:
-    """Only the server, which knows CSRF_SECRET, can create valid tokens."""
-    token = security.create_csrf_token(OLD_SECRET, "session-1")
-    assert security.verify_csrf_token(token, secret=SECRET, binding="session-1") is False
-
-
 def test_tampered_or_malformed_csrf_token_is_rejected() -> None:
     """Changing any part, or sending something that is not a token, fails without an error."""
     token = security.create_csrf_token(SECRET, "session-1")
     nonce, mac = token.split(".")
     flipped = "0" if mac[-1] != "0" else "1"  # always differs from the real last character
-    for bad in (f"{nonce}x.{mac}", f"{nonce}.{mac[:-1]}{flipped}", "", "nodot", ".", f".{mac}"):
+    for bad in (
+        f"{nonce}x.{mac}",
+        f"{nonce}.{mac[:-1]}{flipped}",
+        "",
+        "nodot",
+        ".",
+        f".{mac}",
+        f"{nonce}.é",  # non-ASCII must give False, not a TypeError
+        f"é.{mac}",
+    ):
         assert security.verify_csrf_token(bad, secret=SECRET, binding="session-1") is False

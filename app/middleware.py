@@ -151,6 +151,9 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
     cookies useless (to be deleted). It cannot reliably edit the response, because the route may
     return a redirect object, so it leaves a note on ``request.state`` and this middleware
     applies it to whatever response comes out.
+
+    ``BaseHTTPMiddleware`` is known to be awkward with streamed request bodies: when the upload
+    routes exist, check that streaming still works (or rewrite this as a plain ASGI middleware).
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:

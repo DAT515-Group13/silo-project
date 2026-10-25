@@ -6,6 +6,8 @@ Limits: ``auth`` 10/min per IP, ``read`` 300/min per user, ``write`` 60/min per 
 
 The counters live in the memory of one process (no Redis). With N replicas the
 effective limit is up to N times higher; this is an accepted limitation (open question Q6).
+Counters are per route, so the login page and ``/api/v1/auth/login`` each have their own 10/min.
+Account lockout is what limits guessing per account.
 """
 
 from collections import defaultdict

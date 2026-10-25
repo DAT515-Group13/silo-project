@@ -4,6 +4,7 @@ Implements the quota rules, the admin endpoints with their rules (last admin, di
 revokes sessions, deleting a user deletes their blobs) and the "First admin" rule.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -21,6 +22,8 @@ from app.services import audit, sessions
 from app.services.audit import AuditAction, AuditContext
 from app.services.pagination import fetch_page
 from app.services.sessions import RevokeReason
+
+logger = logging.getLogger("silo")
 
 
 async def get_user(session: AsyncSession, user_id: int) -> User:
@@ -423,7 +426,9 @@ async def delete_user(
         NotFound: the actor is not an admin, or the user does not exist.
         LastAdmin: the target is the actor or the last active admin.
         StorageUnavailable: a blob could not be deleted; no row is deleted then, so the admin
-            can retry (blobs deleted before the failure are gone; delete is idempotent).
+            can retry (blobs deleted before the failure are gone; delete is idempotent). If the
+            rules fail in step 3 after step 2 (another admin acted in between), the files stay
+            as rows without blobs; this needs a race and is not repaired automatically.
 
     Side effects: deletes blobs and the user, writes ``user.delete`` with
     ``details.files_deleted``.
@@ -495,7 +500,10 @@ async def ensure_initial_admin(
 
     # Cheap check first, so a normal restart does not pay for an Argon2 hash.
     async with session.begin():
-        if await session.scalar(select(User.id).where(User.username == username)) is not None:
+        existing = await session.scalar(select(User.role).where(User.username == username))
+        if existing is not None:
+            if existing != Role.admin:
+                logger.warning("INITIAL_ADMIN_USERNAME belongs to an account that is not an admin")
             return False
 
     password_hash = await hash_password(settings.initial_admin_password.get_secret_value())

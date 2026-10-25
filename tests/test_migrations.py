@@ -21,9 +21,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.models import Base
+from tests.conftest import DEFAULT_TEST_DATABASE_URL
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TEST_DATABASE_URL = "postgresql+asyncpg://silo:silo@localhost:5432/silo_test"
 TABLES = set(Base.metadata.tables)
 ENUM_TYPES = {"role", "user_status", "actor_type", "outcome"}
 # Alembic cannot compare indexes built from text expressions ("created_at DESC") and reports them

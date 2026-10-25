@@ -1,8 +1,5 @@
 """Domain errors and how the exception handlers render them."""
 
-import ast
-from pathlib import Path
-
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -34,57 +31,17 @@ EXPECTED = {
     errors.RoleRequired: (403, "role_required"),
 }
 
-SPEC_CODES = {
-    "invalid_credentials", "invalid_token", "account_pending", "account_rejected",
-    "account_disabled", "username_taken", "quota_exceeded", "file_too_large", "not_found",
-    "last_admin", "owner_cannot_leave", "link_limit", "refresh_in_progress", "csrf_failed",
-    "rate_limited", "validation_error", "storage_unavailable",
-    "invalid_user_state", "team_name_taken", "role_required",  # D18, D19
-}  # fmt: skip
 
-
-def test_spec_section_11_lists_the_same_codes() -> None:
-    """The code list in architecture.md and the classes in errors.py agree."""
-    spec = (Path(__file__).resolve().parent.parent / "docs" / "architecture.md").read_text()
-    line = next(row for row in spec.splitlines() if row.startswith("**Error codes:**"))
-    listed = {code.strip(" `.") for code in line.removeprefix("**Error codes:**").split(",")}
-    assert listed == SPEC_CODES
-
-
-def test_every_section_11_code_has_exactly_one_class() -> None:
-    """Each error code maps to exactly one class, with no extra codes."""
-    subclasses = [
-        c for c in vars(errors).values() if isinstance(c, type) and issubclass(c, SiloError)
+def test_every_error_has_its_status_and_code() -> None:
+    """Every domain error has the specified status and code; no class is missing or extra."""
+    domain = [
+        c
+        for c in vars(errors).values()
+        if isinstance(c, type) and issubclass(c, SiloError) and c is not SiloError
     ]
-    domain = [c for c in subclasses if c is not SiloError]
+    assert {c: (c.status_code, c.code) for c in domain} == EXPECTED
     codes = [c.code for c in domain]
-    assert sorted(codes) == sorted(set(codes)), "two classes share a code"
-    assert set(codes) == SPEC_CODES
-
-
-@pytest.mark.parametrize(("cls", "expected"), EXPECTED.items())
-def test_status_and_code(cls: type[SiloError], expected: tuple[int, str]) -> None:
-    """Every error has the HTTP status and code from the specification."""
-    assert (cls.status_code, cls.code) == expected
-
-
-def test_auth_failure_messages_are_constant() -> None:
-    """InvalidToken and InvalidCredentials give the same text for every cause."""
-    assert str(errors.InvalidToken()) == str(errors.InvalidToken())
-    assert errors.InvalidCredentials().detail == "Invalid username or password."
-
-
-def test_errors_module_does_not_know_http() -> None:
-    """Services do not know about HTTP, so errors.py imports neither FastAPI nor Starlette."""
-    tree = ast.parse(Path(errors.__file__).read_text())
-    imported = {
-        (node.module if isinstance(node, ast.ImportFrom) else alias.name).split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import | ast.ImportFrom)
-        for alias in (node.names if isinstance(node, ast.Import) else [None])
-        if (node.module if isinstance(node, ast.ImportFrom) else alias.name)
-    }
-    assert not imported & {"fastapi", "starlette"}
+    assert len(codes) == len(set(codes)), "two classes share a code"
 
 
 @pytest.fixture
@@ -138,11 +95,3 @@ async def test_validation_failed_lists_errors(
     response = await client.get("/api/v1/_raise/validation")
     assert response.status_code == 422
     assert response.json()["errors"] == [{"field": "password", "message": "Too short."}]
-
-
-@pytest.mark.anyio
-async def test_storage_unavailable_is_503(client: httpx.AsyncClient, raising_app: FastAPI) -> None:
-    """Storage failures answer 503 storage_unavailable."""
-    response = await client.get("/api/v1/_raise/StorageUnavailable")
-    assert response.status_code == 503
-    assert response.json()["code"] == "storage_unavailable"

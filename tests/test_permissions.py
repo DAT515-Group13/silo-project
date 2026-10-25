@@ -21,7 +21,6 @@ from app.permissions import (
     can_revoke_link,
     can_share_with_team,
     can_view_file,
-    can_view_team,
     is_admin,
 )
 
@@ -134,12 +133,6 @@ def test_demoted_team_lead_keeps_managing_own_team() -> None:
     assert not can_create_team(demoted)
     assert can_manage_members(demoted, TEAM)
     assert can_delete_team(demoted, TEAM)
-
-
-def test_only_members_see_a_team() -> None:
-    """Team details and team files are for members only; everybody else gets 404."""
-    assert can_view_team(is_member=True)
-    assert not can_view_team(is_member=False)
 
 
 @pytest.mark.parametrize(

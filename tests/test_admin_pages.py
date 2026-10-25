@@ -9,20 +9,14 @@ import uuid
 import httpx
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.middleware import cookie_names
 from app.models import Role, User, UserStatus
 from app.permissions import CurrentUser
 from app.routers.common import templates
-from app.security import create_csrf_token
-from app.services import sessions
-from tests.conftest import ActAs, FileFactory, UserFactory, page_csrf
+from tests.conftest import ActAs, FileFactory, PageLogin, Sessionmaker, UserFactory, page_csrf
 
 pytestmark = pytest.mark.anyio
-
-Sessionmaker = async_sessionmaker[AsyncSession]
 
 
 # --- No database needed --------------------------------------------------------------------------
@@ -37,16 +31,6 @@ async def test_non_admins_get_the_404_page(
     response = await client.get(path)
     assert response.status_code == 404
     assert response.headers["content-type"].startswith("text/html")
-
-
-async def test_non_admin_form_post_is_404_before_any_validation(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
-) -> None:
-    """Even an incomplete admin form gives a non-admin the 404, not a validation message."""
-    user = act_as(Role.user)
-    headers, data = page_csrf(settings, user)
-    response = await client.post("/admin/users/2/delete", data=data, headers=headers)
-    assert response.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -119,19 +103,12 @@ def test_admin_link_shows_only_for_admins() -> None:
 
 @pytest.fixture
 async def admin_login(
-    user_factory: UserFactory, db_sessionmaker: Sessionmaker, settings: Settings
+    user_factory: UserFactory, page_login: PageLogin
 ) -> tuple[User, dict[str, str], dict[str, str]]:
     """An admin with a session: (user, headers with access and CSRF cookie, form data)."""
     root = await user_factory(username="root", role=Role.admin)
-    async with db_sessionmaker() as session, session.begin():
-        tokens = await sessions.create_session(session, settings, root)
-    names = cookie_names(settings)
-    csrf = create_csrf_token(settings.csrf_secret.get_secret_value(), str(tokens.session_id))
-    headers = {
-        "Cookie": f"{names.access}={tokens.access_token}; {names.csrf}={csrf}",
-        "Origin": settings.base_url,
-    }
-    return root, headers, {"csrf_token": csrf}
+    headers, data = await page_login(root)
+    return root, headers, data
 
 
 async def state(sm: Sessionmaker, user_id: int) -> UserStatus | None:

@@ -7,15 +7,13 @@ through HTTP with real tokens.
 import httpx
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AuditLog, Role, Team, User, UserStatus
-from tests.conftest import ActAs, BearerFor, FileFactory, UserFactory
+from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory
 from tests.fakes import InMemoryBlobStore
 
 pytestmark = pytest.mark.anyio
 
-Sessionmaker = async_sessionmaker[AsyncSession]
 
 ADMIN_ROUTES = [
     ("GET", "/api/v1/admin/users", None),
@@ -218,8 +216,8 @@ async def test_status_change_of_a_pending_account_is_409(
 
 @pytest.mark.db
 @pytest.mark.parametrize(
-    ("method", "suffix", "body"),
-    [("PATCH", "", {"role": "user"}), ("PATCH", "", {"status": "disabled"}), ("DELETE", "", None)],
+    ("method", "body"),
+    [("PATCH", {"role": "user"}), ("PATCH", {"status": "disabled"}), ("DELETE", None)],
 )
 async def test_admin_cannot_demote_disable_or_delete_themself(
     client: httpx.AsyncClient,
@@ -228,27 +226,38 @@ async def test_admin_cannot_demote_disable_or_delete_themself(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
     method: str,
-    suffix: str,
     body: dict | None,
 ) -> None:
     """Acting on yourself is 409 last_admin even with other admins around."""
     await user_factory(username="second", role=Role.admin)
     response = await client.request(
-        method, f"/api/v1/admin/users/{root.id}{suffix}", json=body, headers=await bearer_for(root)
+        method, f"/api/v1/admin/users/{root.id}", json=body, headers=await bearer_for(root)
     )
     assert (response.status_code, response.json()["code"]) == (409, "last_admin")
     assert await status_of(db_sessionmaker, root.id) == (Role.admin, UserStatus.active)
 
 
 @pytest.mark.db
-async def test_the_last_active_admin_is_protected(
+async def test_sole_admin_cannot_demote_themself(
+    client: httpx.AsyncClient, root: User, bearer_for: BearerFor, db_sessionmaker: Sessionmaker
+) -> None:
+    """The only admin cannot remove their own role: 409 last_admin, nothing changes."""
+    response = await client.patch(
+        f"/api/v1/admin/users/{root.id}", json={"role": "user"}, headers=await bearer_for(root)
+    )
+    assert (response.status_code, response.json()["code"]) == (409, "last_admin")
+    assert await status_of(db_sessionmaker, root.id) == (Role.admin, UserStatus.active)
+
+
+@pytest.mark.db
+async def test_admin_can_demote_another_admin(
     client: httpx.AsyncClient,
     root: User,
     user_factory: UserFactory,
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """With two admins one may demote the other; then the remaining one is the last (s. 11)."""
+    """One admin may demote another; the demoted user then loses the admin area (404)."""
     second = await user_factory(username="second", role=Role.admin)
     roots = await bearer_for(root)
     seconds = await bearer_for(second)

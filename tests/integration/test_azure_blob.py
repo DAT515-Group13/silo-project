@@ -28,9 +28,10 @@ async def stream(*chunks: bytes, then: Exception | None = None) -> AsyncIterator
         raise then
 
 
-async def exists(url: str) -> bool:
+async def status_of(url: str) -> int:
+    """HTTP status of a GET on the SAS URL; 404 means the blob is not there (403 is a bad SAS)."""
     async with httpx.AsyncClient() as client:
-        return (await client.get(url)).status_code == 200
+        return (await client.get(url)).status_code
 
 
 async def test_ping_succeeds_for_the_configured_container(azure_store: BlobStore) -> None:
@@ -93,7 +94,7 @@ async def test_aborted_upload_leaves_no_blob(azure_store: BlobStore, blob_name: 
     url = await azure_store.download_url(
         blob_name, filename="a", content_type="x/y", ttl_seconds=60
     )
-    assert not await exists(url)
+    assert await status_of(url) == 404
 
 
 async def test_sas_url_cannot_write_or_list(azure_store: BlobStore, blob_name: str) -> None:
@@ -120,7 +121,7 @@ async def test_delete_is_idempotent(azure_store: BlobStore, blob_name: str) -> N
     url = await azure_store.download_url(
         blob_name, filename="a", content_type="x/y", ttl_seconds=60
     )
-    assert not await exists(url)
+    assert await status_of(url) == 404
 
 
 async def test_list_blobs_finds_old_enough_blobs_only(
