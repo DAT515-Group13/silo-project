@@ -102,7 +102,7 @@ jobs:
     needs: [plan, build]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Runs inside the university network: only this job can reach the cluster API.
-    runs-on: [self-hosted, linux, silo]
+    runs-on: [self-hosted, linux, silo-vm]
     timeout-minutes: 15
     environment: ${{ needs.plan.outputs.target }}
     concurrency:
