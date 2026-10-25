@@ -22,6 +22,7 @@ from app.routers.common import (
     PageSize,
     SettingsDep,
     Store,
+    declared_size,
     file_out,
 )
 from app.routers.multipart import MultipartReader
@@ -30,14 +31,6 @@ from app.schemas.files import FileOut, FileRenameIn, FileTeamOut
 from app.services import files
 
 router = APIRouter(prefix="/api/v1", tags=["files"])
-
-
-def declared_size(request: Request) -> int | None:
-    """The request's Content-Length as a number, or None if missing or not a number."""
-    try:
-        return int(request.headers["content-length"])
-    except (KeyError, ValueError):
-        return None
 
 
 @router.get("/files", response_model=Page[FileOut])

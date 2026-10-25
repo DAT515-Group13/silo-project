@@ -299,6 +299,22 @@ def render_page(
 # --- Shared helpers ------------------------------------------------------------------------------
 
 
+def declared_size(request: Request) -> int | None:
+    """The request's Content-Length as a number, or None if missing or not a number.
+
+    Only a hint for uploads (a client may lie); the bytes are counted while streaming.
+    """
+    try:
+        return int(request.headers["content-length"])
+    except (KeyError, ValueError):
+        return None
+
+
+def link_url(base_url: str, token: str) -> str:
+    """The public URL of a link: ``<BASE_URL>/s/<token>``. A secret: never log it."""
+    return f"{base_url.rstrip('/')}/s/{token}"
+
+
 def client_ip(request: Request) -> str | None:
     """Return the client IP, or None if it is not a valid address.
 
