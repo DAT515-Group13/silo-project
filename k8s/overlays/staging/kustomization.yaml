@@ -7,9 +7,19 @@ generatorOptions:
   disableNameSuffixHash: true
 configMapGenerator:
   - name: silo-config
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/component: config
     literals:
-      - ENVIRONMENT=staging
-      - AZURE_CONTAINER=files
+      - APP_ENV=staging
+      - BASE_URL=http://localhost:8080
+      - AZURE_STORAGE_CONTAINER=files
+      - JWT_ISSUER=silo
+      - JWT_AUDIENCE=silo-staging
+      - INITIAL_ADMIN_USERNAME=admin
+      - MAX_FILE_SIZE_BYTES=104857600
+      - COOKIE_SECURE=true
 patches:
   # Reachable from inside the university network at http://<node-ip>:30082
   - target:

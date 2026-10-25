@@ -32,6 +32,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: silo-config # generated per environment in k8s/overlays/*
+            - secretRef:
+                name: silo-app
           env:
             - name: AZURE_STORAGE_CONNECTION_STRING
               valueFrom:
@@ -59,10 +61,10 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 96Mi
+              memory: 128Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 512Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
