@@ -52,11 +52,11 @@ def test_long_filename_keeps_its_extension() -> None:
     assert result.endswith(".pdf")
 
 
-def test_rename_schema_sanitizes_and_forbids_extra_fields() -> None:
-    """The rename body cleans the name and rejects unknown fields."""
+def test_rename_schema_cleans_the_name() -> None:
+    """The rename body uses the same cleaning (extra="forbid" is tested in test_schemas.py)."""
     assert FileRenameIn(filename="../a.txt").filename == "a.txt"
     with pytest.raises(ValidationError):
-        FileRenameIn(filename="a.txt", owner_id=1)  # type: ignore[call-arg]
+        FileRenameIn(filename="..")
 
 
 @pytest.mark.parametrize(
@@ -117,17 +117,19 @@ def test_zip_signature_yields_to_a_more_precise_client_type() -> None:
 
 
 @pytest.mark.parametrize(
-    "stored",
-    ["text/html", "image/svg+xml", "application/xhtml+xml", "application/rss+xml", "text/xml"],
+    ("stored", "expected"),
+    [
+        ("text/html", "application/octet-stream"),
+        ("image/svg+xml", "application/octet-stream"),
+        ("application/xhtml+xml", "application/octet-stream"),
+        ("application/rss+xml", "application/octet-stream"),
+        ("text/xml", "application/octet-stream"),
+        ("application/pdf", "application/pdf"),  # harmless types are kept
+    ],
 )
-def test_risky_types_download_as_octet_stream(stored: str) -> None:
-    """Types a browser would render are never sent as such."""
-    assert download_content_type(stored) == "application/octet-stream"
-
-
-def test_safe_types_are_kept_for_download() -> None:
-    """Harmless types keep their stored value."""
-    assert download_content_type("application/pdf") == "application/pdf"
+def test_download_type_never_lets_the_browser_render(stored: str, expected: str) -> None:
+    """Types a browser would render are sent as octet-stream; others keep their value."""
+    assert download_content_type(stored) == expected
 
 
 # --- Upload stream helpers -----------------------------------------------------------------------
