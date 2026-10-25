@@ -9,7 +9,15 @@ import pytest
 from sqlalchemy import func, select, update
 
 from app.models import AuditLog, File, FileShare, Role, TeamMember, User, UserStatus
-from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory
+from tests.conftest import (
+    ActAs,
+    BearerFor,
+    FileFactory,
+    Sessionmaker,
+    UserFactory,
+    add_member,
+    make_team,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -42,23 +50,10 @@ async def test_team_endpoints_need_a_token(client: httpx.AsyncClient) -> None:
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 
-async def make_team(client: httpx.AsyncClient, headers: dict, name: str = "Design") -> int:
-    response = await client.post("/api/v1/teams", json={"name": name}, headers=headers)
-    assert response.status_code == 201, response.text
-    return response.json()["id"]
-
-
 async def member_names(client: httpx.AsyncClient, headers: dict, team_id: int) -> list[str]:
     response = await client.get(f"/api/v1/teams/{team_id}", headers=headers)
     assert response.status_code == 200, response.text
     return [m["username"] for m in response.json()["members"]]
-
-
-async def add(client: httpx.AsyncClient, headers: dict, team_id: int, username: str) -> int:
-    response = await client.post(
-        f"/api/v1/teams/{team_id}/members", json={"username": username}, headers=headers
-    )
-    return response.status_code
 
 
 @pytest.mark.db
@@ -110,7 +105,7 @@ async def test_non_members_get_404_everywhere(
     files = await client.get(f"/api/v1/teams/{team_id}/files", headers=stranger)
     assert files.status_code == 404
     assert (await client.delete(f"/api/v1/teams/{team_id}", headers=stranger)).status_code == 404
-    assert await add(client, stranger, team_id, "eve") == 404
+    assert await add_member(client, stranger, team_id, "eve") == 404
     assert (await client.get("/api/v1/teams/999999", headers=stranger)).status_code == 404
 
 
@@ -129,7 +124,7 @@ async def test_add_member_always_answers_204(
     team_id = await make_team(client, owner)
 
     for username in ("nobody", "pending1", "gone", "anna", "anna", "ANNA"):
-        assert await add(client, owner, team_id, username) == 204
+        assert await add_member(client, owner, team_id, username) == 204
     assert await member_names(client, owner, team_id) == ["anna", "lead"]
 
 
@@ -144,10 +139,10 @@ async def test_only_the_owner_adds_members(
     admin = await bearer_for(await user_factory(username="root", role=Role.admin))
     await user_factory(username="bob")
     team_id = await make_team(client, owner)
-    await add(client, owner, team_id, "anna")
+    await add_member(client, owner, team_id, "anna")
 
-    assert await add(client, member, team_id, "bob") == 404
-    assert await add(client, admin, team_id, "bob") == 404
+    assert await add_member(client, member, team_id, "bob") == 404
+    assert await add_member(client, admin, team_id, "bob") == 404
     assert await member_names(client, owner, team_id) == ["anna", "lead"]
 
 
@@ -161,7 +156,7 @@ async def test_owner_cannot_leave_but_members_can(
     anna = await user_factory(username="anna")
     member = await bearer_for(anna)
     team_id = await make_team(client, owner)
-    await add(client, owner, team_id, "anna")
+    await add_member(client, owner, team_id, "anna")
 
     leave_owner = await client.delete(f"/api/v1/teams/{team_id}/members/{lead.id}", headers=owner)
     assert leave_owner.status_code == 409
@@ -185,8 +180,8 @@ async def test_a_member_cannot_remove_another_member(
     anna = await user_factory(username="anna")
     bob = await user_factory(username="bob")
     team_id = await make_team(client, owner)
-    await add(client, owner, team_id, "anna")
-    await add(client, owner, team_id, "bob")
+    await add_member(client, owner, team_id, "anna")
+    await add_member(client, owner, team_id, "bob")
 
     by_anna = await client.delete(
         f"/api/v1/teams/{team_id}/members/{bob.id}", headers=await bearer_for(anna)
@@ -209,7 +204,7 @@ async def test_leaving_removes_only_the_leavers_shares(
     owner = await bearer_for(lead)
     anna = await user_factory(username="anna")
     team_id = await make_team(client, owner)
-    await add(client, owner, team_id, "anna")
+    await add_member(client, owner, team_id, "anna")
     await file_factory(anna.id, team_id)
     leads_file = (await file_factory(lead.id, team_id)).id
 
@@ -234,7 +229,7 @@ async def test_team_files_list_is_paginated_and_marks_own_files(
     owner = await bearer_for(lead)
     anna = await user_factory(username="anna")
     team_id = await make_team(client, owner)
-    await add(client, owner, team_id, "anna")
+    await add_member(client, owner, team_id, "anna")
     for _ in range(3):
         await file_factory(lead.id, team_id)
     await file_factory(lead.id)  # not shared
@@ -265,7 +260,7 @@ async def test_demoted_lead_keeps_managing_own_team(
     async with db_sessionmaker() as session, session.begin():
         await session.execute(update(User).where(User.id == lead.id).values(role=Role.user))
 
-    assert await add(client, owner, team_id, "anna") == 204
+    assert await add_member(client, owner, team_id, "anna") == 204
     assert await member_names(client, owner, team_id) == ["anna", "lead"]
     new = await client.post("/api/v1/teams", json={"name": "Other"}, headers=owner)
     assert new.status_code == 403
@@ -285,7 +280,7 @@ async def test_owner_and_admin_delete_a_team_but_members_cannot(
     member = await bearer_for(await user_factory(username="anna"))
     admin = await bearer_for(await user_factory(username="root", role=Role.admin))
     team_id = await make_team(client, owner)
-    await add(client, owner, team_id, "anna")
+    await add_member(client, owner, team_id, "anna")
     await file_factory(lead.id, team_id)
 
     assert (await client.delete(f"/api/v1/teams/{team_id}", headers=member)).status_code == 404
