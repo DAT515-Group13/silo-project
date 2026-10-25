@@ -1,10 +1,9 @@
 """HTML pages and form actions.
 
-Implemented here: the start page, login, register, logout, the account page and a placeholder
-file list. Team pages are in ``team_pages.py``, admin pages in ``admin_pages.py``. The other file
-pages are still skeletons that answer 501 until B fills them in. Each form action calls the same
-service function as its JSON counterpart. Every POST is protected by ``CsrfChecked`` (CSRF token
-and Origin check).
+Implemented here: the start page, login, register, logout and the account page. Team pages are
+in ``team_pages.py``, file pages in ``file_pages.py`` and admin pages in ``admin_pages.py``. Each
+form action calls the same service function as its JSON counterpart. Every POST is protected by
+``CsrfChecked`` (CSRF token and Origin check).
 """
 
 import uuid
@@ -32,7 +31,6 @@ from app.routers.common import (
     PageUser,
     SettingsDep,
     client_ip,
-    not_implemented,
     render_page,
     request_id,
     see_other,
@@ -293,52 +291,3 @@ async def revoke_session_submit(
         return see_other("/account")
     mark_logged_out(request)
     return see_other("/login")
-
-
-# --- File pages ------------------------------------------------------------------------------
-
-
-@router.get("/files")
-@limit("read")
-async def files_page(
-    request: Request, user: PageUser, session: DbSession, settings: SettingsDep
-) -> Response:
-    """Placeholder of the file list: the storage usage and a note that files are coming.
-
-    Login and the start page redirect here, so it must be a real page and not a 501 error.
-    """
-    account = await users.get_user(session, user.id)
-    return render_page(
-        request,
-        settings,
-        user,
-        "files.html",
-        {"used_bytes": account.used_bytes, "quota_bytes": settings.quota_for_role(account.role)},
-    )
-
-
-# Skeletons of B's other file pages: not implemented yet.
-STUB_GET_PAGES = [
-    "/files/{file_id}",
-    "/files/{file_id}/download",
-]
-
-STUB_POST_ACTIONS = [
-    "/files/upload",
-    "/files/{file_id}/rename",
-    "/files/{file_id}/delete",
-    "/files/{file_id}/share",
-    "/files/{file_id}/unshare",
-    "/files/{file_id}/links",
-    "/links/{link_id}/revoke",
-]
-
-
-async def _page() -> None:
-    not_implemented()
-
-
-for _path in STUB_GET_PAGES:
-    router.add_api_route(_path, _page, methods=["GET"])
-for _path in STUB_POST_ACTIONS:
-    router.add_api_route(_path, _page, methods=["POST"], dependencies=[CsrfChecked])

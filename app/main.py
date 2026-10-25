@@ -6,6 +6,7 @@ request ID, security header and trusted host middleware are added in phase 6.
 """
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import quote
@@ -22,7 +23,7 @@ from app.db import create_engine, create_session_factory
 from app.errors import InvalidToken, RateLimited, SiloError, ValidationFailed
 from app.middleware import AuthCookieMiddleware, clear_auth_cookies
 from app.ratelimit import limiter, rate_limit_handler, reset_limits
-from app.routers import admin_pages, health, pages, public, team_pages
+from app.routers import admin_pages, file_pages, health, pages, public, team_pages
 from app.routers.api import api_router
 from app.routers.common import APP_DIR, templates
 from app.services.users import ensure_initial_admin
@@ -34,6 +35,22 @@ logger = logging.getLogger("silo")
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
+class RedactLinkTokens(logging.Filter):
+    """Hide public link tokens in uvicorn's access log.
+
+    Uvicorn logs the request path of every request, and for ``/s/<token>`` that path is the
+    secret that lets anybody download the file. The log line becomes ``/s/[redacted]``.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Uvicorn's access records have the arguments (client, method, path, http_version, status).
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            redacted = re.sub(r"^/s/[^?]*", "/s/[redacted]", args[2])
+            record.args = (*args[:2], redacted, *args[3:])
+        return True
+
+
 def configure_logging() -> None:
     """Send the app's log records (logger ``silo``, INFO and up) to stderr.
 
@@ -42,6 +59,10 @@ def configure_logging() -> None:
     logger, where nothing is attached in production and pytest's ``caplog`` listens in tests.
     The handler is added once, however many apps a process creates (the tests create many).
     """
+    # Added once, however many apps a process creates.
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactLinkTokens) for f in access_logger.filters):
+        access_logger.addFilter(RedactLinkTokens())
     if any(getattr(handler, "_silo", False) for handler in logger.handlers):
         return
     handler = logging.StreamHandler()
@@ -245,5 +266,6 @@ def create_app(
     app.include_router(public.router)
     app.include_router(pages.router)
     app.include_router(team_pages.router)
+    app.include_router(file_pages.router)
     app.include_router(admin_pages.router)
     return app
