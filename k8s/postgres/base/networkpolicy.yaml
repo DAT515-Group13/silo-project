@@ -1,0 +1,21 @@
+# Only the app and the migration job of the same namespace may reach PostgreSQL.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [silo, silo-migrate]
+      ports:
+        - port: 5432
+          protocol: TCP
+  egress: []   # PostgreSQL never needs to call out
