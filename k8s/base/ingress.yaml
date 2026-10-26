@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: silo
+  labels:
+    app.kubernetes.io/name: silo
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [HOST_PLACEHOLDER]
+      secretName: silo-tls
+  rules:
+    - host: HOST_PLACEHOLDER
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: silo
+                port:
+                  name: http

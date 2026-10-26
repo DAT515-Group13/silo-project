@@ -1,0 +1,12 @@
+service:
+  spec:
+    type: NodePort
+ports:
+  web:
+    expose:
+      default: false        # no plain HTTP from outside
+  websecure:
+    nodePort: 30443
+ingressClass:
+  enabled: true
+  isDefaultClass: true
