@@ -19,12 +19,24 @@ services:
       timeout: 3s
       retries: 10
 
-  app:
+  # One-shot: creates or updates the schema, then exits. The app does not migrate itself, and on
+  # an empty database its startup (first admin) fails without the tables.
+  migrate:
     build: .
+    image: silo-app
     env_file: .env.dev
+    command: ["alembic", "upgrade", "head"]
     depends_on:
       db:
         condition: service_healthy
+
+  app:
+    build: .
+    image: silo-app
+    env_file: .env.dev
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
 
