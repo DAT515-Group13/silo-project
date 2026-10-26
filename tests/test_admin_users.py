@@ -238,18 +238,6 @@ async def test_admin_cannot_demote_disable_or_delete_themself(
 
 
 @pytest.mark.db
-async def test_sole_admin_cannot_demote_themself(
-    client: httpx.AsyncClient, root: User, bearer_for: BearerFor, db_sessionmaker: Sessionmaker
-) -> None:
-    """The only admin cannot remove their own role: 409 last_admin, nothing changes."""
-    response = await client.patch(
-        f"/api/v1/admin/users/{root.id}", json={"role": "user"}, headers=await bearer_for(root)
-    )
-    assert (response.status_code, response.json()["code"]) == (409, "last_admin")
-    assert await status_of(db_sessionmaker, root.id) == (Role.admin, UserStatus.active)
-
-
-@pytest.mark.db
 async def test_admin_can_demote_another_admin(
     client: httpx.AsyncClient,
     root: User,
