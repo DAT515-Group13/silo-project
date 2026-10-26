@@ -184,7 +184,8 @@ async def test_empty_filename_shows_a_message(
 ) -> None:
     """Submitting the form without choosing a file is a 422 with a readable message."""
     login = await page_login(await user_factory("anna"))
-    response = await upload(client, login, b"", "")
+    # A browser sends filename="" (httpx would leave the parameter out); a space is cleaned to "".
+    response = await upload(client, login, b"", " ")
     assert response.status_code == 422
     assert "Filename must not be empty." in response.text
 
@@ -233,7 +234,7 @@ async def test_admin_deletes_a_file_from_the_admin_list(
 
     The quota and audit side of an admin delete are checked in test_files.py.
     """
-    owner = await user_factory("owner")
+    owner = await user_factory("owner", used_bytes=10)  # the delete gives these bytes back
     stranger = await page_login(await user_factory("stranger"))
     admin = await page_login(await user_factory("boss", role=Role.admin))
     file = await file_factory(owner.id)

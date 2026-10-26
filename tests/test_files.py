@@ -88,7 +88,7 @@ async def test_permission_matrix_for_a_file(
     bearer_for: BearerFor,
 ) -> None:
     """Owner sees and changes; a stranger gets 404 everywhere; an admin may only delete."""
-    owner = await user_factory("owner")
+    owner = await user_factory("owner", used_bytes=10)  # the delete gives these bytes back
     stranger = await user_factory("stranger")
     admin = await user_factory("boss", role=Role.admin)
     file = await file_factory(owner.id)
