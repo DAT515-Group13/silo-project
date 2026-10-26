@@ -13,25 +13,26 @@ configMapGenerator:
         app.kubernetes.io/component: config
     literals:
       - APP_ENV=prod
-      - BASE_URL=http://localhost:8080
+      - BASE_URL=https://prod.152.94.171.92.nip.io:30443
       - AZURE_STORAGE_CONTAINER=files
       - JWT_ISSUER=silo
       - JWT_AUDIENCE=silo-prod
       - INITIAL_ADMIN_USERNAME=admin
       - MAX_FILE_SIZE_BYTES=104857600
       - COOKIE_SECURE=true
+      - FORWARDED_ALLOW_IPS=10.244.0.0/16
 patches:
-  # Reachable from inside the university network at http://<node-ip>:30083
+  # Reached through Traefik at https://prod.152.94.171.92.nip.io:30443
   - target:
-      kind: Service
+      kind: Ingress
       name: silo
     patch: |-
-      - op: add
-        path: /spec/type
-        value: NodePort
-      - op: add
-        path: /spec/ports/0/nodePort
-        value: 30083
+      - op: replace
+        path: /spec/rules/0/host
+        value: prod.152.94.171.92.nip.io
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: prod.152.94.171.92.nip.io
   # Two replicas in prod so a rolling update or a node loss does not cause downtime
   - target:
       kind: Deployment
@@ -40,3 +41,4 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 2
+        
