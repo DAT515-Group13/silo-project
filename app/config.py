@@ -6,12 +6,15 @@ never its value, so a misconfigured secret does not end up in logs.
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import SecretStr, model_validator
+from pydantic import PositiveInt, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.errors import ValidationFailed
 from app.models import Role
 from app.schemas.common import Username
+from app.security import check_password_policy
 
 _GIB = 1024**3
 _MIB = 1024**2
@@ -19,6 +22,8 @@ _MIN_SECRET_BYTES = 32
 
 # Environments where the safe settings are enforced.
 _STRICT_ENVS = {"staging", "prod"}
+# Marks the values to replace in .env.dev.example.
+_PLACEHOLDER_MARK = "CHANGE"
 
 
 class Settings(BaseSettings):
@@ -37,9 +42,9 @@ class Settings(BaseSettings):
     jwt_secret_previous: SecretStr | None = None
     jwt_issuer: str
     jwt_audience: str
-    jwt_access_minutes: int = 15
-    refresh_token_days: int = 7
-    session_max_days: int = 30
+    jwt_access_minutes: PositiveInt = 15
+    refresh_token_days: PositiveInt = 7
+    session_max_days: PositiveInt = 30
     csrf_secret: SecretStr
     cookie_secure: bool = True
 
@@ -47,18 +52,41 @@ class Settings(BaseSettings):
     initial_admin_username: Username
     initial_admin_password: SecretStr
 
-    quota_user_bytes: int = 1 * _GIB
-    quota_team_lead_bytes: int = 5 * _GIB
-    quota_admin_bytes: int = 10 * _GIB
-    max_file_size_bytes: int
-    upload_chunk_bytes: int = 4 * _MIB
-    sas_url_ttl_seconds: int = 300
-    public_link_max_hours: int = 168
+    quota_user_bytes: PositiveInt = 1 * _GIB
+    quota_team_lead_bytes: PositiveInt = 5 * _GIB
+    quota_admin_bytes: PositiveInt = 10 * _GIB
+    max_file_size_bytes: PositiveInt
+    upload_chunk_bytes: PositiveInt = 4 * _MIB
+    sas_url_ttl_seconds: PositiveInt = 300
+    public_link_max_hours: PositiveInt = 168
 
-    login_max_failed: int = 5
-    login_lock_minutes: int = 15
-    password_min_length: int = 12
+    login_max_failed: PositiveInt = 5
+    login_lock_minutes: PositiveInt = 15
+    password_min_length: PositiveInt = 12
     enable_docs: bool = False
+
+    @field_validator("base_url")
+    @classmethod
+    def _check_base_url(cls, value: str) -> str:
+        """BASE_URL is an origin (scheme and host, optional port), without a trailing slash.
+
+        A path would give link URLs the router does not serve, and the Origin check compares
+        only the origin.
+        """
+        parts = urlsplit(value.strip())
+        try:
+            parts.port  # noqa: B018 - raises ValueError for a bad port
+        except ValueError:
+            raise ValueError("BASE_URL has an invalid port.") from None
+        valid = (
+            parts.scheme in ("http", "https")
+            and parts.hostname
+            and parts.path in ("", "/")
+            and not (parts.query or parts.fragment or parts.username or parts.password)
+        )
+        if not valid:
+            raise ValueError("BASE_URL must be an origin such as https://silo.example.")
+        return value.strip().rstrip("/")
 
     @model_validator(mode="after")
     def _check_startup_rules(self) -> "Settings":
@@ -82,8 +110,34 @@ class Settings(BaseSettings):
         if self.jwt_secret.get_secret_value() == self.csrf_secret.get_secret_value():
             problems.append("JWT_SECRET and CSRF_SECRET must be different.")
 
+        # The initial admin password must follow the same policy as every other password.
+        try:
+            check_password_policy(
+                self.initial_admin_password.get_secret_value(),
+                self.initial_admin_username,
+                self.password_min_length,
+            )
+        except ValidationFailed:
+            problems.append("INITIAL_ADMIN_PASSWORD does not meet the password policy.")
+
         # Staging and prod must not run with development conveniences.
         if self.app_env in _STRICT_ENVS:
+            # Placeholders copied from .env.dev.example are long enough to pass the checks above.
+            placeholders = {
+                "DATABASE_URL": self.database_url,
+                "AZURE_STORAGE_CONNECTION_STRING": self.azure_storage_connection_string,
+                "JWT_SECRET": self.jwt_secret,
+                "JWT_SECRET_PREVIOUS": self.jwt_secret_previous,
+                "CSRF_SECRET": self.csrf_secret,
+                "INITIAL_ADMIN_PASSWORD": self.initial_admin_password,
+            }
+            for name, secret in placeholders.items():
+                if secret is not None and _PLACEHOLDER_MARK in secret.get_secret_value():
+                    problems.append(f"{name} still contains the placeholder {_PLACEHOLDER_MARK}.")
+            if _PLACEHOLDER_MARK in self.azure_storage_container:
+                problems.append(
+                    f"AZURE_STORAGE_CONTAINER still contains the placeholder {_PLACEHOLDER_MARK}."
+                )
             if not self.cookie_secure:
                 problems.append(f"COOKIE_SECURE must be true when APP_ENV is {self.app_env}.")
             if self.enable_docs:

@@ -14,7 +14,7 @@ SENSITIVE = [
     SECRET_B,
     "postgresql+asyncpg://u:p@h/d",
     "AccountKey=abc",
-    "adminpw",
+    "admin-password-123",
     "short",  # invalid input values must not be echoed either
     "not-a-number",
 ]
@@ -30,7 +30,7 @@ VALID_ENV = {
     "JWT_AUDIENCE": "silo-local",
     "CSRF_SECRET": SECRET_B,
     "INITIAL_ADMIN_USERNAME": "Admin",
-    "INITIAL_ADMIN_PASSWORD": "adminpw",
+    "INITIAL_ADMIN_PASSWORD": "admin-password-123",
     "MAX_FILE_SIZE_BYTES": "1048576",
     "COOKIE_SECURE": "false",
 }
@@ -166,3 +166,77 @@ def test_quota_for_role(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.quota_for_role(Role.user) == 10
     assert s.quota_for_role(Role.team_lead) == 5 * 1024**3
     assert s.quota_for_role(Role.admin) == 10 * 1024**3
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SAS_URL_TTL_SECONDS",
+        "LOGIN_MAX_FAILED",
+        "LOGIN_LOCK_MINUTES",
+        "UPLOAD_CHUNK_BYTES",
+        "MAX_FILE_SIZE_BYTES",
+        "JWT_ACCESS_MINUTES",
+        "PUBLIC_LINK_MAX_HOURS",
+        "QUOTA_USER_BYTES",
+    ],
+)
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_numbers_must_be_positive(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
+    """Zero or negative numbers would break downloads, login or uploads at runtime."""
+    assert name.lower() in error_text(monkeypatch, **{name: value})
+
+
+@pytest.mark.parametrize("password", ["short", "admin"])
+def test_initial_admin_password_follows_the_policy(
+    monkeypatch: pytest.MonkeyPatch, password: str
+) -> None:
+    """The first admin gets no weaker password than anybody else (too short, or the username)."""
+    text = error_text(monkeypatch, INITIAL_ADMIN_PASSWORD=password, INITIAL_ADMIN_USERNAME="admin")
+    assert "INITIAL_ADMIN_PASSWORD" in text
+    assert password not in text.replace("INITIAL_ADMIN_PASSWORD", "")
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "JWT_SECRET",
+        "CSRF_SECRET",
+        "INITIAL_ADMIN_PASSWORD",
+        "DATABASE_URL",
+        "AZURE_STORAGE_CONTAINER",
+    ],
+)
+def test_placeholders_are_refused_in_staging_and_prod(
+    monkeypatch: pytest.MonkeyPatch, env: str, variable: str
+) -> None:
+    """Values copied from .env.dev.example (they contain CHANGE) must not run in staging/prod."""
+    safe = {"APP_ENV": env, "COOKIE_SECURE": "true", "BASE_URL": "https://silo.example"}
+    placeholder = "CHANGE-me-" + "x" * 40
+    assert variable in error_text(monkeypatch, **safe, **{variable: placeholder})
+
+
+def test_placeholders_are_allowed_locally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local development may keep the example values."""
+    assert make(monkeypatch, JWT_SECRET="CHANGE-me-" + "x" * 40)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://silo.example/app",
+        "silo.example",
+        "ftp://silo.example",
+        "https://x?a=1",
+        "http://h:99999",
+    ],
+)
+def test_base_url_must_be_an_origin(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """A path, query, other scheme or bad port would break link URLs and the Origin check."""
+    assert "base_url" in error_text(monkeypatch, BASE_URL=value).lower()
+
+
+def test_base_url_trailing_slash_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Link URLs are built as BASE_URL + /s/..., so no double slash."""
+    assert make(monkeypatch, BASE_URL="http://localhost:8000/").base_url == "http://localhost:8000"

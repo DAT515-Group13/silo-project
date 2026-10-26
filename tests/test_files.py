@@ -5,13 +5,13 @@ tests go through HTTP with real tokens and check the permission matrix of sectio
 is always 404, never 403.
 """
 
-import uuid
-
 import httpx
 import pytest
 from sqlalchemy import select
 
+from app.config import Settings
 from app.models import AuditLog, Role, User
+from app.services.files import MULTIPART_MARGIN_BYTES
 from tests.conftest import (
     ActAs,
     BearerFor,
@@ -27,19 +27,6 @@ pytestmark = pytest.mark.anyio
 
 
 # --- No database needed --------------------------------------------------------------------------
-
-
-async def test_file_endpoints_need_a_token(client: httpx.AsyncClient) -> None:
-    """Without a Bearer token every file endpoint is 401 invalid_token."""
-    for method, path in [
-        ("GET", "/api/v1/files"),
-        ("POST", "/api/v1/files"),
-        ("GET", f"/api/v1/files/{uuid.uuid4()}"),
-        ("DELETE", f"/api/v1/files/{uuid.uuid4()}"),
-    ]:
-        response = await client.request(method, path)
-        assert response.status_code == 401, (method, path)
-        assert response.json()["code"] == "invalid_token"
 
 
 async def test_upload_must_be_multipart(client: httpx.AsyncClient, act_as: ActAs) -> None:
@@ -66,6 +53,31 @@ async def test_upload_without_a_chosen_file_is_422(
         "/api/v1/files", files={"file": ("", b"", "application/octet-stream")}
     )
     assert response.status_code == 422
+
+
+async def test_huge_content_length_is_413_without_storing_anything(
+    client: httpx.AsyncClient,
+    act_as: ActAs,
+    settings: Settings,
+    blob_store: InMemoryBlobStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upload step 1: a Content-Length far above the limit is refused before any blob work.
+
+    The denied-upload audit entry cannot be written without a database; that is only logged.
+    """
+    settings.max_file_size_bytes = 1000
+
+    async def must_not_run(*args: object, **kwargs: object) -> int:
+        raise AssertionError("the upload reached blob storage")
+
+    monkeypatch.setattr(blob_store, "upload_stream", must_not_run)
+    act_as(Role.user)
+    too_big = b"x" * (1000 + MULTIPART_MARGIN_BYTES + 1)
+    response = await client.post("/api/v1/files", files={"file": ("a.bin", too_big)})
+    assert response.status_code == 413
+    assert response.json()["code"] == "file_too_large"
+    assert blob_store.blobs == {}
 
 
 async def test_sort_and_scope_are_validated(client: httpx.AsyncClient, act_as: ActAs) -> None:

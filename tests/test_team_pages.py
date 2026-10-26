@@ -29,18 +29,6 @@ async def test_plain_user_gets_403_when_creating_a_team(
     assert "Your role does not allow this action." in response.text
 
 
-async def test_create_team_needs_a_csrf_token(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
-) -> None:
-    """Every page POST needs the CSRF token."""
-    act_as(Role.team_lead)
-    response = await client.post(
-        "/teams", data={"name": "Design"}, headers={"Origin": settings.base_url}
-    )
-    assert response.status_code == 403
-    assert "CSRF validation failed." in response.text
-
-
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 

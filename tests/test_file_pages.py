@@ -76,25 +76,6 @@ async def test_upload_checks_the_origin(
     assert response.status_code == 403
 
 
-async def test_other_file_forms_need_csrf(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
-) -> None:
-    """Rename, delete, share, unshare and the link forms use the normal CSRF protection."""
-    act_as(Role.user)
-    file_id = "00000000-0000-0000-0000-000000000001"
-    for path in [
-        f"/files/{file_id}/{a}" for a in ("rename", "delete", "share", "unshare", "links")
-    ]:
-        response = await client.post(
-            path,
-            data={"filename": "x", "team_id": "1", "expires_in_hours": "24"},
-            headers={"Origin": settings.base_url},
-        )
-        assert response.status_code == 403, path
-    revoke = await client.post("/links/1/revoke", headers={"Origin": settings.base_url})
-    assert revoke.status_code == 403
-
-
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 db = pytest.mark.db

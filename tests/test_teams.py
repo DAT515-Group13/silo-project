@@ -40,17 +40,11 @@ async def test_add_member_validates_the_username(client: httpx.AsyncClient, act_
     assert response.status_code == 422
 
 
-async def test_team_endpoints_need_a_token(client: httpx.AsyncClient) -> None:
-    """Without a Bearer token a team endpoint is 401 invalid_token."""
-    response = await client.get("/api/v1/teams/1")
-    assert response.status_code == 401
-    assert response.json()["code"] == "invalid_token"
-
-
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 
 async def member_names(client: httpx.AsyncClient, headers: dict, team_id: int) -> list[str]:
+    """Usernames of the team's members (sorted by the API), read as the user of ``headers``."""
     response = await client.get(f"/api/v1/teams/{team_id}", headers=headers)
     assert response.status_code == 200, response.text
     return [m["username"] for m in response.json()["members"]]

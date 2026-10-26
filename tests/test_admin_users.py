@@ -42,6 +42,31 @@ async def test_non_admins_get_404_on_every_admin_endpoint(
     assert response.json()["code"] == "not_found"
 
 
+@pytest.mark.parametrize("role", [Role.user, Role.team_lead])
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("PATCH", "/api/v1/admin/users/2", {"status": "pending"}),
+        ("PATCH", "/api/v1/admin/users/2", {"x": 1}),
+        ("POST", "/api/v1/admin/users/2/reject", {"reason": "x" * 501}),
+        ("GET", "/api/v1/admin/users?status=bogus", None),
+        ("GET", "/api/v1/admin/users?page=0", None),
+        ("GET", "/api/v1/admin/audit?outcome=bogus", None),
+        ("GET", "/api/v1/admin/audit?actor_id=99999999999", None),
+        ("GET", "/api/v1/admin/files?size=1000", None),
+        ("DELETE", "/api/v1/admin/users/0", None),
+    ],
+)
+async def test_invalid_input_from_a_non_admin_is_still_404(
+    client: httpx.AsyncClient, act_as: ActAs, role: Role, method: str, path: str, body: dict | None
+) -> None:
+    """Validation must not reveal the admin API: the 404 comes before any 422."""
+    act_as(role)
+    response = await client.request(method, path, json=body)
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
 @pytest.mark.parametrize("body", [{"status": "pending"}, {"status": "rejected"}, {"x": 1}])
 async def test_patch_only_switches_between_active_and_disabled(
     client: httpx.AsyncClient, act_as: ActAs, body: dict

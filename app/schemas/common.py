@@ -72,18 +72,3 @@ class Page[T](BaseModel):
     total: int
     page: int
     size: int
-
-
-class ErrorFieldOut(BaseModel):
-    """One field-level problem inside a validation error."""
-
-    field: str
-    message: str
-
-
-class ErrorOut(BaseModel):
-    """Error body of every endpoint; only used to document OpenAPI responses."""
-
-    detail: str
-    code: str
-    errors: list[ErrorFieldOut] | None = None

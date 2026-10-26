@@ -81,25 +81,34 @@ async def test_eleventh_request_in_a_minute_is_429_per_ip(app: FastAPI) -> None:
 
 
 async def test_a_new_app_starts_with_empty_counters() -> None:
-    """create_app resets the counters, so tests (and restarts) never inherit them."""
+    """create_app resets the counters, so tests (and restarts) never inherit them.
+
+    Both apps use the same route function, hence the same bucket: only the reset can make the
+    second app start from zero.
+    """
+
+    async def _limited(request: Request) -> dict[str, bool]:
+        return {"ok": True}
+
+    route = limit("auth")(_limited)
     for _ in range(2):
         app = create_app(make_settings(), InMemoryBlobStore(), initial_admin=False)
-        add_limited_route(app, "auth")
+        app.get("/api/v1/_limited")(route)
         async with client_from(app) as client:
             for _ in range(10):
                 assert (await client.get("/api/v1/_limited")).status_code == 200
+            assert (await client.get("/api/v1/_limited")).status_code == 429
 
 
-@pytest.mark.db
-async def test_the_eleventh_login_attempt_is_429(client: httpx.AsyncClient) -> None:
-    """On the real login endpoint: 10 attempts per minute and IP, then 429."""
-    body = {"username": "nobody", "password": "wrong-password-123"}
-    for _ in range(10):
-        assert (await client.post("/api/v1/auth/login", json=body)).status_code == 401
-    response = await client.post("/api/v1/auth/login", json=body)
-    assert response.status_code == 429
-    assert response.json()["code"] == "rate_limited"
-    assert "retry-after" in response.headers
+def test_both_login_routes_use_the_auth_limit() -> None:
+    """The login page and the login API are limited to 10 a minute per IP (class `auth`).
+
+    The 429 itself is tested with a stand-in route above; this checks that the real routes carry
+    the limit. It reads slowapi's registry, which is pinned in pyproject.toml.
+    """
+    registered = ratelimit.limiter._route_limits
+    for name in ("app.routers.api.auth.login", "app.routers.pages.login_submit"):
+        assert [str(limit.limit) for limit in registered[name]] == ["10 per 1 minute"], name
 
 
 async def test_concurrency_guard_allows_three_at_a_time() -> None:

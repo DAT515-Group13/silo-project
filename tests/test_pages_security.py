@@ -4,6 +4,7 @@ Tests without the ``db`` marker never reach the database (no valid cookie is inv
 """
 
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -20,9 +21,15 @@ from app.middleware import (
     set_csrf_cookie,
 )
 from app.models import Role
-from app.routers import admin_pages, pages, team_pages
-from app.routers.common import PRE_SESSION_BINDING, CsrfChecked, PageUser, require_csrf
-from app.security import create_csrf_token
+from app.routers import admin_pages, file_pages, pages, team_pages
+from app.routers.common import (
+    PRE_SESSION_BINDING,
+    CsrfChecked,
+    PageUser,
+    require_csrf,
+    verify_origin,
+)
+from app.security import create_access_token, create_csrf_token
 from app.services import sessions
 from app.services.sessions import IssuedTokens
 from tests.conftest import ORIGIN, UserFactory, make_settings, token_of
@@ -109,6 +116,29 @@ async def test_useless_cookies_are_deleted_on_the_redirect(
     assert response.status_code == 303
     deleted = [line for line in set_cookie_lines(response) if line.startswith(names.access)]
     assert deleted and "Max-Age=0" in deleted[0]
+
+
+async def test_bearer_header_is_ignored_on_pages(
+    client: httpx.AsyncClient, settings: Settings
+) -> None:
+    """Pages accept cookies only (section 7): a token in the Authorization header is not read.
+
+    If it were read, the lookup would reach the (absent) database and fail with a 500 instead of
+    this redirect.
+    """
+    token = create_access_token(
+        user_id=1,
+        session_id=uuid.uuid4(),
+        secret=settings.jwt_secret.get_secret_value(),
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
+        ttl=timedelta(minutes=15),
+    )
+    response = await client.get(
+        "/files", headers={"Authorization": f"Bearer {token}"}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/login")
 
 
 def test_templates_have_no_inline_script_or_style() -> None:
@@ -203,15 +233,22 @@ def _calls(dependant) -> set:
 
 
 def test_every_page_post_checks_csrf() -> None:
-    """No state-changing page route may forget ``CsrfChecked`` (new file routes get it too)."""
+    """No state-changing page route may forget ``CsrfChecked``.
+
+    The one exception is the streaming upload: its token is the first multipart part, so it is
+    checked inside the route, and the route must at least depend on the Origin check.
+    """
     checked, unprotected = 0, []
-    for router in (pages.router, team_pages.router, admin_pages.router):
+    for router in (pages.router, team_pages.router, file_pages.router, admin_pages.router):
         for route in router.routes:
             if route.methods - {"GET", "HEAD", "OPTIONS"}:
                 checked += 1
-                if require_csrf not in _calls(route.dependant):
+                calls = _calls(route.dependant)
+                if route.path == "/files/upload":
+                    assert verify_origin in calls
+                elif require_csrf not in calls:
                     unprotected.append(f"{sorted(route.methods)} {route.path}")
-    assert checked > 10, "the test no longer finds the routes"
+    assert checked > 20, "the test no longer finds the routes"
     assert unprotected == []
 
 
@@ -483,3 +520,30 @@ async def test_csrf_token_is_bound_to_the_session(
     assert await post(str(issued.session_id)) == 200
     assert await post(PRE_SESSION_BINDING) == 403
     assert await post(str(uuid.uuid4())) == 403  # a token of some other session
+
+
+@pytest.mark.parametrize(
+    ("base_url", "sender", "allowed"),
+    [
+        ("https://silo.example", "https://silo.example:443", True),
+        ("https://silo.example:443", "https://silo.example", True),
+        ("http://localhost:8000", "http://localhost:8000", True),
+        ("https://silo.example", "http://silo.example", False),
+        ("http://localhost:8000", "http://localhost:8001", False),
+        ("https://silo.example", "https://silo.example:bad", False),
+    ],
+)
+def test_origin_comparison_ignores_default_ports(base_url: str, sender: str, allowed: bool) -> None:
+    """The browser sends `https://x`, an operator may write `https://x:443`: same origin."""
+    from starlette.requests import Request
+
+    from app.errors import CsrfFailed
+    from app.middleware import check_origin
+
+    request = Request({"type": "http", "headers": [(b"origin", sender.encode())]})
+    settings = make_settings(base_url=base_url, cookie_secure=base_url.startswith("https"))
+    if allowed:
+        check_origin(request, settings)
+    else:
+        with pytest.raises(CsrfFailed):
+            check_origin(request, settings)

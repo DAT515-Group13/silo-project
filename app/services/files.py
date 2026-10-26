@@ -25,7 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.errors import FileTooLarge, NotFound, QuotaExceeded, StorageUnavailable, ValidationFailed
+from app.errors import FileTooLarge, NotFound, QuotaExceeded, ValidationFailed
 from app.models import File, FileShare, Team, User
 from app.permissions import (
     CurrentUser,
@@ -183,8 +183,14 @@ async def _delete_quietly(store: BlobStore, blob_name: str) -> None:
     """
     try:
         await store.delete(blob_name)
-    except StorageUnavailable:
-        logger.warning("Could not delete blob %s; it is left for orphan cleanup", blob_name)
+    except Exception as exc:
+        # Not only StorageUnavailable: when this runs after the commit, any error here must not
+        # turn a finished delete into a 500.
+        logger.warning(
+            "Could not delete blob %s (%s); it is left for orphan cleanup",
+            blob_name,
+            type(exc).__name__,
+        )
 
 
 async def _audit_denied(session: AsyncSession, ctx: AuditContext, filename: str, code: str) -> None:

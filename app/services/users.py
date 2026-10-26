@@ -4,6 +4,7 @@ Implements the quota rules, the admin endpoints with their rules (last admin, di
 revokes sessions, deleting a user deletes their blobs) and the "First admin" rule.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -24,6 +25,8 @@ from app.services.pagination import fetch_page
 from app.services.sessions import RevokeReason
 
 logger = logging.getLogger("silo")
+
+DELETE_CONCURRENCY = 16
 
 
 async def get_user(session: AsyncSession, user_id: int) -> User:
@@ -452,8 +455,15 @@ async def delete_user(
         )
 
     # Step 2: delete the blobs. A StorageUnavailable propagates before any row is touched.
-    for blob_name in blob_names:
-        await store.delete(blob_name)
+    # Sixteen at a time: one request per blob in a row would outlast the proxy timeout for a
+    # user with many files. Delete is idempotent, so a retry after a failure is safe.
+    limit = asyncio.Semaphore(DELETE_CONCURRENCY)
+
+    async def delete_blob(blob_name: str) -> None:
+        async with limit:
+            await store.delete(blob_name)
+
+    await asyncio.gather(*(delete_blob(name) for name in blob_names))
 
     # Step 3: delete the user. The rules are checked again under the admin locks, because
     # another admin may have acted since step 1. A file uploaded in the meantime loses its row

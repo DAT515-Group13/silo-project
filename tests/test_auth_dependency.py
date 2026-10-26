@@ -12,7 +12,8 @@ from fastapi import FastAPI
 
 from app.config import Settings, get_settings
 from app.models import AuthSession, Role, User, UserStatus
-from app.routers.common import ApiUser
+from app.routers.api import admin, auth, files, links, teams
+from app.routers.common import ApiUser, get_current_api_user
 from app.security import create_access_token
 from app.services import sessions
 from tests.conftest import Sessionmaker, UserFactory, make_settings
@@ -92,6 +93,27 @@ async def test_cookie_is_ignored_on_the_api(
     cookie = f"access_token={token}; __Host-access_token={token}"
     response = await client.get(whoami, headers={"Cookie": cookie})
     assert (response.status_code, response.json()["code"]) == (401, "invalid_token")
+
+
+def _calls(dependant) -> set:
+    """Every function a route depends on, directly or through other dependencies."""
+    found = {dependant.call}
+    for sub in dependant.dependencies:
+        found |= _calls(sub)
+    return found
+
+
+def test_every_api_route_needs_a_bearer_token_except_the_open_ones() -> None:
+    """No /api/v1 route may forget ``ApiUser``; only register, login and refresh are open."""
+    open_paths = {"/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh"}
+    checked, unprotected = 0, []
+    for router in (auth.router, files.router, links.router, teams.router, admin.router):
+        for route in router.routes:
+            checked += 1
+            if route.path not in open_paths and get_current_api_user not in _calls(route.dependant):
+                unprotected.append(f"{sorted(route.methods)} {route.path}")
+    assert checked > 30, "the test no longer finds the routes"
+    assert unprotected == []
 
 
 # --- Needs PostgreSQL --------------------------------------------------------------------

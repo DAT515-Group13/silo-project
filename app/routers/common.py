@@ -9,9 +9,9 @@ import hmac
 import ipaddress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any
 
-from fastapi import Depends, HTTPException, Query, Request, Response
+from fastapi import Depends, Query, Request, Response
 from fastapi import Path as PathParam
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -255,6 +255,10 @@ async def require_csrf(
     Raises:
         CsrfFailed: if anything is missing, differs or does not verify.
     """
+    # Only urlencoded forms: a multipart body would make Starlette spool file parts to disk, and
+    # no page form except the upload (which has its own check) is multipart.
+    if not request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
+        raise CsrfFailed
     form = await request.form()
     field = form.get("csrf_token")
     check_csrf_value(request, settings, user, field if isinstance(field, str) else None)
@@ -381,12 +385,6 @@ def file_out(item: FileItem, viewer_id: int) -> FileOut:
     )
 
 
-def not_implemented() -> NoReturn:
-    """Answer 501 for endpoints that are still skeletons."""
-    raise HTTPException(status_code=501, detail="Not implemented.")
-
-
-BearerToken = Annotated[str, Depends(bearer_token)]
 ApiUser = Annotated[CurrentUser, Depends(get_current_api_user)]
 PageUser = Annotated[CurrentUser, Depends(get_current_page_user)]
 OptionalPageUser = Annotated[CurrentUser | None, Depends(get_optional_page_user)]

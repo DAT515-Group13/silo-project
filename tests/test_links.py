@@ -42,17 +42,6 @@ def test_link_hours_must_be_positive() -> None:
         LinkCreateIn(expires_in_hours=0)
 
 
-async def test_link_endpoints_need_a_token(client: httpx.AsyncClient) -> None:
-    """The management endpoints need a Bearer token."""
-    file_id = uuid.uuid4()
-    for method, path in [
-        ("POST", f"/api/v1/files/{file_id}/links"),
-        ("GET", f"/api/v1/files/{file_id}/links"),
-        ("DELETE", "/api/v1/links/1"),
-    ]:
-        assert (await client.request(method, path)).status_code == 401, path
-
-
 async def test_lifetime_above_the_maximum_is_422(
     client: httpx.AsyncClient, act_as: ActAs, settings: Settings
 ) -> None:
@@ -399,3 +388,15 @@ async def test_the_token_never_reaches_logs_or_audit(
     assert {"link.create", "link.download", "link.revoke"} <= {row.action for row in rows}
     for row in rows:
         assert token not in f"{row.target_id} {row.target_label} {row.details}"
+
+
+async def test_rate_limited_public_link_keeps_the_privacy_headers(
+    client: httpx.AsyncClient,
+) -> None:
+    """The 429 page of /s/{token} also keeps the token out of referrers and caches."""
+    for _ in range(30):
+        assert (await client.get("/s/short")).status_code == 404
+    response = await client.get("/s/short")
+    assert response.status_code == 429
+    for name, value in PUBLIC_HEADERS.items():
+        assert response.headers[name] == value

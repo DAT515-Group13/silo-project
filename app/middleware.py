@@ -7,8 +7,11 @@ request ID, security header and trusted host middleware are added in phase 6.
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import Settings
 from app.errors import CsrfFailed
@@ -94,6 +97,17 @@ def set_csrf_cookie(response: Response, settings: Settings, token: str) -> None:
     )
 
 
+def _origin_of(url: str) -> tuple[str, str, int | None]:
+    """Scheme, lower-case host and port of a URL; the default port counts as given.
+
+    ``https://x`` and ``https://x:443`` are the same origin for a browser, which sends the
+    shorter form.
+    """
+    parts = urlsplit(url)
+    default = {"http": 80, "https": 443}.get(parts.scheme)
+    return parts.scheme, (parts.hostname or "").lower(), parts.port or default
+
+
 def check_origin(request: Request, settings: Settings) -> None:
     """Reject a POST that did not come from this site.
 
@@ -104,13 +118,14 @@ def check_origin(request: Request, settings: Settings) -> None:
     Raises:
         CsrfFailed: if any check fails.
     """
-    expected = urlsplit(settings.base_url)
     sender = request.headers.get("origin") or request.headers.get("referer")
     if not sender or sender == "null":
         raise CsrfFailed
-    actual = urlsplit(sender)
-    if (actual.scheme, actual.netloc.lower()) != (expected.scheme, expected.netloc.lower()):
-        raise CsrfFailed
+    try:
+        if _origin_of(sender) != _origin_of(settings.base_url):
+            raise CsrfFailed
+    except ValueError:  # a malformed port in the header
+        raise CsrfFailed from None
     fetch_site = request.headers.get("sec-fetch-site")
     if fetch_site is not None and fetch_site != "same-origin":
         raise CsrfFailed
@@ -142,6 +157,111 @@ def mark_logged_out(request: Request) -> None:
     """
     request.state.refreshed_tokens = None
     request.state.clear_auth_cookies = True
+
+
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+# Swagger UI loads scripts and styles from a CDN, which the strict CSP would block; the docs
+# exist only in local and dev (ENABLE_DOCS).
+CSP_EXEMPT_PREFIXES = ("/docs", "/redoc", "/openapi.json")
+# Bootstrap is the only thing worth caching; every other response may contain private data.
+CACHEABLE_PREFIX = "/static/"
+
+
+class SecurityHeadersMiddleware:
+    """Add the response headers of spec section 12 to every response.
+
+    Outermost middleware, so error pages and the 413 of ``BodyLimitMiddleware`` get them too.
+    A header a route set itself (for example the ``no-store`` of ``/s/{token}``) is kept.
+    Responses of Starlette's own last-resort 500 handler sit outside every middleware and do not
+    get them.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope["path"]
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in SECURITY_HEADERS.items():
+                    if name == "Content-Security-Policy" and path.startswith(CSP_EXEMPT_PREFIXES):
+                        continue
+                    headers.setdefault(name, value)
+                # Pages and API answers must not be kept by browsers or proxies: after logout the
+                # back button would otherwise show file lists.
+                if not path.startswith(CACHEABLE_PREFIX):
+                    headers.setdefault("Cache-Control", "no-store")
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+# Only the two upload routes stream large bodies (to blob storage, never to disk). Everything
+# else is a small form or JSON document.
+MAX_BODY_BYTES = 64 * 1024
+UNLIMITED_BODY_ROUTES = {("POST", "/api/v1/files"), ("POST", "/files/upload")}
+
+
+class BodyLimitMiddleware:
+    """Refuse request bodies over ``MAX_BODY_BYTES`` except on the upload routes.
+
+    FastAPI reads a form or JSON body before any dependency runs, and Starlette writes multipart
+    file parts to the local disk, so without this limit an anonymous ``POST /login`` with a huge
+    body fills the disk or memory before the Origin check, CSRF check or rate limit run.
+    Written as plain ASGI (not ``BaseHTTPMiddleware``) so it never buffers the body itself.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or (scope["method"], scope["path"]) in UNLIMITED_BODY_ROUTES:
+            await self.app(scope, receive, send)
+            return
+
+        # A declared size is checked first, so an honest oversized client is refused unread.
+        declared = Headers(scope=scope).get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+            # The API keeps its JSON error shape (section 9.5); pages get plain text.
+            if scope["path"].startswith("/api/"):
+                body = {"detail": "Request body too large.", "code": "payload_too_large"}
+                await JSONResponse(body, status_code=413)(scope, receive, send)
+            else:
+                await PlainTextResponse("Request body too large.", status_code=413)(
+                    scope, receive, send
+                )
+            return
+
+        # Content-Length can be missing (chunked) or false, so the bytes are counted as well.
+        # FastAPI's body reader passes an HTTPException through, and the app's HTTP error
+        # handler renders it as a 413. This middleware must sit inside AuthCookieMiddleware:
+        # BaseHTTPMiddleware wraps errors raised in receive, which would turn into a 400.
+        received = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > MAX_BODY_BYTES:
+                    raise HTTPException(status_code=413, detail="Request body too large.")
+            return message
+
+        await self.app(scope, limited_receive, send)
 
 
 class AuthCookieMiddleware(BaseHTTPMiddleware):
