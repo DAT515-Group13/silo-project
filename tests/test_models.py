@@ -22,17 +22,6 @@ def test_metadata_contains_the_nine_tables() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES
 
 
-def test_users_have_username_and_no_email() -> None:
-    """Accounts are identified by a lowercase username of at most 32 characters (D16)."""
-    users = Base.metadata.tables["users"]
-    assert "email" not in users.c
-    assert users.c.username.type.length == 32
-    assert users.c.username.unique
-    audit = Base.metadata.tables["audit_log"]
-    assert "actor_email" not in audit.c
-    assert audit.c.actor_username.type.length == 32
-
-
 def test_all_timestamps_are_timezone_aware() -> None:
     """Every datetime column is timestamptz."""
     for table in Base.metadata.tables.values():

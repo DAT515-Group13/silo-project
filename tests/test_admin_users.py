@@ -6,9 +6,9 @@ through HTTP with real tokens.
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from app.models import AuditLog, Role, Team, User, UserStatus
+from app.models import AuditLog, File, Role, Team, User, UserStatus
 from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory
 from tests.fakes import InMemoryBlobStore
 
@@ -36,6 +36,31 @@ async def test_non_admins_get_404_on_every_admin_endpoint(
     client: httpx.AsyncClient, act_as: ActAs, role: Role, method: str, path: str, body: dict | None
 ) -> None:
     """The admin area does not exist for non-admins: 404, not 403."""
+    act_as(role)
+    response = await client.request(method, path, json=body)
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
+@pytest.mark.parametrize("role", [Role.user, Role.team_lead])
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("PATCH", "/api/v1/admin/users/2", {"status": "pending"}),
+        ("PATCH", "/api/v1/admin/users/2", {"x": 1}),
+        ("POST", "/api/v1/admin/users/2/reject", {"reason": "x" * 501}),
+        ("GET", "/api/v1/admin/users?status=bogus", None),
+        ("GET", "/api/v1/admin/users?page=0", None),
+        ("GET", "/api/v1/admin/audit?outcome=bogus", None),
+        ("GET", "/api/v1/admin/audit?actor_id=99999999999", None),
+        ("GET", "/api/v1/admin/files?size=1000", None),
+        ("DELETE", "/api/v1/admin/users/0", None),
+    ],
+)
+async def test_invalid_input_from_a_non_admin_is_still_404(
+    client: httpx.AsyncClient, act_as: ActAs, role: Role, method: str, path: str, body: dict | None
+) -> None:
+    """Validation must not reveal the admin API: the 404 comes before any 422."""
     act_as(role)
     response = await client.request(method, path, json=body)
     assert response.status_code == 404
@@ -110,6 +135,12 @@ async def test_approve_only_pending_accounts(
     newbie = await user_factory(username="newbie", status=UserStatus.pending)
     headers = await bearer_for(root)
 
+    # A pending account is approved or rejected, never activated through PATCH.
+    patched = await client.patch(
+        f"/api/v1/admin/users/{newbie.id}", json={"status": "active"}, headers=headers
+    )
+    assert (patched.status_code, patched.json()["code"]) == (409, "invalid_user_state")
+
     first = await client.post(f"/api/v1/admin/users/{newbie.id}/approve", headers=headers)
     assert first.status_code == 204
     assert await status_of(db_sessionmaker, newbie.id) == (Role.user, UserStatus.active)
@@ -147,7 +178,7 @@ async def test_reject_a_pending_account_with_a_reason(
     assert details == {"reason": "unknown"}
 
     active = await client.post(f"/api/v1/admin/users/{anna.id}/reject", headers=headers)
-    assert active.status_code == 409
+    assert (active.status_code, active.json()["code"]) == (409, "invalid_user_state")
 
 
 @pytest.mark.db
@@ -156,13 +187,19 @@ async def test_disabling_revokes_sessions_immediately(
     root: User,
     user_factory: UserFactory,
     bearer_for: BearerFor,
+    file_factory: FileFactory,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """A disabled user's tokens stop working at once; activation does not revive them (s. 7)."""
+    """A disabled user's tokens and public links stop working at once; activation revives only
+    the links, not the tokens (s. 7). "Revoke sessions" logs a user out the same way."""
     anna = await user_factory(username="anna")
     annas = await bearer_for(anna)
     headers = await bearer_for(root)
+    file = await file_factory(anna.id)
+    created = await client.post(f"/api/v1/files/{file.id}/links", json={}, headers=annas)
+    link = f"/s/{created.json()['url'].rsplit('/', 1)[-1]}"
     assert (await client.get("/api/v1/me", headers=annas)).status_code == 200
+    assert (await client.get(link)).status_code == 302
 
     disable = await client.patch(
         f"/api/v1/admin/users/{anna.id}", json={"status": "disabled"}, headers=headers
@@ -170,48 +207,23 @@ async def test_disabling_revokes_sessions_immediately(
     assert disable.status_code == 200
     assert disable.json()["status"] == "disabled"
     assert (await client.get("/api/v1/me", headers=annas)).status_code == 401
+    assert (await client.get(link)).status_code == 404
 
     enable = await client.patch(
         f"/api/v1/admin/users/{anna.id}", json={"status": "active"}, headers=headers
     )
     assert enable.json()["status"] == "active"
     assert (await client.get("/api/v1/me", headers=annas)).status_code == 401
-    assert (await client.get("/api/v1/me", headers=await bearer_for(anna))).status_code == 200
-    assert {"user.deactivate", "user.activate"} <= set(await actions(db_sessionmaker))
+    assert (await client.get(link)).status_code == 302
+    fresh = await bearer_for(anna)
+    assert (await client.get("/api/v1/me", headers=fresh)).status_code == 200
 
-
-@pytest.mark.db
-async def test_role_change_takes_effect_on_the_next_request(
-    client: httpx.AsyncClient, root: User, user_factory: UserFactory, bearer_for: BearerFor
-) -> None:
-    """The role is read from the database, so the same token gets the new rights (s. 6, 7)."""
-    anna = await user_factory(username="anna")
-    annas = await bearer_for(anna)
-    assert (
-        await client.post("/api/v1/teams", json={"name": "A"}, headers=annas)
-    ).status_code == 403
-
-    promote = await client.patch(
-        f"/api/v1/admin/users/{anna.id}", json={"role": "team_lead"}, headers=await bearer_for(root)
+    revoke = await client.post(f"/api/v1/admin/users/{anna.id}/revoke-sessions", headers=headers)
+    assert revoke.status_code == 204
+    assert (await client.get("/api/v1/me", headers=fresh)).status_code == 401
+    assert {"user.deactivate", "user.activate", "user.sessions_revoke"} <= set(
+        await actions(db_sessionmaker)
     )
-    assert promote.json()["role"] == "team_lead"
-    assert (
-        await client.post("/api/v1/teams", json={"name": "A"}, headers=annas)
-    ).status_code == 201
-
-
-@pytest.mark.db
-async def test_status_change_of_a_pending_account_is_409(
-    client: httpx.AsyncClient, root: User, user_factory: UserFactory, bearer_for: BearerFor
-) -> None:
-    """Pending accounts are approved or rejected, not activated through PATCH."""
-    newbie = await user_factory(username="newbie", status=UserStatus.pending)
-    response = await client.patch(
-        f"/api/v1/admin/users/{newbie.id}",
-        json={"status": "active"},
-        headers=await bearer_for(root),
-    )
-    assert (response.status_code, response.json()["code"]) == (409, "invalid_user_state")
 
 
 @pytest.mark.db
@@ -245,7 +257,10 @@ async def test_admin_can_demote_another_admin(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """One admin may demote another; the demoted user then loses the admin area (404)."""
+    """One admin may demote another; the demoted user then loses the admin area (404).
+
+    The same token gets the new rights at once: the role is read from the database (s. 6, 7).
+    """
     second = await user_factory(username="second", role=Role.admin)
     roots = await bearer_for(root)
     seconds = await bearer_for(second)
@@ -260,20 +275,6 @@ async def test_admin_can_demote_another_admin(
     )
     assert gone.status_code == 404
     assert await status_of(db_sessionmaker, root.id) == (Role.admin, UserStatus.active)
-
-
-@pytest.mark.db
-async def test_revoke_sessions_logs_the_user_out(
-    client: httpx.AsyncClient, root: User, user_factory: UserFactory, bearer_for: BearerFor
-) -> None:
-    """Force logout everywhere: the user's tokens are rejected at once."""
-    anna = await user_factory(username="anna")
-    annas = await bearer_for(anna)
-    response = await client.post(
-        f"/api/v1/admin/users/{anna.id}/revoke-sessions", headers=await bearer_for(root)
-    )
-    assert response.status_code == 204
-    assert (await client.get("/api/v1/me", headers=annas)).status_code == 401
 
 
 @pytest.mark.db
@@ -298,10 +299,12 @@ async def test_delete_user_deletes_blobs_then_the_user(
     assert await status_of(db_sessionmaker, lead.id) is None
     async with db_sessionmaker() as session, session.begin():
         teams = (await session.scalars(select(Team))).all()
+        files_left = await session.scalar(select(func.count()).select_from(File))
         details = await session.scalar(
             select(AuditLog.details).where(AuditLog.action == "user.delete")
         )
     assert teams == []
+    assert files_left == 0
     assert details == {"files_deleted": 2}
 
 
@@ -315,10 +318,12 @@ async def test_delete_user_keeps_everything_when_storage_fails(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """A storage failure is 503 storage_unavailable and the user row stays."""
+    """A storage failure is 503 storage_unavailable; the user and their file rows stay."""
     anna = await user_factory(username="anna")
     await file_factory(anna.id)
     blob_store.healthy = False
     response = await client.delete(f"/api/v1/admin/users/{anna.id}", headers=await bearer_for(root))
     assert (response.status_code, response.json()["code"]) == (503, "storage_unavailable")
     assert await status_of(db_sessionmaker, anna.id) == (Role.user, UserStatus.active)
+    async with db_sessionmaker() as session, session.begin():
+        assert await session.scalar(select(func.count()).select_from(File)) == 1

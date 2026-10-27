@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI
 
 from app import errors
-from app.errors import RateLimited, SiloError, ValidationFailed
+from app.errors import RateLimited, SiloError
 
 # Status code and error code of every domain error.
 EXPECTED = {
@@ -46,52 +46,24 @@ def test_every_error_has_its_status_and_code() -> None:
 
 @pytest.fixture
 def raising_app(app: FastAPI) -> FastAPI:
-    """The real app plus one test route per error shape."""
+    """The real app plus a route that raises RateLimited (the upload guard does that)."""
 
-    @app.get("/api/v1/_raise/{name}")
-    async def _raise(name: str) -> None:
-        if name == "rate":
-            raise RateLimited(retry_after=7)
-        if name == "validation":
-            raise ValidationFailed([{"field": "password", "message": "Too short."}])
-        raise getattr(errors, name)()
+    @app.get("/api/v1/_raise/rate")
+    async def _raise() -> None:
+        raise RateLimited(retry_after=7)
 
     return app
-
-
-@pytest.mark.anyio
-async def test_quota_exceeded_body(client: httpx.AsyncClient, raising_app: FastAPI) -> None:
-    """Domain errors render as {"detail", "code"}."""
-    response = await client.get("/api/v1/_raise/QuotaExceeded")
-    assert response.status_code == 413
-    assert response.json() == {"detail": "Storage quota exceeded.", "code": "quota_exceeded"}
-
-
-@pytest.mark.anyio
-async def test_invalid_token_sets_www_authenticate(
-    client: httpx.AsyncClient, raising_app: FastAPI
-) -> None:
-    """The API adds WWW-Authenticate: Bearer to invalid_token."""
-    response = await client.get("/api/v1/_raise/InvalidToken")
-    assert response.status_code == 401
-    assert response.headers["www-authenticate"] == "Bearer"
 
 
 @pytest.mark.anyio
 async def test_rate_limited_sets_retry_after(
     client: httpx.AsyncClient, raising_app: FastAPI
 ) -> None:
-    """429 rate_limited carries Retry-After."""
+    """429 rate_limited carries Retry-After.
+
+    Other error bodies are checked by the real endpoints (for example 413 file_too_large in
+    test_files.py, 422 errors in test_links.py, WWW-Authenticate in test_auth_dependency.py).
+    """
     response = await client.get("/api/v1/_raise/rate")
     assert response.status_code == 429
     assert response.headers["retry-after"] == "7"
-
-
-@pytest.mark.anyio
-async def test_validation_failed_lists_errors(
-    client: httpx.AsyncClient, raising_app: FastAPI
-) -> None:
-    """422 validation_error adds an errors list with field and message."""
-    response = await client.get("/api/v1/_raise/validation")
-    assert response.status_code == 422
-    assert response.json()["errors"] == [{"field": "password", "message": "Too short."}]

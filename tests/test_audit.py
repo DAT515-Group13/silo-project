@@ -73,27 +73,15 @@ async def test_record_is_part_of_the_callers_transaction(
 
 @pytest.mark.db
 @pytest.mark.anyio
-async def test_record_is_rolled_back_with_the_transaction(
+async def test_only_the_failure_entry_survives_a_rolled_back_transaction(
     db_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
-    """A success entry does not survive when the action fails (the log never lies)."""
-    with pytest.raises(RuntimeError):
-        async with db_sessionmaker() as session, session.begin():
-            await record(session, AuditContext.system(), AuditAction.user_delete)
-            raise RuntimeError("the action failed")
-    async with db_sessionmaker() as session:
-        assert (await session.scalars(select(AuditLog))).all() == []
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_failure_entry_survives_a_rolled_back_transaction(
-    db_sessionmaker: async_sessionmaker[AsyncSession],
-) -> None:
-    """A denied entry is written in its own session and stays after the rollback."""
+    """A success entry is rolled back with a failed action (the log never lies); a denied entry
+    is written in its own session and stays."""
     ctx = AuditContext.anonymous(ip="203.0.113.7")
     with pytest.raises(RuntimeError):
         async with db_sessionmaker() as session, session.begin():
+            await record(session, AuditContext.system(), AuditAction.user_delete)
             await record_failure(
                 session,
                 ctx,
@@ -113,14 +101,16 @@ async def test_failure_entry_survives_a_rolled_back_transaction(
     )
 
 
-@pytest.mark.db
 @pytest.mark.anyio
-async def test_record_failure_refuses_success(
-    db_sessionmaker: async_sessionmaker[AsyncSession],
-) -> None:
-    """Successes must go through record(), inside the action's transaction."""
-    async with db_sessionmaker() as session:
-        with pytest.raises(ValueError, match="denied or failed"):
-            await record_failure(
-                session, AuditContext.system(), AuditAction.user_delete, outcome=Outcome.success
-            )
+async def test_record_failure_refuses_success() -> None:
+    """Successes must go through record(), inside the action's transaction.
+
+    The check comes before the session is used, so no database is needed.
+    """
+    with pytest.raises(ValueError, match="denied or failed"):
+        await record_failure(
+            None,  # type: ignore[arg-type]
+            AuditContext.system(),
+            AuditAction.user_delete,
+            outcome=Outcome.success,
+        )

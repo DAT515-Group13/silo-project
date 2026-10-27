@@ -6,6 +6,7 @@ architecture.md sections 5, 8.3 and 11: only a hash is stored, every failing lin
 404, and the token never reaches the audit log or the logs.
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -40,17 +41,6 @@ def test_link_hours_must_be_positive() -> None:
     assert LinkCreateIn().expires_in_hours == 24
     with pytest.raises(ValidationError):
         LinkCreateIn(expires_in_hours=0)
-
-
-async def test_link_endpoints_need_a_token(client: httpx.AsyncClient) -> None:
-    """The management endpoints need a Bearer token."""
-    file_id = uuid.uuid4()
-    for method, path in [
-        ("POST", f"/api/v1/files/{file_id}/links"),
-        ("GET", f"/api/v1/files/{file_id}/links"),
-        ("DELETE", "/api/v1/links/1"),
-    ]:
-        assert (await client.request(method, path)).status_code == 401, path
 
 
 async def test_lifetime_above_the_maximum_is_422(
@@ -131,16 +121,23 @@ def assert_same_404(response: httpx.Response) -> None:
 @db
 async def test_create_stores_only_the_hash_and_shows_the_url_once(
     client: httpx.AsyncClient,
+    settings: Settings,
     user_factory: UserFactory,
     file_factory: FileFactory,
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """The URL is only in the creation response; the database and the listing hold no token."""
+    """The URL is only in the creation response; the database and the listing hold no token.
+
+    The link uses the longest allowed lifetime (one hour more is the non-db 422 test above).
+    """
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
-    response = await client.post(f"/api/v1/files/{file.id}/links", json={}, headers=headers)
+    hours = settings.public_link_max_hours
+    response = await client.post(
+        f"/api/v1/files/{file.id}/links", json={"expires_in_hours": hours}, headers=headers
+    )
     assert response.status_code == 201
     assert response.headers["cache-control"] == "no-store"
     token = response.json()["url"].rsplit("/", 1)[-1]
@@ -149,7 +146,8 @@ async def test_create_stores_only_the_hash_and_shows_the_url_once(
         link = (await session.scalars(select(ShareLink))).one()
     assert link.token_hash == hash_token(token)
     assert token not in link.token_hash
-    assert link.expires_at > datetime.now(UTC) + timedelta(hours=23)
+    expected = datetime.now(UTC) + timedelta(hours=hours)
+    assert abs(link.expires_at - expected) < timedelta(minutes=1)
 
     listing = await client.get(f"/api/v1/files/{file.id}/links", headers=headers)
     assert listing.status_code == 200
@@ -287,8 +285,6 @@ async def test_parallel_creates_at_nine_links_give_exactly_one_more(
     bearer_for: BearerFor,
 ) -> None:
     """The file row is locked while counting, so two requests cannot both add a link."""
-    import asyncio
-
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
@@ -299,20 +295,6 @@ async def test_parallel_creates_at_nine_links_give_exactly_one_more(
         client.post(url, json={}, headers=headers), client.post(url, json={}, headers=headers)
     )
     assert sorted(r.status_code for r in results) == [201, 409]
-
-
-@db
-async def test_maximum_lifetime_is_allowed(
-    client: httpx.AsyncClient,
-    settings: Settings,
-    user_factory: UserFactory,
-    file_factory: FileFactory,
-    bearer_for: BearerFor,
-) -> None:
-    """Exactly PUBLIC_LINK_MAX_HOURS works (one hour more is the non-db 422 test above)."""
-    owner = await user_factory("owner")
-    file = await file_factory(owner.id)
-    await make_link(client, await bearer_for(owner), file.id, hours=settings.public_link_max_hours)
 
 
 @db
@@ -360,6 +342,7 @@ async def test_who_may_manage_links(
     assert (await client.post(base, json={}, headers=stranger_h)).status_code == 404
     assert (await client.post(base, json={}, headers=admin_h)).status_code == 404
     assert (await client.get(base, headers=stranger_h)).status_code == 404
+    assert (await client.get(base, headers=admin_h)).status_code == 404
     assert (await client.delete(f"/api/v1/links/{link_id}", headers=stranger_h)).status_code == 404
     assert (await client.delete("/api/v1/links/999999", headers=owner_h)).status_code == 404
 
@@ -404,3 +387,15 @@ async def test_the_token_never_reaches_logs_or_audit(
     assert {"link.create", "link.download", "link.revoke"} <= {row.action for row in rows}
     for row in rows:
         assert token not in f"{row.target_id} {row.target_label} {row.details}"
+
+
+async def test_rate_limited_public_link_keeps_the_privacy_headers(
+    client: httpx.AsyncClient,
+) -> None:
+    """The 429 page of /s/{token} also keeps the token out of referrers and caches."""
+    for _ in range(30):
+        assert (await client.get("/s/short")).status_code == 404
+    response = await client.get("/s/short")
+    assert response.status_code == 429
+    for name, value in PUBLIC_HEADERS.items():
+        assert response.headers[name] == value

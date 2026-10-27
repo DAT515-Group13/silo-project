@@ -8,9 +8,11 @@ one service function and build the response.
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
+from app.errors import NotFound
 from app.models import AuditLog, Outcome, User, UserStatus
+from app.permissions import is_admin
 from app.ratelimit import limit
 from app.routers.common import (
     MAX_ID,
@@ -29,7 +31,20 @@ from app.schemas.users import AdminUserOut, AdminUserPatchIn, AuditEntryOut, Rej
 from app.services import admin, users
 from app.services.admin import AuditFilters
 
-router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+
+async def require_admin_api_user(user: ApiUser) -> None:
+    """Answer non-admins with 404 before any body or query validation runs.
+
+    The services check the role as well. Without this, a non-admin sending an invalid body or
+    filter would get a 422, which shows that the admin endpoint exists (section 6).
+    """
+    if not is_admin(user):
+        raise NotFound
+
+
+router = APIRouter(
+    prefix="/api/v1/admin", tags=["admin"], dependencies=[Depends(require_admin_api_user)]
+)
 
 
 def admin_user_out(user: User, file_count: int | None = None) -> AdminUserOut:

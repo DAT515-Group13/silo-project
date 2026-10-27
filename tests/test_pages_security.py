@@ -4,6 +4,7 @@ Tests without the ``db`` marker never reach the database (no valid cookie is inv
 """
 
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -11,21 +12,29 @@ import pytest
 from fastapi import FastAPI, Request, Response
 
 from app.config import Settings
-from app.errors import InvalidToken, RefreshInProgress
+from app.errors import CsrfFailed, InvalidToken, RefreshInProgress
 from app.middleware import (
+    check_origin,
     cookie_names,
+    mark_logged_in,
     mark_logged_out,
     safe_next,
     set_auth_cookies,
     set_csrf_cookie,
 )
 from app.models import Role
-from app.routers import admin_pages, pages, team_pages
-from app.routers.common import PRE_SESSION_BINDING, CsrfChecked, PageUser, require_csrf
-from app.security import create_csrf_token
+from app.routers import admin_pages, file_pages, pages, team_pages
+from app.routers.common import (
+    PRE_SESSION_BINDING,
+    CsrfChecked,
+    PageUser,
+    require_csrf,
+    verify_origin,
+)
+from app.security import create_access_token, create_csrf_token
 from app.services import sessions
 from app.services.sessions import IssuedTokens
-from tests.conftest import ORIGIN, UserFactory, make_settings, token_of
+from tests.conftest import ORIGIN, UserFactory, make_settings, route_calls, token_of
 
 pytestmark = pytest.mark.anyio
 
@@ -111,6 +120,29 @@ async def test_useless_cookies_are_deleted_on_the_redirect(
     assert deleted and "Max-Age=0" in deleted[0]
 
 
+async def test_bearer_header_is_ignored_on_pages(
+    client: httpx.AsyncClient, settings: Settings
+) -> None:
+    """Pages accept cookies only (section 7): a token in the Authorization header is not read.
+
+    If it were read, the lookup would reach the (absent) database and fail with a 500 instead of
+    this redirect.
+    """
+    token = create_access_token(
+        user_id=1,
+        session_id=uuid.uuid4(),
+        secret=settings.jwt_secret.get_secret_value(),
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
+        ttl=timedelta(minutes=15),
+    )
+    response = await client.get(
+        "/files", headers={"Authorization": f"Bearer {token}"}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/login")
+
+
 def test_templates_have_no_inline_script_or_style() -> None:
     """The CSP allows only 'self' scripts and styles."""
     for path in TEMPLATES.glob("*.html"):
@@ -194,65 +226,48 @@ async def test_post_with_a_valid_token_and_origin_works(
     assert response.status_code == 200
 
 
-def _calls(dependant) -> set:
-    """Every function a route depends on, directly or through other dependencies."""
-    found = {dependant.call}
-    for sub in dependant.dependencies:
-        found |= _calls(sub)
-    return found
-
-
 def test_every_page_post_checks_csrf() -> None:
-    """No state-changing page route may forget ``CsrfChecked`` (new file routes get it too)."""
+    """No state-changing page route may forget ``CsrfChecked``.
+
+    The one exception is the streaming upload: its token is the first multipart part, so it is
+    checked inside the route, and the route must at least depend on the Origin check.
+    """
     checked, unprotected = 0, []
-    for router in (pages.router, team_pages.router, admin_pages.router):
+    for router in (pages.router, team_pages.router, file_pages.router, admin_pages.router):
         for route in router.routes:
             if route.methods - {"GET", "HEAD", "OPTIONS"}:
                 checked += 1
-                if require_csrf not in _calls(route.dependant):
+                calls = route_calls(route.dependant)
+                if route.path == "/files/upload":
+                    assert verify_origin in calls
+                elif require_csrf not in calls:
                     unprotected.append(f"{sorted(route.methods)} {route.path}")
-    assert checked > 10, "the test no longer finds the routes"
+    assert checked > 20, "the test no longer finds the routes"
     assert unprotected == []
 
 
-@pytest.mark.parametrize("missing", ["cookie", "field", "both"])
-async def test_post_needs_both_cookie_and_field(
-    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings, missing: str
+@pytest.mark.parametrize("case", ["no cookie", "no field", "neither", "different pair", "forged"])
+async def test_bad_csrf_token_is_403(
+    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings, case: str
 ) -> None:
-    """Double submit: a token in only one of the two places, or in none, is refused."""
+    """Double submit: both places must hold the same token, signed with CSRF_SECRET."""
     token, cookies = csrf_pair(settings)
-    response = await client.post(
-        "/_form",
-        data={"csrf_token": token} if missing == "cookie" else {},
-        headers={**(cookies if missing == "field" else {}), **ORIGIN},
-    )
+    field: dict[str, str] = {"csrf_token": token}
+    if case == "no cookie":
+        cookies = {}
+    elif case == "no field":
+        field = {}
+    elif case == "neither":
+        cookies, field = {}, {}
+    elif case == "different pair":
+        field = {"csrf_token": csrf_pair(settings)[0]}  # valid, but not the cookie's token
+    else:  # forged: a matching pair that was not signed with CSRF_SECRET
+        forged = create_csrf_token("f" * 40, PRE_SESSION_BINDING)
+        cookies = cookie_header(**{cookie_names(settings).csrf: forged})
+        field = {"csrf_token": forged}
+    response = await client.post("/_form", data=field, headers={**cookies, **ORIGIN})
     assert response.status_code == 403
     assert "CSRF validation failed." in response.text
-
-
-async def test_post_with_different_cookie_and_field_is_403(
-    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings
-) -> None:
-    """Two valid tokens that are not the same one are refused (the pair must match)."""
-    token_a, cookies = csrf_pair(settings)
-    token_b, _ = csrf_pair(settings)
-    assert token_a != token_b
-    response = await client.post(
-        "/_form", data={"csrf_token": token_b}, headers={**cookies, **ORIGIN}
-    )
-    assert response.status_code == 403
-
-
-async def test_forged_token_is_403(
-    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings
-) -> None:
-    """A matching pair that was not signed with CSRF_SECRET is refused."""
-    forged = create_csrf_token("f" * 40, PRE_SESSION_BINDING)
-    cookies = cookie_header(**{cookie_names(settings).csrf: forged})
-    response = await client.post(
-        "/_form", data={"csrf_token": forged}, headers={**cookies, **ORIGIN}
-    )
-    assert response.status_code == 403
 
 
 @pytest.mark.parametrize(
@@ -346,6 +361,30 @@ async def test_logout_wins_over_cookies_refreshed_in_the_same_request(
         written = [line for line in lines if line.startswith(f"{name}=")]
         assert len(written) == 1 and "Max-Age=0" in written[0]
     assert not any("access-value" in line or "refresh-value" in line for line in lines)
+
+
+async def test_login_wins_over_dead_cookies_marked_for_deletion(
+    client: httpx.AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    """Dead cookies seen by the CSRF check, then a login in the same request: the new cookies stay.
+
+    Before ``mark_logged_in`` the login route set the cookies and the middleware deleted them
+    again afterwards, so the user landed on /login after a successful login.
+    """
+
+    @app.get("/_dead_cookies_then_login")
+    async def _dead_cookies_then_login(request: Request) -> Response:
+        request.state.clear_auth_cookies = True  # what the page dependency leaves for dead cookies
+        mark_logged_in(request, tokens())
+        return Response()
+
+    response = await client.get("/_dead_cookies_then_login")
+    names = cookie_names(settings)
+    lines = set_cookie_lines(response)
+    for name, value in ((names.access, "access-value"), (names.refresh, "refresh-value")):
+        written = [line for line in lines if line.startswith(f"{name}=")]
+        assert len(written) == 1 and written[0].startswith(f"{name}={value}"), written
+        assert "Max-Age=0" not in written[0]
 
 
 @pytest.mark.parametrize(("error", "deleted"), [(RefreshInProgress, False), (InvalidToken, True)])
@@ -483,3 +522,25 @@ async def test_csrf_token_is_bound_to_the_session(
     assert await post(str(issued.session_id)) == 200
     assert await post(PRE_SESSION_BINDING) == 403
     assert await post(str(uuid.uuid4())) == 403  # a token of some other session
+
+
+@pytest.mark.parametrize(
+    ("base_url", "sender", "allowed"),
+    [
+        ("https://silo.example", "https://silo.example:443", True),
+        ("https://silo.example:443", "https://silo.example", True),
+        ("http://localhost:8000", "http://localhost:8000", True),
+        ("https://silo.example", "http://silo.example", False),
+        ("http://localhost:8000", "http://localhost:8001", False),
+        ("https://silo.example", "https://silo.example:bad", False),
+    ],
+)
+def test_origin_comparison_ignores_default_ports(base_url: str, sender: str, allowed: bool) -> None:
+    """The browser sends `https://x`, an operator may write `https://x:443`: same origin."""
+    request = Request({"type": "http", "headers": [(b"origin", sender.encode())]})
+    settings = make_settings(base_url=base_url, cookie_secure=base_url.startswith("https"))
+    if allowed:
+        check_origin(request, settings)
+    else:
+        with pytest.raises(CsrfFailed):
+            check_origin(request, settings)

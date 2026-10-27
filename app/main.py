@@ -2,7 +2,7 @@
 
 Run with: ``uvicorn app.main:create_app --factory``. The lifespan owns the database engine and
 the BlobStore. Errors are rendered as JSON under ``/api/`` and as HTML pages elsewhere. The
-request ID, security header and trusted host middleware are added in phase 6.
+request ID and trusted host middleware are added in phase 6.
 """
 
 import logging
@@ -21,11 +21,17 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
 from app.errors import InvalidToken, RateLimited, SiloError, ValidationFailed
-from app.middleware import AuthCookieMiddleware, clear_auth_cookies
+from app.middleware import (
+    AuthCookieMiddleware,
+    BodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+    clear_auth_cookies,
+)
 from app.ratelimit import limiter, rate_limit_handler, reset_limits
 from app.routers import admin_pages, file_pages, health, pages, public, team_pages
 from app.routers.api import api_router
 from app.routers.common import APP_DIR, templates
+from app.routers.public import PUBLIC_HEADERS
 from app.services.users import ensure_initial_admin
 from app.storage.azure_blob import create_blob_store
 from app.storage.base import BlobStore
@@ -72,14 +78,17 @@ def configure_logging() -> None:
     logger.setLevel(logging.INFO)
 
 
-# Temporary codes for plain HTTP errors; not part of the domain error list.
-_HTTP_CODES = {404: "not_found", 405: "method_not_allowed", 501: "not_implemented"}
+# Codes for plain HTTP errors; not part of the domain error list.
+_HTTP_CODES = {
+    404: "not_found",
+    405: "method_not_allowed",
+    413: "payload_too_large",
+}
 
 # What the HTML error page says for plain HTTP errors.
 _PAGE_MESSAGES = {
     404: "Page not found.",
     405: "This action is not allowed here.",
-    501: "This page is not implemented yet.",
 }
 
 
@@ -94,21 +103,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = create_engine(settings)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
-
-    # "First admin": runs at every startup, does nothing if the account exists.
-    # Tests without a database switch it off with create_app(initial_admin=False).
-    if app.state.initial_admin:
-        async with app.state.session_factory() as session:
-            if await ensure_initial_admin(session, settings):
-                logger.info("Initial admin account created")
-
     owns_store = app.state.blob_store is None
-    if owns_store:
-        app.state.blob_store = create_blob_store(settings)
+    # Everything after the engine is inside the try, so a failed startup still disposes it.
     try:
+        # "First admin": runs at every startup, does nothing if the account exists.
+        # Tests without a database switch it off with create_app(initial_admin=False).
+        if app.state.initial_admin:
+            async with app.state.session_factory() as session:
+                if await ensure_initial_admin(session, settings):
+                    logger.info("Initial admin account created")
+
+        if owns_store:
+            app.state.blob_store = create_blob_store(settings)
         yield
     finally:
-        if owns_store:
+        if owns_store and app.state.blob_store is not None:
             await app.state.blob_store.close()
             app.state.blob_store = None
         await engine.dispose()
@@ -177,9 +186,10 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Respo
     if _is_api(request):
         return await rate_limit_handler(request, exc)
     json_response = await rate_limit_handler(request, exc)
-    return _error_page(
-        request, 429, RateLimited.detail, {"Retry-After": json_response.headers["Retry-After"]}
-    )
+    headers = {"Retry-After": json_response.headers["Retry-After"]}
+    if request.url.path.startswith("/s/"):
+        headers |= PUBLIC_HEADERS  # the token is in this URL: keep it out of referrers and caches
+    return _error_page(request, 429, RateLimited.detail, headers)
 
 
 async def _validation_error_handler(request: Request, exc: RequestValidationError) -> Response:
@@ -253,7 +263,10 @@ def create_app(
     reset_limits()
     app.state.limiter = limiter
 
+    # Added first = innermost, so BaseHTTPMiddleware does not wrap its 413 (see its docstring).
+    app.add_middleware(BodyLimitMiddleware)
     app.add_middleware(AuthCookieMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)  # outermost: also covers error pages and 413
     app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
     app.add_exception_handler(SiloError, _silo_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)

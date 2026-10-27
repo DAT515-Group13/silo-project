@@ -171,3 +171,15 @@ async def test_limited_stops_at_the_size_limit_and_the_quota() -> None:
         [c async for c in _limited(chunks_of(b"abc", b"def"), max_size=100, remaining=5)]
     with pytest.raises(FileTooLarge):
         [c async for c in _limited(chunks_of(b"abcdef"), max_size=5, remaining=5)]
+
+
+@pytest.mark.anyio
+async def test_a_failing_blob_delete_never_raises() -> None:
+    """After the commit, any error from blob deletion is logged: the file is already gone."""
+    from app.services.files import _delete_quietly
+
+    class Broken:
+        async def delete(self, blob_name: str) -> None:
+            raise RuntimeError("anything")
+
+    await _delete_quietly(Broken(), "blob")  # type: ignore[arg-type]

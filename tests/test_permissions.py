@@ -50,19 +50,11 @@ TEAM = Team(id=10, name="Team", owner_id=OWNER_ID)
     ("actor", "allowed"),
     [("owner", True), ("team_member", True), ("admin", False), ("stranger", False)],
 )
-def test_see_in_lists(actor: str, allowed: bool) -> None:
-    """Owner and team member see the file; admins only via /admin/files; others get 404."""
+def test_see_in_lists_and_download(actor: str, allowed: bool) -> None:
+    """Owner and team member see and download the file; an admin does not (privacy, only via
+    /admin/files); others get 404."""
     user, shared = ACTORS[actor]
     assert can_view_file(user, FILE, shared_with_user=shared) is allowed
-
-
-@pytest.mark.parametrize(
-    ("actor", "allowed"),
-    [("owner", True), ("team_member", True), ("admin", False), ("stranger", False)],
-)
-def test_download(actor: str, allowed: bool) -> None:
-    """Owner and team member download; an admin does not (privacy)."""
-    user, shared = ACTORS[actor]
     assert can_download_file(user, FILE, shared_with_user=shared) is allowed
 
 

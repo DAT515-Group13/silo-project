@@ -84,29 +84,6 @@ async def test_register_closed_is_404(
     assert response.status_code == 404
 
 
-async def test_register_validation_errors_do_not_echo_the_password(
-    client: httpx.AsyncClient,
-) -> None:
-    """422 lists the bad fields and never repeats the password."""
-    response = await client.post(
-        "/api/v1/auth/register", json={"username": "x", "password": "secret-value-1234"}
-    )
-    assert response.status_code == 422
-    body = response.json()
-    assert body["code"] == "validation_error"
-    assert [e["field"] for e in body["errors"]] == ["username"]
-    assert "secret-value-1234" not in response.text
-
-
-async def test_register_short_password_is_422(client: httpx.AsyncClient) -> None:
-    """The password policy runs in the service and answers with a field-level 422."""
-    response = await client.post(
-        "/api/v1/auth/register", json={"username": "anna", "password": "short"}
-    )
-    assert response.status_code == 422
-    assert response.json()["errors"][0]["field"] == "password"
-
-
 # --- Login and refresh -------------------------------------------------------------------------
 
 
@@ -239,12 +216,13 @@ async def test_delete_session_own_and_foreign(
 async def test_logout_takes_effect_immediately(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """After POST /auth/logout the access token is rejected at once."""
+    """After POST /auth/logout the access token is rejected at once; other devices stay in."""
     await user_factory(username="anna")
-    logged_in = await login(client)
+    logged_in, other_device = await login(client), await login(client)
     assert (await client.get("/api/v1/me", headers=bearer(logged_in))).status_code == 200
     assert (await client.post("/api/v1/auth/logout", headers=bearer(logged_in))).status_code == 204
     assert (await client.get("/api/v1/me", headers=bearer(logged_in))).status_code == 401
+    assert (await client.get("/api/v1/me", headers=bearer(other_device))).status_code == 200
 
 
 async def test_logout_all_ends_every_session(
@@ -258,16 +236,3 @@ async def test_logout_all_ends_every_session(
     assert (await client.get("/api/v1/me", headers=bearer(a1))).status_code == 401
     assert (await client.get("/api/v1/me", headers=bearer(a2))).status_code == 401
     assert (await client.get("/api/v1/me", headers=bearer(bob))).status_code == 200
-
-
-async def test_protected_routes_without_a_token_are_401(client: httpx.AsyncClient) -> None:
-    """Every account endpoint needs a Bearer token."""
-    for method, path in (
-        ("GET", "/api/v1/me"),
-        ("GET", "/api/v1/auth/sessions"),
-        ("POST", "/api/v1/auth/logout"),
-        ("POST", "/api/v1/auth/logout-all"),
-    ):
-        response = await client.request(method, path)
-        assert response.status_code == 401, path
-        assert response.headers["www-authenticate"] == "Bearer"

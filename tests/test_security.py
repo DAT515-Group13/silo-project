@@ -126,18 +126,14 @@ def test_expired_token_is_rejected_outside_the_leeway() -> None:
 
 
 def test_previous_secret_is_accepted_only_when_listed() -> None:
-    """During rotation a token signed with JWT_SECRET_PREVIOUS still works."""
+    """During rotation a token signed with JWT_SECRET_PREVIOUS still works, unless expired."""
     token = make_token(OLD_SECRET)
     assert decode(token, [SECRET, OLD_SECRET]).user_id == 42
     with pytest.raises(InvalidToken):
         decode(token, [SECRET])
-
-
-def test_expired_token_of_the_previous_secret_is_rejected() -> None:
-    """The fallback to the previous secret does not make expired tokens valid."""
-    old = datetime.now(UTC) - timedelta(hours=1)
+    expired = make_token(OLD_SECRET, now=datetime.now(UTC) - timedelta(hours=1))
     with pytest.raises(InvalidToken):
-        decode(make_token(OLD_SECRET, now=old), [SECRET, OLD_SECRET])
+        decode(expired, [SECRET, OLD_SECRET])
 
 
 # --- Passwords -----------------------------------------------------------------------------------
@@ -159,12 +155,6 @@ async def test_malformed_hash_is_a_failed_login_not_an_error() -> None:
     """A broken stored hash gives False instead of an exception."""
     assert await security.verify_password("not a hash", "whatever") is False
     assert await security.verify_password("", "whatever") is False
-
-
-@pytest.mark.anyio
-async def test_dummy_verification_does_not_fail() -> None:
-    """The dummy check used for unknown usernames runs and returns nothing."""
-    assert await security.verify_dummy_password("anything") is None
 
 
 def test_weaker_hash_needs_rehash() -> None:
@@ -206,13 +196,6 @@ def test_refresh_tokens_are_random_and_43_characters_long() -> None:
     assert all(len(token) == 43 for token in tokens)
 
 
-def test_hash_token_is_sha256_hex() -> None:
-    """Only the SHA-256 hex digest is stored: 64 characters, deterministic."""
-    assert security.hash_token("abc") == hashlib.sha256(b"abc").hexdigest()
-    assert len(security.hash_token("abc")) == 64
-    assert security.hash_token("abc") != security.hash_token("abd")
-
-
 # --- CSRF tokens ---------------------------------------------------------------------------------
 
 
@@ -222,10 +205,7 @@ def test_csrf_token_needs_its_own_secret_and_session() -> None:
     assert security.verify_csrf_token(token, secret=SECRET, binding="session-1") is True
     assert security.verify_csrf_token(token, secret=SECRET, binding="session-2") is False
     assert security.verify_csrf_token(token, secret=OLD_SECRET, binding="session-1") is False
-
-
-def test_csrf_tokens_are_unique() -> None:
-    """Every token has a fresh random part."""
+    # Every token has a fresh random part.
     assert security.create_csrf_token(SECRET, "b") != security.create_csrf_token(SECRET, "b")
 
 

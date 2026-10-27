@@ -18,6 +18,7 @@ from tests.conftest import (
     Sessionmaker,
     UserFactory,
     page_csrf,
+    post,
 )
 from tests.fakes import InMemoryBlobStore
 
@@ -76,25 +77,6 @@ async def test_upload_checks_the_origin(
     assert response.status_code == 403
 
 
-async def test_other_file_forms_need_csrf(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
-) -> None:
-    """Rename, delete, share, unshare and the link forms use the normal CSRF protection."""
-    act_as(Role.user)
-    file_id = "00000000-0000-0000-0000-000000000001"
-    for path in [
-        f"/files/{file_id}/{a}" for a in ("rename", "delete", "share", "unshare", "links")
-    ]:
-        response = await client.post(
-            path,
-            data={"filename": "x", "team_id": "1", "expires_in_hours": "24"},
-            headers={"Origin": settings.base_url},
-        )
-        assert response.status_code == 403, path
-    revoke = await client.post("/links/1/revoke", headers={"Origin": settings.base_url})
-    assert revoke.status_code == 403
-
-
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 db = pytest.mark.db
@@ -114,13 +96,6 @@ async def upload(
         headers=headers,
         follow_redirects=False,
     )
-
-
-async def post(
-    client: httpx.AsyncClient, login: tuple[dict, dict], path: str, **fields: str
-) -> httpx.Response:
-    headers, form = login
-    return await client.post(path, data={**form, **fields}, headers=headers, follow_redirects=False)
 
 
 @db
@@ -162,32 +137,31 @@ async def test_upload_through_the_page_then_list_rename_and_delete(
 
 
 @db
+@pytest.mark.parametrize(
+    ("data", "name", "status", "message"),
+    [
+        (b"too long for the quota", "a.txt", 413, "Storage quota exceeded."),
+        (b"", "", 422, "Choose a file to upload."),  # no file chosen: httpx sends no filename
+    ],
+)
 async def test_refused_upload_shows_the_message_and_keeps_nothing(
     client: httpx.AsyncClient,
     settings: Settings,
     user_factory: UserFactory,
     page_login: PageLogin,
     blob_store: InMemoryBlobStore,
+    data: bytes,
+    name: str,
+    status: int,
+    message: str,
 ) -> None:
-    """Over the quota: the list is shown again with the message (413), no blob remains."""
+    """A refused upload shows the list again with a readable message and leaves no blob."""
     settings.quota_user_bytes = 4
     login = await page_login(await user_factory("anna"))
-    response = await upload(client, login, b"too long for the quota")
-    assert response.status_code == 413
-    assert "Storage quota exceeded." in response.text
+    response = await upload(client, login, data, name)
+    assert response.status_code == status
+    assert message in response.text
     assert blob_store.blobs == {}
-
-
-@db
-async def test_empty_filename_shows_a_message(
-    client: httpx.AsyncClient, user_factory: UserFactory, page_login: PageLogin
-) -> None:
-    """Submitting the form without choosing a file is a 422 with a readable message."""
-    login = await page_login(await user_factory("anna"))
-    # A browser sends filename="" (httpx would leave the parameter out); a space is cleaned to "".
-    response = await upload(client, login, b"", " ")
-    assert response.status_code == 422
-    assert "Filename must not be empty." in response.text
 
 
 @db
@@ -277,29 +251,6 @@ async def test_link_url_is_shown_once_and_the_page_is_not_cached(
 
 
 @db
-async def test_revoke_link_through_the_page(
-    client: httpx.AsyncClient,
-    user_factory: UserFactory,
-    file_factory: FileFactory,
-    page_login: PageLogin,
-    db_sessionmaker: Sessionmaker,
-) -> None:
-    """Revoking marks the link and brings the owner back to the file page."""
-    owner = await user_factory("owner")
-    login = await page_login(owner)
-    file = await file_factory(owner.id)
-    await post(client, login, f"/files/{file.id}/links")
-    async with db_sessionmaker() as session:
-        link_id = (await session.scalars(select(ShareLink.id))).one()
-
-    revoked = await post(client, login, f"/links/{link_id}/revoke")
-    assert revoked.status_code == 303
-    assert revoked.headers["location"] == f"/files/{file.id}"
-    page = await client.get(f"/files/{file.id}", headers=login[0])
-    assert "revoked" in page.text
-
-
-@db
 async def test_link_form_errors_show_a_message(
     client: httpx.AsyncClient,
     settings: Settings,
@@ -327,42 +278,47 @@ async def test_link_form_errors_show_a_message(
 
 
 @db
-async def test_only_the_owner_can_use_the_link_forms(
+@pytest.mark.parametrize(
+    ("actor", "status", "location"),
+    [
+        ("owner", 303, "/files/{file_id}"),
+        ("admin", 303, "/admin/files"),  # an admin cannot open the file page
+        ("stranger", 404, None),
+    ],
+)
+async def test_who_revokes_a_link_and_where_they_land(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
     file_factory: FileFactory,
     page_login: PageLogin,
     db_sessionmaker: Sessionmaker,
+    actor: str,
+    status: int,
+    location: str | None,
 ) -> None:
-    """A stranger cannot create or revoke links (404), and sees no link section."""
+    """The owner and an admin revoke a link, a stranger gets 404; each lands on a page they see."""
     owner = await user_factory("owner")
-    stranger = await page_login(await user_factory("stranger"))
     file = await file_factory(owner.id)
     owner_login = await page_login(owner)
     await post(client, owner_login, f"/files/{file.id}/links")
     async with db_sessionmaker() as session:
         link_id = (await session.scalars(select(ShareLink.id))).one()
 
-    assert (await post(client, stranger, f"/files/{file.id}/links")).status_code == 404
-    assert (await post(client, stranger, f"/links/{link_id}/revoke")).status_code == 404
+    if actor == "owner":
+        who = owner_login
+    elif actor == "admin":
+        who = await page_login(await user_factory("boss", role=Role.admin))
+    else:
+        who = await page_login(await user_factory("stranger"))
+        assert (await post(client, who, f"/files/{file.id}/links")).status_code == 404
 
-
-@db
-async def test_admin_revoking_a_link_returns_to_the_admin_list(
-    client: httpx.AsyncClient,
-    user_factory: UserFactory,
-    file_factory: FileFactory,
-    page_login: PageLogin,
-    db_sessionmaker: Sessionmaker,
-) -> None:
-    """An admin cannot open someone else's file page, so after revoking they go to /admin/files."""
-    owner = await user_factory("owner")
-    file = await file_factory(owner.id)
-    await post(client, await page_login(owner), f"/files/{file.id}/links")
+    revoked = await post(client, who, f"/links/{link_id}/revoke")
+    assert revoked.status_code == status
+    if location:
+        assert revoked.headers["location"] == location.format(file_id=file.id)
     async with db_sessionmaker() as session:
-        link_id = (await session.scalars(select(ShareLink.id))).one()
-
-    admin = await page_login(await user_factory("boss", role=Role.admin))
-    revoked = await post(client, admin, f"/links/{link_id}/revoke")
-    assert revoked.status_code == 303
-    assert revoked.headers["location"] == "/admin/files"
+        revoked_at = await session.scalar(select(ShareLink.revoked_at))
+    assert (revoked_at is not None) is (status == 303)
+    if actor == "owner":
+        page = await client.get(f"/files/{file.id}", headers=owner_login[0])
+        assert "revoked" in page.text

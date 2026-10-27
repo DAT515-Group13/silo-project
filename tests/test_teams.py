@@ -40,17 +40,11 @@ async def test_add_member_validates_the_username(client: httpx.AsyncClient, act_
     assert response.status_code == 422
 
 
-async def test_team_endpoints_need_a_token(client: httpx.AsyncClient) -> None:
-    """Without a Bearer token a team endpoint is 401 invalid_token."""
-    response = await client.get("/api/v1/teams/1")
-    assert response.status_code == 401
-    assert response.json()["code"] == "invalid_token"
-
-
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 
 async def member_names(client: httpx.AsyncClient, headers: dict, team_id: int) -> list[str]:
+    """Usernames of the team's members (sorted by the API), read as the user of ``headers``."""
     response = await client.get(f"/api/v1/teams/{team_id}", headers=headers)
     assert response.status_code == 200, response.text
     return [m["username"] for m in response.json()["members"]]
@@ -63,8 +57,12 @@ async def test_lead_creates_a_team_and_becomes_owner_and_member(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """The creator owns the team and is its first member; team.create is audited."""
+    """The creator owns the team and is its first member; team.create is audited.
+
+    Names are unique per owner (409 team_name_taken); another owner may reuse one (s. 11).
+    """
     lead = await user_factory(username="lead", role=Role.team_lead)
+    other = await bearer_for(await user_factory(username="other", role=Role.team_lead))
     headers = await bearer_for(lead)
     team_id = await make_team(client, headers, "  Design  ")
 
@@ -77,19 +75,10 @@ async def test_lead_creates_a_team_and_becomes_owner_and_member(
         actions = (await session.scalars(select(AuditLog.action))).all()
     assert "team.create" in actions
 
-
-@pytest.mark.db
-async def test_team_names_are_unique_per_owner(
-    client: httpx.AsyncClient, user_factory: UserFactory, bearer_for: BearerFor
-) -> None:
-    """The same owner cannot reuse a name (409 team_name_taken); another owner can (s. 11)."""
-    first = await bearer_for(await user_factory(username="lead", role=Role.team_lead))
-    second = await bearer_for(await user_factory(username="other", role=Role.team_lead))
-    await make_team(client, first, "Design")
-    again = await client.post("/api/v1/teams", json={"name": "Design"}, headers=first)
+    again = await client.post("/api/v1/teams", json={"name": "Design"}, headers=headers)
     assert again.status_code == 409
     assert again.json()["code"] == "team_name_taken"
-    await make_team(client, second, "Design")
+    await make_team(client, other, "Design")
 
 
 @pytest.mark.db
@@ -111,14 +100,17 @@ async def test_non_members_get_404_everywhere(
 
 @pytest.mark.db
 async def test_add_member_always_answers_204(
-    client: httpx.AsyncClient, user_factory: UserFactory, bearer_for: BearerFor
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
 ) -> None:
     """Unknown, pending, existing and new usernames all give 204; only active accounts join.
 
     No enumeration on add-member.
     """
     owner = await bearer_for(await user_factory(username="lead", role=Role.team_lead))
-    await user_factory(username="anna")
+    anna = await user_factory(username="anna")
     await user_factory(username="pending1", status=UserStatus.pending)
     await user_factory(username="gone", status=UserStatus.disabled)
     team_id = await make_team(client, owner)
@@ -126,6 +118,14 @@ async def test_add_member_always_answers_204(
     for username in ("nobody", "pending1", "gone", "anna", "anna", "ANNA"):
         assert await add_member(client, owner, team_id, username) == 204
     assert await member_names(client, owner, team_id) == ["anna", "lead"]
+    # Only the real addition is audited, although "anna" was named three times.
+    async with db_sessionmaker() as session, session.begin():
+        added = (
+            await session.scalars(
+                select(AuditLog.details).where(AuditLog.action == "team.member_add")
+            )
+        ).all()
+    assert [entry["user_id"] for entry in added] == [anna.id]
 
 
 @pytest.mark.db
@@ -150,13 +150,20 @@ async def test_only_the_owner_adds_members(
 async def test_owner_cannot_leave_but_members_can(
     client: httpx.AsyncClient, user_factory: UserFactory, bearer_for: BearerFor
 ) -> None:
-    """The owner leaving is 409 owner_cannot_leave; a member may leave."""
+    """The owner leaving is 409 owner_cannot_leave; a member may leave, but may not remove
+    another member (only the owner can)."""
     lead = await user_factory(username="lead", role=Role.team_lead)
     owner = await bearer_for(lead)
     anna = await user_factory(username="anna")
+    bob = await user_factory(username="bob")
     member = await bearer_for(anna)
     team_id = await make_team(client, owner)
     await add_member(client, owner, team_id, "anna")
+    await add_member(client, owner, team_id, "bob")
+
+    bob_path = f"/api/v1/teams/{team_id}/members/{bob.id}"
+    assert (await client.delete(bob_path, headers=member)).status_code == 404
+    assert (await client.delete(bob_path, headers=owner)).status_code == 204
 
     leave_owner = await client.delete(f"/api/v1/teams/{team_id}/members/{lead.id}", headers=owner)
     assert leave_owner.status_code == 409
@@ -169,26 +176,6 @@ async def test_owner_cannot_leave_but_members_can(
     assert (await client.get(f"/api/v1/teams/{team_id}", headers=member)).status_code == 404
     again = await client.delete(f"/api/v1/teams/{team_id}/members/{anna.id}", headers=owner)
     assert again.status_code == 404
-
-
-@pytest.mark.db
-async def test_a_member_cannot_remove_another_member(
-    client: httpx.AsyncClient, user_factory: UserFactory, bearer_for: BearerFor
-) -> None:
-    """Members may remove only themselves; the owner removes anyone else."""
-    owner = await bearer_for(await user_factory(username="lead", role=Role.team_lead))
-    anna = await user_factory(username="anna")
-    bob = await user_factory(username="bob")
-    team_id = await make_team(client, owner)
-    await add_member(client, owner, team_id, "anna")
-    await add_member(client, owner, team_id, "bob")
-
-    by_anna = await client.delete(
-        f"/api/v1/teams/{team_id}/members/{bob.id}", headers=await bearer_for(anna)
-    )
-    assert by_anna.status_code == 404
-    by_owner = await client.delete(f"/api/v1/teams/{team_id}/members/{bob.id}", headers=owner)
-    assert by_owner.status_code == 204
 
 
 @pytest.mark.db
@@ -267,12 +254,14 @@ async def test_demoted_lead_keeps_managing_own_team(
 
 
 @pytest.mark.db
+@pytest.mark.parametrize("deleter", ["owner", "admin"])
 async def test_owner_and_admin_delete_a_team_but_members_cannot(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
     file_factory: FileFactory,
+    deleter: str,
 ) -> None:
     """Team owner or admin delete; memberships and shares go, files stay."""
     lead = await user_factory(username="lead", role=Role.team_lead)
@@ -284,7 +273,8 @@ async def test_owner_and_admin_delete_a_team_but_members_cannot(
     await file_factory(lead.id, team_id)
 
     assert (await client.delete(f"/api/v1/teams/{team_id}", headers=member)).status_code == 404
-    assert (await client.delete(f"/api/v1/teams/{team_id}", headers=admin)).status_code == 204
+    who = {"owner": owner, "admin": admin}[deleter]
+    assert (await client.delete(f"/api/v1/teams/{team_id}", headers=who)).status_code == 204
     async with db_sessionmaker() as session, session.begin():
         memberships = await session.scalar(select(func.count()).select_from(TeamMember))
         shares = await session.scalar(select(func.count()).select_from(FileShare))

@@ -1,5 +1,6 @@
 """Operational endpoints /healthz and /readyz."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter
@@ -9,6 +10,8 @@ from sqlalchemy import text
 from app.routers.common import DbSession, Store
 
 logger = logging.getLogger("silo")
+
+DATABASE_TIMEOUT_SECONDS = 5
 
 router = APIRouter(tags=["health"])
 
@@ -31,7 +34,9 @@ async def readyz(session: DbSession, store: Store) -> JSONResponse:
 
     # Check 1: the database answers a trivial query.
     try:
-        await session.execute(text("SELECT 1"))
+        # A database that accepts the connection but does not answer must not hang the probe.
+        async with asyncio.timeout(DATABASE_TIMEOUT_SECONDS):
+            await session.execute(text("SELECT 1"))
     except Exception as exc:
         # Log the exception type only: the message of a driver error can contain the DSN.
         logger.warning("Readiness check failed: database (%s)", type(exc).__name__)

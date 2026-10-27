@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import Settings
-from app.models import Role, User, UserStatus
+from app.models import ActorType, AuditLog, Outcome, Role, User, UserStatus
 from app.permissions import CurrentUser
 from app.routers.common import templates
 from tests.conftest import ActAs, FileFactory, PageLogin, Sessionmaker, UserFactory, page_csrf
@@ -182,14 +182,19 @@ async def test_audit_and_files_pages_render(
     admin_login: tuple,
     user_factory: UserFactory,
     file_factory: FileFactory,
+    db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Both listings render for an admin, with filters kept in the form."""
+    """Both listings render for an admin; the audit filters select rows and stay in the form."""
     _, headers, _ = admin_login
     anna = await user_factory(username="anna")
     await file_factory(anna.id, filename="notes.txt")
+    async with db_sessionmaker() as session, session.begin():
+        for outcome in (Outcome.success, Outcome.failed):
+            session.add(AuditLog(actor_type=ActorType.system, action="auth.login", outcome=outcome))
 
     files = await client.get("/admin/files", headers=headers)
     assert files.status_code == 200 and "notes.txt" in files.text
     audit = await client.get("/admin/audit?action=auth.login&outcome=success", headers=headers)
     assert audit.status_code == 200
     assert 'value="auth.login"' in audit.text
+    assert "<td>success</td>" in audit.text and "<td>failed</td>" not in audit.text

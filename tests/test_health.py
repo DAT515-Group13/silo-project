@@ -144,3 +144,59 @@ async def test_lifespan_creates_and_closes_the_azure_store(
         assert store.closed is False
     assert store.closed is True
     assert app.state.blob_store is None
+
+
+@pytest.mark.anyio
+async def test_readyz_503_when_the_database_does_not_answer(
+    app: FastAPI, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database that accepts the connection but hangs gives 503 after the timeout."""
+    import asyncio
+
+    from app.routers import health
+
+    class HangingSession:
+        async def execute(self, statement: object) -> None:
+            await asyncio.sleep(30)
+
+    async def hanging_db() -> AsyncIterator[HangingSession]:
+        yield HangingSession()
+
+    monkeypatch.setattr(health, "DATABASE_TIMEOUT_SECONDS", 0.05)
+    app.dependency_overrides[get_db] = hanging_db
+    response = await client.get("/readyz")
+    assert response.status_code == 503
+
+
+@pytest.mark.anyio
+async def test_engine_is_disposed_when_startup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing first-admin step must not leave the connection pool behind."""
+    disposed: list[bool] = []
+    real_create_engine = main.create_engine
+
+    class SpyEngine:
+        """Forwards everything to the real engine, but records ``dispose``."""
+
+        def __init__(self, engine: object) -> None:
+            self._engine = engine
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._engine, name)
+
+        async def dispose(self) -> None:
+            disposed.append(True)
+            await self._engine.dispose()  # type: ignore[attr-defined]
+
+    def spying_create_engine(settings: object) -> SpyEngine:
+        return SpyEngine(real_create_engine(settings))  # type: ignore[arg-type]
+
+    async def failing_admin(*args: object, **kwargs: object) -> bool:
+        raise RuntimeError("database trouble")
+
+    monkeypatch.setattr(main, "create_engine", spying_create_engine)
+    monkeypatch.setattr(main, "ensure_initial_admin", failing_admin)
+    app = create_app(settings=make_settings(), blob_store=InMemoryBlobStore())
+    with pytest.raises(RuntimeError):
+        async with app.router.lifespan_context(app):
+            pass
+    assert disposed == [True]

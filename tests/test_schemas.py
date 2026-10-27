@@ -14,12 +14,6 @@ def test_unknown_field_is_rejected() -> None:
         RegisterIn(username="anna", password="x" * 12, role="admin")  # type: ignore[call-arg]
 
 
-def test_username_is_lowercased_and_stripped() -> None:
-    """Usernames are lowercased before storage and lookup."""
-    assert RegisterIn(username="  Anna ", password="x" * 12).username == "anna"
-    assert AddMemberIn(username="BOB.smith").username == "bob.smith"
-
-
 @pytest.mark.parametrize(
     "username",
     [
@@ -42,10 +36,12 @@ def test_invalid_username_is_rejected(username: str) -> None:
         normalize_username(username)
 
 
-@pytest.mark.parametrize("username", ["abc", "a" * 32, "9lives", "a.b_c-d", "Anna"])
+@pytest.mark.parametrize("username", ["abc", "a" * 32, "9lives", "a.b_c-d", "Anna", "  Anna "])
 def test_valid_username_is_accepted(username: str) -> None:
-    """Boundary lengths and allowed punctuation are accepted."""
-    assert RegisterIn(username=username, password="x" * 12).username == username.lower()
+    """Boundary lengths and punctuation are accepted; names are stripped and lowercased."""
+    expected = username.strip().lower()
+    assert RegisterIn(username=username, password="x" * 12).username == expected
+    assert AddMemberIn(username=username).username == expected
 
 
 def test_login_username_is_only_normalized() -> None:

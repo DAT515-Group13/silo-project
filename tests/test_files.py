@@ -5,13 +5,13 @@ tests go through HTTP with real tokens and check the permission matrix of sectio
 is always 404, never 403.
 """
 
-import uuid
-
 import httpx
 import pytest
 from sqlalchemy import select
 
-from app.models import AuditLog, Role, User
+from app.config import Settings
+from app.models import AuditLog, File, Role, User
+from app.services.files import MULTIPART_MARGIN_BYTES
 from tests.conftest import (
     ActAs,
     BearerFor,
@@ -29,43 +29,47 @@ pytestmark = pytest.mark.anyio
 # --- No database needed --------------------------------------------------------------------------
 
 
-async def test_file_endpoints_need_a_token(client: httpx.AsyncClient) -> None:
-    """Without a Bearer token every file endpoint is 401 invalid_token."""
-    for method, path in [
-        ("GET", "/api/v1/files"),
-        ("POST", "/api/v1/files"),
-        ("GET", f"/api/v1/files/{uuid.uuid4()}"),
-        ("DELETE", f"/api/v1/files/{uuid.uuid4()}"),
-    ]:
-        response = await client.request(method, path)
-        assert response.status_code == 401, (method, path)
-        assert response.json()["code"] == "invalid_token"
-
-
-async def test_upload_must_be_multipart(client: httpx.AsyncClient, act_as: ActAs) -> None:
-    """A JSON body (or no body) on POST /files is a 422, not a crash."""
+@pytest.mark.parametrize(
+    "request_args",
+    [
+        {"json": {"file": "x"}},  # not multipart
+        {"files": {"other": ("a.txt", b"x")}},  # the part is not named `file`
+        {"files": {"file": ("", b"", "application/octet-stream")}},  # no file chosen
+    ],
+)
+async def test_upload_with_a_bad_body_is_422(
+    client: httpx.AsyncClient, act_as: ActAs, request_args: dict
+) -> None:
+    """A JSON body, a wrongly named part or an empty file name is a 422, not a crash."""
     act_as(Role.user)
-    response = await client.post("/api/v1/files", json={"file": "x"})
+    response = await client.post("/api/v1/files", **request_args)
     assert response.status_code == 422
     assert response.json()["code"] == "validation_error"
 
 
-async def test_upload_needs_the_file_field(client: httpx.AsyncClient, act_as: ActAs) -> None:
-    """A multipart body whose part is not named `file` is a 422."""
-    act_as(Role.user)
-    response = await client.post("/api/v1/files", files={"other": ("a.txt", b"x")})
-    assert response.status_code == 422
-
-
-async def test_upload_without_a_chosen_file_is_422(
-    client: httpx.AsyncClient, act_as: ActAs
+async def test_huge_content_length_is_413_without_storing_anything(
+    client: httpx.AsyncClient,
+    act_as: ActAs,
+    settings: Settings,
+    blob_store: InMemoryBlobStore,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A browser sends an empty file name when no file was picked; that is a validation error."""
+    """Upload step 1: a Content-Length far above the limit is refused before any blob work.
+
+    The denied-upload audit entry cannot be written without a database; that is only logged.
+    """
+    settings.max_file_size_bytes = 1000
+
+    async def must_not_run(*args: object, **kwargs: object) -> int:
+        raise AssertionError("the upload reached blob storage")
+
+    monkeypatch.setattr(blob_store, "upload_stream", must_not_run)
     act_as(Role.user)
-    response = await client.post(
-        "/api/v1/files", files={"file": ("", b"", "application/octet-stream")}
-    )
-    assert response.status_code == 422
+    too_big = b"x" * (1000 + MULTIPART_MARGIN_BYTES + 1)
+    response = await client.post("/api/v1/files", files={"file": ("a.bin", too_big)})
+    assert response.status_code == 413
+    assert response.json()["code"] == "file_too_large"
+    assert blob_store.blobs == {}
 
 
 async def test_sort_and_scope_are_validated(client: httpx.AsyncClient, act_as: ActAs) -> None:
@@ -86,12 +90,18 @@ async def test_permission_matrix_for_a_file(
     user_factory: UserFactory,
     file_factory: FileFactory,
     bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
+    blob_store: InMemoryBlobStore,
 ) -> None:
-    """Owner sees and changes; a stranger gets 404 everywhere; an admin may only delete."""
-    owner = await user_factory("owner", used_bytes=10)  # the delete gives these bytes back
+    """Owner sees and changes; a stranger gets 404 everywhere; an admin may only delete.
+
+    The admin's delete gives the bytes back to the owner (not the admin) and removes the blob.
+    """
+    owner = await user_factory("owner")
     stranger = await user_factory("stranger")
     admin = await user_factory("boss", role=Role.admin)
-    file = await file_factory(owner.id)
+    file = await file_factory(owner.id, size_bytes=10)
+    blob_store.put(file.blob_name, b"0123456789")
     path = f"/api/v1/files/{file.id}"
 
     owner_h = await bearer_for(owner)
@@ -104,28 +114,12 @@ async def test_permission_matrix_for_a_file(
         assert (await client.get(f"{path}/download", headers=headers)).status_code == 404
         renamed = await client.patch(path, json={"filename": "x.txt"}, headers=headers)
         assert renamed.status_code == 404
+        # Sharing is for the owner only: an admin can neither list nor change the shares.
+        assert (await client.get(f"{path}/teams", headers=headers)).status_code == 404
+        assert (await client.put(f"{path}/teams/1", headers=headers)).status_code == 404
 
     assert (await client.delete(path, headers=await bearer_for(stranger))).status_code == 404
     assert (await client.delete(path, headers=await bearer_for(admin))).status_code == 204
-
-
-@db
-async def test_admin_delete_frees_the_owners_quota(
-    client: httpx.AsyncClient,
-    user_factory: UserFactory,
-    file_factory: FileFactory,
-    bearer_for: BearerFor,
-    db_sessionmaker: Sessionmaker,
-    blob_store: InMemoryBlobStore,
-) -> None:
-    """Deleting gives the bytes back to the owner (not the admin) and removes the blob."""
-    owner = await user_factory("owner", used_bytes=10)
-    admin = await user_factory("boss", role=Role.admin)
-    file = await file_factory(owner.id, size_bytes=10)
-    blob_store.put(file.blob_name, b"0123456789")
-
-    response = await client.delete(f"/api/v1/files/{file.id}", headers=await bearer_for(admin))
-    assert response.status_code == 204
     async with db_sessionmaker() as session:
         assert await session.scalar(select(User.used_bytes).where(User.id == owner.id)) == 0
         actions = (await session.scalars(select(AuditLog.action))).all()
@@ -140,13 +134,19 @@ async def test_delete_still_succeeds_when_the_blob_cannot_be_deleted(
     file_factory: FileFactory,
     bearer_for: BearerFor,
     blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
 ) -> None:
     """The row is gone, the blob becomes an orphan for cleanup: still 204 (section 10)."""
-    owner = await user_factory("owner", used_bytes=10)
+    owner = await user_factory("owner")
     file = await file_factory(owner.id, size_bytes=10)
+    blob_store.put(file.blob_name, b"0123456789")
     blob_store.healthy = False
     response = await client.delete(f"/api/v1/files/{file.id}", headers=await bearer_for(owner))
     assert response.status_code == 204
+    async with db_sessionmaker() as session:
+        assert await session.scalar(select(File).where(File.id == file.id)) is None
+        assert await session.scalar(select(User.used_bytes).where(User.id == owner.id)) == 0
+    assert file.blob_name in blob_store.blobs  # the orphan that cleanup will remove
 
 
 @db
@@ -156,6 +156,7 @@ async def test_download_redirects_to_a_read_only_url(
     file_factory: FileFactory,
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
+    settings: Settings,
 ) -> None:
     """302 to the SAS URL, `no-store`, the original name; HTML is served as octet-stream."""
     owner = await user_factory("owner")
@@ -170,6 +171,7 @@ async def test_download_redirects_to_a_read_only_url(
     assert parts["filename"] == "x.html"
     assert parts["content_type"] == "application/octet-stream"
     assert parts["sp"] == "r"
+    assert parts["ttl"] == str(settings.sas_url_ttl_seconds)
     async with db_sessionmaker() as session:
         actions = (await session.scalars(select(AuditLog.action))).all()
     assert actions == ["file.download"]
@@ -246,6 +248,10 @@ async def test_metadata_works_while_storage_is_down(
     blob_store.healthy = False
     assert (await client.get("/api/v1/files", headers=headers)).status_code == 200
     assert (await client.get(f"/api/v1/files/{file.id}", headers=headers)).status_code == 200
+    renamed = await client.patch(
+        f"/api/v1/files/{file.id}", json={"filename": "new.pdf"}, headers=headers
+    )
+    assert renamed.status_code == 200
     assert (
         await client.get(f"/api/v1/files/{file.id}/download", headers=headers)
     ).status_code == 503
@@ -290,6 +296,9 @@ async def test_member_sees_and_downloads_but_cannot_change(
     assert (await client.patch(path, json={"filename": "x"}, headers=member_h)).status_code == 404
     assert (await client.delete(path, headers=member_h)).status_code == 404
     assert (await client.put(f"{path}/teams/{team_id}", headers=member_h)).status_code == 404
+    # Links are for the owner only: a member can neither create nor list them.
+    assert (await client.post(f"{path}/links", json={}, headers=member_h)).status_code == 404
+    assert (await client.get(f"{path}/links", headers=member_h)).status_code == 404
 
 
 @db
