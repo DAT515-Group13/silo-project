@@ -1,13 +1,18 @@
 """Rate limit classes and the upload concurrency guard.
 
 Limits: ``auth`` 10/min per IP, ``read`` 300/min per user, ``write`` 60/min per user, ``upload``
-10/min per user, ``admin`` 120/min per user, ``public`` 30/min per IP. Uploads are also limited to
-3 at a time per user.
+10/min per user, ``admin`` 120/min per user, ``public`` 30/min per IP, ``password`` 5/min per
+user and ``password_ip`` 20/min per IP (password change: it checks the current password, so
+guessing must stay slow; both layers apply together). Uploads are also limited to 3 at a time
+per user.
 
 The counters live in the memory of one process (no Redis). With N replicas the
 effective limit is up to N times higher; this is an accepted limitation (open question Q6).
 Counters are per route, so the login page and ``/api/v1/auth/login`` each have their own 10/min.
-Account lockout is what limits guessing per account.
+Except the ``SHARED`` classes: one counter for all routes that use them (the password change
+API and page).
+Account lockout is what limits login guessing per account; password change has no lockout
+(it would let a stolen token lock the owner out), so its limits above are the protection.
 """
 
 from collections import defaultdict
@@ -49,20 +54,38 @@ LIMIT_CLASSES: dict[str, tuple[str, Callable[[Request], str]]] = {
     "upload": ("10/minute", _user_key),
     "admin": ("120/minute", _user_key),
     "public": ("30/minute", _ip_key),
+    "password": ("5/minute", _user_key),
+    "password_ip": ("20/minute", _ip_key),
 }
+
+# Classes with one counter for all their routes, so the JSON API and the HTML form of the same
+# action cannot be used to double the allowed attempts.
+SHARED = {"password", "password_ip"}
 
 limiter = Limiter(key_func=_ip_key, storage_uri="memory://")
 
 
-def limit(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Decorator that applies a rate limit class to a route function.
+def limit(*names: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorator that applies one or more rate limit classes to a route function.
 
     The route function must have a parameter ``request: Request`` (slowapi needs it). Put the
-    decorator below the ``@router.get(...)`` line. Exceeding the limit answers
-    ``429 rate_limited`` with ``Retry-After``.
+    decorator below the ``@router.get(...)`` line. Exceeding a limit answers
+    ``429 rate_limited`` with ``Retry-After``. With several classes all of them apply.
     """
-    rate, key_func = LIMIT_CLASSES[name]
-    return limiter.limit(rate, key_func=key_func)
+    decorators = []
+    for name in names:
+        rate, key_func = LIMIT_CLASSES[name]
+        if name in SHARED:
+            decorators.append(limiter.shared_limit(rate, scope=name, key_func=key_func))
+        else:
+            decorators.append(limiter.limit(rate, key_func=key_func))
+
+    def apply(func: Callable[..., Any]) -> Callable[..., Any]:
+        for decorator in decorators:
+            func = decorator(func)
+        return func
+
+    return apply
 
 
 def reset_limits() -> None:

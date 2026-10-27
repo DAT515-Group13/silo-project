@@ -49,10 +49,12 @@ def test_classes_match_the_spec() -> None:
         "upload": "10/minute",
         "admin": "120/minute",
         "public": "30/minute",
+        "password": "5/minute",
+        "password_ip": "20/minute",
     }
     keys = {name: key.__name__ for name, (_, key) in ratelimit.LIMIT_CLASSES.items()}
-    assert keys["auth"] == keys["public"] == "_ip_key"
-    assert {keys[n] for n in ("read", "write", "upload", "admin")} == {"_user_key"}
+    assert keys["auth"] == keys["public"] == keys["password_ip"] == "_ip_key"
+    assert {keys[n] for n in ("read", "write", "upload", "admin", "password")} == {"_user_key"}
 
 
 def test_user_key_uses_the_user_id_or_falls_back_to_the_ip() -> None:
@@ -145,3 +147,26 @@ async def test_concurrency_guard_is_per_user_and_releases_slots() -> None:
     async with guard.slot(1):  # the failed upload released its slot
         pass
     assert not guard._active  # nothing is kept for users without uploads
+
+
+async def test_shared_class_has_one_counter_for_all_its_routes(app: FastAPI) -> None:
+    """Two routes with the `password_ip` class share 20 requests per minute and IP."""
+
+    async def first(request: Request) -> dict[str, bool]:
+        return {"ok": True}
+
+    async def second(request: Request) -> dict[str, bool]:
+        return {"ok": True}
+
+    first.__name__, second.__name__ = (
+        f"shared_a{next(_route_numbers)}",
+        f"shared_b{next(_route_numbers)}",
+    )
+    app.get("/a")(limit("password_ip")(first))
+    app.get("/b")(limit("password_ip")(second))
+    async with client_from(app) as client:
+        for _ in range(10):
+            assert (await client.get("/a")).status_code == 200
+            assert (await client.get("/b")).status_code == 200
+        assert (await client.get("/a")).status_code == 429
+        assert (await client.get("/b")).status_code == 429
