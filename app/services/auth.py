@@ -37,7 +37,9 @@ from app.services import audit, sessions
 from app.services.audit import AuditAction, AuditContext
 from app.services.sessions import IssuedTokens, RevokeReason
 
-MAX_LOCK = timedelta(hours=24)
+# Usernames are visible to other users, so anyone can lock an account on purpose (D25): the lock
+# stays short. The per-IP rate limit on login still applies.
+MAX_LOCK = timedelta(hours=1)
 
 _INACTIVE_ERRORS: dict[UserStatus, type[SiloError]] = {
     UserStatus.pending: AccountPending,
@@ -49,8 +51,8 @@ _INACTIVE_ERRORS: dict[UserStatus, type[SiloError]] = {
 def lock_duration(settings: Settings, failed_login_count: int) -> timedelta:
     """Return how long the account is locked when the failure counter reaches this value.
 
-    ``LOGIN_LOCK_MINUTES * 2^(count / LOGIN_MAX_FAILED - 1)``, at most 24 hours: 15 minutes at
-    5 failures, 30 at 10, 60 at 15, and so on. Only call it for multiples of LOGIN_MAX_FAILED.
+    ``LOGIN_LOCK_MINUTES * 2^(count / LOGIN_MAX_FAILED - 1)``, at most 1 hour (D25): 15 minutes at
+    10 failures, 30 at 20, 60 at 30, and so on. Only call it for multiples of LOGIN_MAX_FAILED.
     """
     exponent = failed_login_count // settings.login_max_failed - 1
     # min(exponent, 16): 2**16 minutes is far above the cap, and it keeps the number small.
@@ -193,7 +195,7 @@ async def login(
 
     password_ok = await verify_password(user.password_hash, password)
 
-    # Step 4: wrong password -> count it, and lock the account at every 5th failure.
+    # Step 4: wrong password -> count it, and lock the account at every LOGIN_MAX_FAILED-th failure.
     if not password_ok:
         target = {"target_type": "user", "target_id": user.id, "target_label": user.username}
         async with session.begin():

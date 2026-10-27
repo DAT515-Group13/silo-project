@@ -61,7 +61,7 @@ def test_valid_configuration_uses_spec_defaults(monkeypatch: pytest.MonkeyPatch)
     assert (s.jwt_access_minutes, s.refresh_token_days, s.session_max_days) == (15, 7, 30)
     assert s.upload_chunk_bytes == 4 * 1024 * 1024
     assert (s.sas_url_ttl_seconds, s.public_link_max_hours) == (300, 168)
-    assert (s.login_max_failed, s.login_lock_minutes, s.password_min_length) == (5, 15, 12)
+    assert (s.login_max_failed, s.login_lock_minutes, s.password_min_length) == (10, 15, 12)
     assert s.enable_docs is False
     assert s.jwt_secret_previous is None
     # COOKIE_SECURE is true unless explicitly turned off.

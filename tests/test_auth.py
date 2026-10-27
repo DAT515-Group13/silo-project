@@ -57,10 +57,10 @@ async def attempt(sm: Sessionmaker, settings: Settings, username: str, password:
 
 
 @pytest.mark.parametrize(
-    ("failures", "minutes"), [(5, 15), (10, 30), (15, 60), (20, 120), (40, 1440), (500, 1440)]
+    ("failures", "minutes"), [(10, 15), (20, 30), (30, 60), (40, 60), (500, 60)]
 )
 def test_lock_duration_doubles_and_is_capped(failures: int, minutes: int) -> None:
-    """15 minutes at 5 failures, doubling at each further 5, at most 24 hours."""
+    """15 minutes at 10 failures, doubling at each further 10, at most 1 hour (D25)."""
     assert auth.lock_duration(make_settings(), failures) == timedelta(minutes=minutes)
 
 
@@ -134,10 +134,10 @@ async def test_successful_login_issues_tokens_and_a_session(
 
 @pytest.mark.db
 @pytest.mark.anyio
-async def test_lockout_after_five_failures(
+async def test_lockout_after_ten_failures(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """5 wrong passwords lock the account for 15 minutes, even for the right password.
+    """10 wrong passwords lock the account for 15 minutes, even for the right password.
 
     Attempts during the lock are audited but not counted, so spamming cannot extend the lock.
     """
@@ -145,13 +145,13 @@ async def test_lockout_after_five_failures(
     now = datetime.now(UTC)
     invalid_before = sample("silo_login_attempts_total", result="invalid")
     locked_before = sample("silo_login_attempts_total", result="locked")
-    for _ in range(5):
+    for _ in range(10):
         with pytest.raises(InvalidCredentials):
             await attempt(db_sessionmaker, settings, "anna", "wrong-password-123", now=now)
-    assert sample("silo_login_attempts_total", result="invalid") == invalid_before + 5
+    assert sample("silo_login_attempts_total", result="invalid") == invalid_before + 10
 
     user = await get_user(db_sessionmaker, "anna")
-    assert user.failed_login_count == 5
+    assert user.failed_login_count == 10
     assert user.locked_until == now + timedelta(minutes=15)
     for password in ("wrong-password-123", TEST_PASSWORD) * 3:
         with pytest.raises(InvalidCredentials):
@@ -160,7 +160,7 @@ async def test_lockout_after_five_failures(
             )
 
     after = await get_user(db_sessionmaker, "anna")
-    assert (after.failed_login_count, after.locked_until) == (5, user.locked_until)
+    assert (after.failed_login_count, after.locked_until) == (10, user.locked_until)
     assert sample("silo_login_attempts_total", result="locked") == locked_before + 6
     async with db_sessionmaker() as db:
         actions = (await db.scalars(select(AuditLog.action))).all()
@@ -176,20 +176,20 @@ async def test_lockout_after_five_failures(
 async def test_second_lock_is_twice_as_long_and_the_counter_survives_expiry(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """After the lock ends 5 more failures lock for 30 minutes (counter 10), not 15."""
+    """After the lock ends 10 more failures lock for 30 minutes (counter 20), not 15."""
     await user_factory(username="anna")
     t0 = datetime.now(UTC)
-    for _ in range(5):
+    for _ in range(10):
         with pytest.raises(InvalidCredentials):
             await attempt(db_sessionmaker, settings, "anna", "wrong-password-123", now=t0)
 
     t1 = t0 + timedelta(minutes=16)  # the first lock is over
-    for _ in range(5):
+    for _ in range(10):
         with pytest.raises(InvalidCredentials):
             await attempt(db_sessionmaker, settings, "anna", "wrong-password-123", now=t1)
 
     user = await get_user(db_sessionmaker, "anna")
-    assert user.failed_login_count == 10
+    assert user.failed_login_count == 20
     assert user.locked_until == t1 + timedelta(minutes=30)
 
 
@@ -201,7 +201,7 @@ async def test_successful_login_resets_counter_and_lock(
     """A good login after an expired lock resets failed_login_count and locked_until."""
     await user_factory(username="anna")
     t0 = datetime.now(UTC)
-    for _ in range(5):
+    for _ in range(10):
         with pytest.raises(InvalidCredentials):
             await attempt(db_sessionmaker, settings, "anna", "wrong-password-123", now=t0)
     await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD, now=t0 + timedelta(minutes=16))
