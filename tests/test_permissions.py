@@ -21,7 +21,6 @@ from app.permissions import (
     can_revoke_link,
     can_share_with_team,
     can_view_file,
-    is_admin,
 )
 
 OWNER_ID, MEMBER_ID, ADMIN_ID, STRANGER_ID = 1, 2, 3, 4
@@ -99,13 +98,6 @@ def test_owner_shares_only_with_own_teams() -> None:
     """Sharing works only with a team the owner belongs to."""
     owner, _ = ACTORS["owner"]
     assert not can_share_with_team(owner, FILE, user_is_member=False)
-
-
-def test_is_admin() -> None:
-    """Only the admin role is admin; team_lead is not."""
-    assert is_admin(make_user(1, Role.admin))
-    assert not is_admin(make_user(1, Role.team_lead))
-    assert not is_admin(make_user(1, Role.user))
 
 
 # --- Teams ---------------------------------------------------------------------------------------

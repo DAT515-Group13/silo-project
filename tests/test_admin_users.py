@@ -15,15 +15,30 @@ from tests.fakes import InMemoryBlobStore
 pytestmark = pytest.mark.anyio
 
 
+def _route(method: str, path: str, body: dict | None, kind: str):
+    """One table row with a readable id, e.g. ``valid: GET /api/v1/admin/users``."""
+    return pytest.param(method, path, body, id=f"{kind}: {method} {path}")
+
+
+# Every admin route with a valid request, then requests that would fail validation.
 ADMIN_ROUTES = [
-    ("GET", "/api/v1/admin/users", None),
-    ("POST", "/api/v1/admin/users/2/approve", None),
-    ("POST", "/api/v1/admin/users/2/reject", None),
-    ("PATCH", "/api/v1/admin/users/2", {"role": "admin"}),
-    ("POST", "/api/v1/admin/users/2/revoke-sessions", None),
-    ("DELETE", "/api/v1/admin/users/2", None),
-    ("GET", "/api/v1/admin/files", None),
-    ("GET", "/api/v1/admin/audit", None),
+    _route("GET", "/api/v1/admin/users", None, "valid"),
+    _route("POST", "/api/v1/admin/users/2/approve", None, "valid"),
+    _route("POST", "/api/v1/admin/users/2/reject", None, "valid"),
+    _route("PATCH", "/api/v1/admin/users/2", {"role": "admin"}, "valid"),
+    _route("POST", "/api/v1/admin/users/2/revoke-sessions", None, "valid"),
+    _route("DELETE", "/api/v1/admin/users/2", None, "valid"),
+    _route("GET", "/api/v1/admin/files", None, "valid"),
+    _route("GET", "/api/v1/admin/audit", None, "valid"),
+    _route("PATCH", "/api/v1/admin/users/2", {"status": "pending"}, "invalid"),
+    _route("PATCH", "/api/v1/admin/users/2", {"x": 1}, "invalid"),
+    _route("POST", "/api/v1/admin/users/2/reject", {"reason": "x" * 501}, "invalid"),
+    _route("GET", "/api/v1/admin/users?status=bogus", None, "invalid"),
+    _route("GET", "/api/v1/admin/users?page=0", None, "invalid"),
+    _route("GET", "/api/v1/admin/audit?outcome=bogus", None, "invalid"),
+    _route("GET", "/api/v1/admin/audit?actor_id=99999999999", None, "invalid"),
+    _route("GET", "/api/v1/admin/files?size=1000", None, "invalid"),
+    _route("DELETE", "/api/v1/admin/users/0", None, "invalid"),
 ]
 
 
@@ -35,32 +50,7 @@ ADMIN_ROUTES = [
 async def test_non_admins_get_404_on_every_admin_endpoint(
     client: httpx.AsyncClient, act_as: ActAs, role: Role, method: str, path: str, body: dict | None
 ) -> None:
-    """The admin area does not exist for non-admins: 404, not 403."""
-    act_as(role)
-    response = await client.request(method, path, json=body)
-    assert response.status_code == 404
-    assert response.json()["code"] == "not_found"
-
-
-@pytest.mark.parametrize("role", [Role.user, Role.team_lead])
-@pytest.mark.parametrize(
-    ("method", "path", "body"),
-    [
-        ("PATCH", "/api/v1/admin/users/2", {"status": "pending"}),
-        ("PATCH", "/api/v1/admin/users/2", {"x": 1}),
-        ("POST", "/api/v1/admin/users/2/reject", {"reason": "x" * 501}),
-        ("GET", "/api/v1/admin/users?status=bogus", None),
-        ("GET", "/api/v1/admin/users?page=0", None),
-        ("GET", "/api/v1/admin/audit?outcome=bogus", None),
-        ("GET", "/api/v1/admin/audit?actor_id=99999999999", None),
-        ("GET", "/api/v1/admin/files?size=1000", None),
-        ("DELETE", "/api/v1/admin/users/0", None),
-    ],
-)
-async def test_invalid_input_from_a_non_admin_is_still_404(
-    client: httpx.AsyncClient, act_as: ActAs, role: Role, method: str, path: str, body: dict | None
-) -> None:
-    """Validation must not reveal the admin API: the 404 comes before any 422."""
+    """Non-admins get 404, not 403, on every admin route, and the 404 comes before any 422."""
     act_as(role)
     response = await client.request(method, path, json=body)
     assert response.status_code == 404

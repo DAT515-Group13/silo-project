@@ -95,7 +95,7 @@ async def test_page_errors_are_html_and_api_errors_are_json(client: httpx.AsyncC
     assert api.json() == {"detail": "Not Found", "code": "not_found"}
 
 
-@pytest.mark.parametrize("path", ["/_private", "/account", "/teams"])
+@pytest.mark.parametrize("path", ["/_private", "/account", "/teams", "/files"])
 async def test_unauthenticated_page_redirects_to_login_with_next(
     client: httpx.AsyncClient, page_routes: FastAPI, path: str
 ) -> None:
@@ -245,17 +245,6 @@ def test_safe_next(value: str | None, expected: str) -> None:
 # --- CSRF ------------------------------------------------------------------------------------
 
 
-async def test_post_with_a_valid_token_and_origin_works(
-    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings
-) -> None:
-    """Cookie, form field and Origin all agree: the POST is accepted (pre-session token)."""
-    token, cookies = csrf_pair(settings)
-    response = await client.post(
-        "/_form", data={"csrf_token": token}, headers={**cookies, **ORIGIN}
-    )
-    assert response.status_code == 200
-
-
 def test_every_page_post_checks_csrf() -> None:
     """No state-changing page route may forget ``CsrfChecked``.
 
@@ -301,44 +290,41 @@ async def test_bad_csrf_token_is_403(
 
 
 @pytest.mark.parametrize(
-    "headers",
+    ("headers", "expected"),
     [
-        {"Origin": "http://evil.example"},
-        {"Origin": "null"},
-        {"Origin": "https://testserver"},  # wrong scheme
-        {"Referer": "http://evil.example/page"},
-        {},  # neither Origin nor Referer
-        {"Origin": "http://testserver", "Sec-Fetch-Site": "cross-site"},
-        {"Origin": "http://testserver", "Sec-Fetch-Site": "same-site"},
+        pytest.param(ORIGIN, 200, id="origin matches"),
+        pytest.param({"Referer": "http://testserver/login"}, 200, id="referer instead of origin"),
+        pytest.param(
+            {"Origin": "http://TESTSERVER", "Sec-Fetch-Site": "same-origin"},
+            200,
+            id="same-origin fetch metadata",
+        ),
+        pytest.param({"Origin": "http://evil.example"}, 403, id="foreign origin"),
+        pytest.param({"Origin": "null"}, 403, id="null origin"),
+        pytest.param({"Origin": "https://testserver"}, 403, id="wrong scheme"),
+        pytest.param({"Referer": "http://evil.example/page"}, 403, id="foreign referer"),
+        pytest.param({}, 403, id="neither origin nor referer"),
+        pytest.param(
+            {"Origin": "http://testserver", "Sec-Fetch-Site": "cross-site"}, 403, id="cross-site"
+        ),
+        pytest.param(
+            {"Origin": "http://testserver", "Sec-Fetch-Site": "same-site"}, 403, id="same-site"
+        ),
     ],
 )
-async def test_post_with_a_foreign_origin_is_403(
-    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings, headers: dict
+async def test_post_is_accepted_only_from_this_site(
+    client: httpx.AsyncClient,
+    page_routes: FastAPI,
+    settings: Settings,
+    headers: dict,
+    expected: int,
 ) -> None:
-    """A correct token does not help when the request does not come from this site."""
+    """A valid token is accepted only with an Origin or Referer of this site (else 403)."""
     token, cookies = csrf_pair(settings)
     response = await client.post(
         "/_form", data={"csrf_token": token}, headers={**cookies, **headers}
     )
-    assert response.status_code == 403
-
-
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {"Referer": "http://testserver/login"},
-        {"Origin": "http://TESTSERVER", "Sec-Fetch-Site": "same-origin"},
-    ],
-)
-async def test_referer_and_same_origin_fetch_metadata_are_accepted(
-    client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings, headers: dict
-) -> None:
-    """Referer is accepted when Origin is absent; Sec-Fetch-Site same-origin is fine."""
-    token, cookies = csrf_pair(settings)
-    response = await client.post(
-        "/_form", data={"csrf_token": token}, headers={**cookies, **headers}
-    )
-    assert response.status_code == 200
+    assert response.status_code == expected
 
 
 def csrf_set_cookies(response: httpx.Response, settings: Settings) -> list[str]:
