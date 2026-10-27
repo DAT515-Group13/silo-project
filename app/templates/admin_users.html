@@ -19,7 +19,7 @@
       {% endfor %}
     </select>
   </div>
-  <div class="col-auto"><button type="submit" class="btn btn-secondary">Filter</button></div>
+  <div class="col-auto"><button type="submit" class="btn btn-primary">Filter</button></div>
 </form>
 
 <p class="text-body-secondary">{{ total }} user(s)</p>
@@ -38,7 +38,7 @@
       </td>
       <td>{{ target.role.value }}</td>
       <td>{{ target.status.value }}</td>
-      <td>{{ target.used_bytes | filesizeformat }}</td>
+      <td>{{ target.used_bytes | filesizeformat(true) }}</td>
       <td>{{ item.file_count }}</td>
       <td>{{ target.last_login_at.strftime("%Y-%m-%d %H:%M") ~ " UTC" if target.last_login_at else "-" }}</td>
       <td>
@@ -54,7 +54,7 @@
                  maxlength="500" placeholder="Reason (optional)">
           <button type="submit" class="btn btn-outline-danger btn-sm">Reject</button>
         </form>
-        {% else %}
+        {% elif target.id != user.id %}
         <form method="post" action="/admin/users/{{ target.id }}" class="d-inline-flex gap-1 mb-1">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <label class="visually-hidden" for="role-{{ target.id }}">Role</label>
@@ -78,6 +78,9 @@
           <button type="submit" class="btn btn-outline-secondary btn-sm">Sign out everywhere</button>
         </form>
         {% endif %}
+        {% if target.id == user.id %}
+        <span class="text-body-secondary small">This is your account.</span>
+        {% else %}
         <form method="post" action="/admin/users/{{ target.id }}/delete" class="d-inline-flex gap-1 align-items-center">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input class="form-check-input" type="checkbox" id="confirm-{{ target.id }}" name="confirm" value="yes" required>
@@ -86,6 +89,7 @@
           </label>
           <button type="submit" class="btn btn-danger btn-sm">Delete</button>
         </form>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

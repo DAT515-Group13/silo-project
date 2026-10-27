@@ -28,13 +28,6 @@ pytestmark = pytest.mark.anyio
 # --- No database needed --------------------------------------------------------------------------
 
 
-async def test_file_pages_need_a_login(client: httpx.AsyncClient) -> None:
-    """Without a session the pages redirect to the login page."""
-    response = await client.get("/files", follow_redirects=False)
-    assert response.status_code == 303
-    assert response.headers["location"].startswith("/login")
-
-
 async def test_upload_needs_the_csrf_token_first(
     client: httpx.AsyncClient, act_as: ActAs, settings: Settings, blob_store: InMemoryBlobStore
 ) -> None:

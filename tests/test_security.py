@@ -1,9 +1,13 @@
 """Passwords, access tokens, random tokens and CSRF tokens."""
 
 import hashlib
+import threading
+import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+import anyio
 import jwt
 import pytest
 from argon2 import PasswordHasher
@@ -83,38 +87,35 @@ def test_key_id_is_8_hex_characters_and_differs_per_secret() -> None:
     assert security.key_id(SECRET) != security.key_id(OLD_SECRET)
 
 
-def test_alg_none_is_rejected() -> None:
-    """An unsigned token (alg=none) is never accepted."""
-    with pytest.raises(InvalidToken):
-        decode(raw_token({}, key=None, algorithm="none"))
+def _claims(**overrides: object) -> Callable[[], str]:
+    """A factory for a hand-made token with these claims changed; built when the test runs."""
+    return lambda: raw_token(overrides)
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    "build_token",
     [
-        {"aud": "silo-prod"},
-        {"iss": "someone-else"},
-        {"typ": "refresh"},
-        {"typ": None},
-        {"sid": None},
-        {"sub": None},
-        {"exp": None},
-        {"sub": "not-a-number"},
-        {"sid": "not-a-uuid"},
-        {"jti": "not-a-uuid"},
+        pytest.param(lambda: raw_token({}, key=None, algorithm="none"), id="alg none"),
+        pytest.param(_claims(aud="silo-prod"), id="wrong audience"),
+        pytest.param(_claims(iss="someone-else"), id="wrong issuer"),
+        pytest.param(_claims(typ="refresh"), id="typ refresh"),
+        pytest.param(_claims(typ=None), id="missing typ"),
+        pytest.param(_claims(sid=None), id="missing sid"),
+        pytest.param(_claims(sub=None), id="missing sub"),
+        pytest.param(_claims(exp=None), id="missing exp"),
+        pytest.param(_claims(sub="not-a-number"), id="sub is not a number"),
+        pytest.param(_claims(sid="not-a-uuid"), id="sid is not a uuid"),
+        pytest.param(_claims(jti="not-a-uuid"), id="jti is not a uuid"),
+        pytest.param(lambda: "", id="empty text"),
+        pytest.param(lambda: "abc", id="plain text"),
+        pytest.param(lambda: "a.b.c", id="three dots, not a JWT"),
+        pytest.param(lambda: "Bearer x", id="bearer prefix"),
     ],
 )
-def test_invalid_claims_are_rejected(overrides: dict) -> None:
-    """Wrong aud, iss or typ and missing or malformed claims all give InvalidToken."""
+def test_invalid_tokens_are_rejected(build_token: Callable[[], str]) -> None:
+    """Unsigned, wrongly claimed, malformed or non-JWT tokens all give InvalidToken."""
     with pytest.raises(InvalidToken):
-        decode(raw_token(overrides))
-
-
-def test_garbage_is_rejected() -> None:
-    """Text that is not a JWT gives InvalidToken, not a server error."""
-    for text in ("", "abc", "a.b.c", "Bearer x"):
-        with pytest.raises(InvalidToken):
-            decode(text)
+        decode(build_token())
 
 
 def test_expired_token_is_rejected_outside_the_leeway() -> None:
@@ -155,6 +156,32 @@ async def test_malformed_hash_is_a_failed_login_not_an_error() -> None:
     """A broken stored hash gives False instead of an exception."""
     assert await security.verify_password("not a hash", "whatever") is False
     assert await security.verify_password("", "whatever") is False
+
+
+@pytest.mark.anyio
+async def test_password_checks_wait_for_the_hash_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the limiter at 1, two parallel verifications never run at the same time."""
+    running = 0
+    most = 0
+    lock = threading.Lock()
+
+    def slow_verify(password_hash: str, password: str) -> bool:
+        nonlocal running, most
+        with lock:
+            running += 1
+            most = max(most, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+        return False
+
+    monkeypatch.setattr(security, "_verify", slow_verify)
+    monkeypatch.setattr(security, "_hash_limiter", anyio.CapacityLimiter(1))
+    async with anyio.create_task_group() as group:
+        for _ in range(2):
+            group.start_soon(security.verify_password, "hash", "password")
+    assert most == 1
+    assert security.MAX_PARALLEL_HASHES == 4
 
 
 def test_weaker_hash_needs_rehash() -> None:

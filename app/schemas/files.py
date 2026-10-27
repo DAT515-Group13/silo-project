@@ -15,6 +15,7 @@ from pydantic import AfterValidator, BaseModel
 from app.schemas.common import InputModel, UserRefOut
 
 MAX_FILENAME_LENGTH = 255
+NO_FILE_MESSAGE = "Choose a file to upload."
 
 
 def sanitize_filename(value: str) -> str:

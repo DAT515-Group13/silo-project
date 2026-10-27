@@ -29,6 +29,19 @@ _REQUIRED_CLAIMS = ["exp", "iat", "nbf", "iss", "aud", "sub", "sid"]
 # RFC 9106 low-memory profile, above the OWASP minimum (19 MiB, t=2, p=1).
 _hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16)
 
+# Each hash uses 64 MiB. The default thread pool has 40 threads, so about 8 parallel logins could
+# exceed the pod's 512 MiB (OOMKill). At most this many hashes run at once; the rest wait.
+MAX_PARALLEL_HASHES = 4
+_hash_limiter: anyio.CapacityLimiter | None = None
+
+
+def _limiter() -> anyio.CapacityLimiter:
+    """The shared hashing limiter, created on first use (it must belong to a running loop)."""
+    global _hash_limiter
+    if _hash_limiter is None:
+        _hash_limiter = anyio.CapacityLimiter(MAX_PARALLEL_HASHES)
+    return _hash_limiter
+
 
 # --- Passwords ---------------------------------------------------------------
 
@@ -46,12 +59,12 @@ def _verify(password_hash: str, password: str) -> bool:
 
 async def hash_password(password: str) -> str:
     """Hash a password with Argon2id. Runs in a worker thread: hashing is CPU and memory heavy."""
-    return await anyio.to_thread.run_sync(_hasher.hash, password)
+    return await anyio.to_thread.run_sync(_hasher.hash, password, limiter=_limiter())
 
 
 async def verify_password(password_hash: str, password: str) -> bool:
     """Return True if the password matches the hash, False for a wrong password or bad hash."""
-    return await anyio.to_thread.run_sync(_verify, password_hash, password)
+    return await anyio.to_thread.run_sync(_verify, password_hash, password, limiter=_limiter())
 
 
 def password_needs_rehash(password_hash: str) -> bool:
@@ -77,14 +90,14 @@ async def verify_dummy_password(password: str) -> None:
 
     Called when the username is unknown or the account is locked.
     """
-    await anyio.to_thread.run_sync(_verify_dummy, password)
+    await anyio.to_thread.run_sync(_verify_dummy, password, limiter=_limiter())
 
 
 def check_password_policy(password: str, username: str, min_length: int) -> None:
     """Check the rules for a new password.
 
     The password must be between ``min_length`` and ``PASSWORD_MAX_LENGTH`` characters and must
-    not equal the username (case-insensitive). The common-passwords list is added in phase 6.
+    not equal the username (case-insensitive). A common-passwords list is a planned hardening step.
 
     Raises:
         ValidationFailed: with one ``{"field": "password", ...}`` entry per broken rule.

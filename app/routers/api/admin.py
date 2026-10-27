@@ -164,9 +164,9 @@ async def delete_user(
     session: DbSession,
     store: Store,
 ) -> None:
-    """Delete the user's blobs, then the user and everything they own.
+    """Delete the user and everything they own, then their blobs.
 
-    Errors: 409 `last_admin`; 503 `storage_unavailable` if a blob cannot be deleted.
+    Errors: 409 `last_admin`. A blob that cannot be deleted is left for orphan cleanup (D24).
     """
     await users.delete_user(session, store, user, user_id, ctx)
 

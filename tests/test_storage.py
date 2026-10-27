@@ -121,6 +121,7 @@ async def test_azure_upload_collects_small_chunks_into_blocks() -> None:
 
 
 async def test_azure_empty_upload_commits_an_empty_blob() -> None:
+    """An upload without bytes commits an empty block list and reports size 0."""
     store, container = make_store()
     assert await store.upload_stream("b1", stream(b"", b""), content_type="x/y") == 0
     assert container.clients["b1"].committed == [[]]
@@ -151,6 +152,7 @@ async def test_azure_errors_become_storage_unavailable() -> None:
 
 
 async def test_azure_too_many_blocks_is_refused() -> None:
+    """More than 50,000 blocks is StorageUnavailable and nothing is committed."""
     store, container = make_store(block_bytes=1)
     blob = container.get_blob_client("b1")
 
@@ -188,6 +190,7 @@ async def test_azure_ping() -> None:
 
 
 async def test_azure_lists_old_blobs_and_translates_errors() -> None:
+    """Only blobs older than the cut-off are listed; SDK errors become StorageUnavailable."""
     store, container = make_store()
     now = datetime.now(UTC)
     container.listing = [
@@ -237,6 +240,7 @@ async def test_sas_url_is_read_only_single_blob_https_and_short_lived() -> None:
 
 
 async def test_sas_ttl_must_be_positive() -> None:
+    """A download URL with a zero lifetime is a programming error (ValueError)."""
     store = real_store()
     with pytest.raises(ValueError):
         await store.download_url("b", filename="a", content_type="x/y", ttl_seconds=0)
@@ -264,6 +268,7 @@ def test_content_disposition_is_safe(filename: str, expected_fallback: str) -> N
 
 
 def test_connection_string_parsing_keeps_base64_padding() -> None:
+    """An account key that ends in = signs is not cut at the first = of its value."""
     parts = parse_connection_string("AccountName=acct;AccountKey=abc==;EndpointSuffix=x")
     assert parts["AccountKey"] == "abc=="
 

@@ -22,7 +22,14 @@ from fastapi.responses import RedirectResponse
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.errors import CsrfFailed, FileTooLarge, LinkLimit, QuotaExceeded, ValidationFailed
+from app.errors import (
+    CsrfFailed,
+    FileTooLarge,
+    LinkLimit,
+    QuotaExceeded,
+    RateLimited,
+    ValidationFailed,
+)
 from app.middleware import safe_next
 from app.permissions import CurrentUser, can_delete_file, can_modify_file
 from app.ratelimit import limit, upload_slot
@@ -45,8 +52,8 @@ from app.routers.common import (
     validation_messages,
     verify_origin,
 )
-from app.routers.multipart import MultipartReader
-from app.schemas.files import FileRenameIn
+from app.routers.multipart import MultipartReader, drain_refused_upload
+from app.schemas.files import NO_FILE_MESSAGE, FileRenameIn
 from app.schemas.links import LinkCreateIn
 from app.services import files, links, teams, users
 
@@ -167,11 +174,10 @@ async def upload_submit(
     Raises:
         CsrfFailed: Origin, token or part order is wrong (403).
     """
+    body = request.stream()
     try:
         async with upload_slot(user.id):
-            reader = MultipartReader(
-                request.headers.get("content-type", ""), request.stream(), max_parts=2
-            )
+            reader = MultipartReader(request.headers.get("content-type", ""), body, max_parts=2)
             # Part 1: the CSRF token. Nothing of the file has been read when this is checked.
             first = await reader.next_part()
             if first is None or first.name != "csrf_token" or first.filename is not None:
@@ -182,7 +188,7 @@ async def upload_submit(
             # Part 2: the file, streamed on to blob storage.
             part = await reader.next_part()
             if part is None or part.name != "file" or part.filename is None:
-                raise ValidationFailed([{"field": "file", "message": "Choose a file to upload."}])
+                raise ValidationFailed([{"field": "file", "message": NO_FILE_MESSAGE}])
             await files.upload(
                 session,
                 settings,
@@ -194,13 +200,16 @@ async def upload_submit(
                 chunks=reader.iter_data(),
                 declared_size=declared_size(request),
             )
-    except (FileTooLarge, QuotaExceeded) as exc:
-        return await _files_page(
-            request, session, settings, user, errors=[exc.detail], status_code=exc.status_code
+    except (FileTooLarge, QuotaExceeded, ValidationFailed, RateLimited) as exc:
+        # Let the browser finish sending, or the proxy may turn this answer into a 502.
+        await drain_refused_upload(
+            body, declared_size=declared_size(request), max_file_bytes=settings.max_file_size_bytes
         )
-    except ValidationFailed as exc:
+        if isinstance(exc, RateLimited):
+            raise  # the 429 error page
+        errors = _messages(exc) if isinstance(exc, ValidationFailed) else [exc.detail]
         return await _files_page(
-            request, session, settings, user, errors=_messages(exc), status_code=exc.status_code
+            request, session, settings, user, errors=errors, status_code=exc.status_code
         )
     return see_other("/files?uploaded=1")
 
@@ -223,7 +232,8 @@ async def _file_page(
     """Render ``file_detail.html``: metadata, and for the owner rename, sharing, links, delete.
 
     ``new_link_url`` is the URL of a link created by this very request. It is shown once and the
-    page is then marked ``no-store``, so neither the history nor a cache keeps it.
+    page is ``no-store`` like every page (``SecurityHeadersMiddleware``), so neither the history
+    nor a cache keeps it.
 
     Raises:
         NotFound: the file does not exist or the user may not see it.
@@ -239,7 +249,7 @@ async def _file_page(
         already = {team.id for team in shared_with}
         # Only teams the owner belongs to can be chosen (section 11).
         share_choices = [t for t in await teams.list_my_teams(session, user) if t.id not in already]
-    response = render_page(
+    return render_page(
         request,
         settings,
         user,
@@ -259,9 +269,6 @@ async def _file_page(
         },
         status_code=status_code,
     )
-    if new_link_url is not None:
-        response.headers["Cache-Control"] = "no-store"
-    return response
 
 
 @router.get("/files/{file_id}")
@@ -298,7 +305,7 @@ async def download_page(
 ) -> Response:
     """Send the browser to a short-lived read-only URL of the blob."""
     url = await files.download_url(session, settings, store, user, file_id, ctx)
-    return RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store"})
+    return RedirectResponse(url, status_code=302)
 
 
 @router.post("/files/{file_id}/rename", dependencies=[CsrfChecked])

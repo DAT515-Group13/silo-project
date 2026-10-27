@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from app.errors import ValidationFailed
+from app.errors import FileTooLarge, QuotaExceeded, RateLimited, ValidationFailed
 from app.ratelimit import limit, upload_slot
 from app.routers.common import (
     ApiUser,
@@ -25,9 +25,9 @@ from app.routers.common import (
     declared_size,
     file_out,
 )
-from app.routers.multipart import MultipartReader
+from app.routers.multipart import MultipartReader, drain_refused_upload
 from app.schemas.common import Page
-from app.schemas.files import FileOut, FileRenameIn, FileTeamOut
+from app.schemas.files import NO_FILE_MESSAGE, FileOut, FileRenameIn, FileTeamOut
 from app.services import files
 
 router = APIRouter(prefix="/api/v1", tags=["files"])
@@ -69,24 +69,30 @@ async def upload_file(
     user already has 3 uploads running, 503 `storage_unavailable`.
     """
     # At most 3 uploads at the same time per user.
-    async with upload_slot(user.id):
-        reader = MultipartReader(
-            request.headers.get("content-type", ""), request.stream(), max_parts=1
+    body = request.stream()
+    try:
+        async with upload_slot(user.id):
+            reader = MultipartReader(request.headers.get("content-type", ""), body, max_parts=1)
+            part = await reader.next_part()
+            if part is None or part.name != "file" or part.filename is None:
+                raise ValidationFailed([{"field": "file", "message": NO_FILE_MESSAGE}])
+            item = await files.upload(
+                session,
+                settings,
+                store,
+                user,
+                ctx,
+                filename=part.filename,
+                client_type=part.content_type,
+                chunks=reader.iter_data(),
+                declared_size=declared_size(request),
+            )
+    except (FileTooLarge, QuotaExceeded, RateLimited, ValidationFailed):
+        # Let the client finish sending, or the proxy may turn this answer into a 502.
+        await drain_refused_upload(
+            body, declared_size=declared_size(request), max_file_bytes=settings.max_file_size_bytes
         )
-        part = await reader.next_part()
-        if part is None or part.name != "file" or part.filename is None:
-            raise ValidationFailed([{"field": "file", "message": "Field 'file' is required."}])
-        item = await files.upload(
-            session,
-            settings,
-            store,
-            user,
-            ctx,
-            filename=part.filename,
-            client_type=part.content_type,
-            chunks=reader.iter_data(),
-            declared_size=declared_size(request),
-        )
+        raise
     return file_out(item, user.id)
 
 
@@ -126,7 +132,7 @@ async def download_file(
 ) -> RedirectResponse:
     """Redirect to a short-lived read-only URL of the blob (owner or team member)."""
     url = await files.download_url(session, settings, store, user, file_id, ctx)
-    return RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store"})
+    return RedirectResponse(url, status_code=302)
 
 
 @router.delete("/files/{file_id}", status_code=204)

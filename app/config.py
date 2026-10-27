@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     sas_url_ttl_seconds: PositiveInt = 300
     public_link_max_hours: PositiveInt = 168
 
-    login_max_failed: PositiveInt = 5
+    login_max_failed: PositiveInt = 10
     login_lock_minutes: PositiveInt = 15
     password_min_length: PositiveInt = 12
     enable_docs: bool = False

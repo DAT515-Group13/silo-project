@@ -17,6 +17,7 @@ Every problem with the body (wrong content type, no boundary, too many parts, ov
 headers, truncated body) is raised as ``ValidationFailed``, which the app turns into a 422.
 """
 
+import asyncio
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -30,6 +31,11 @@ from starlette.requests import ClientDisconnect
 from app.errors import ValidationFailed
 
 DEFAULT_MAX_HEADER_BYTES = 8 * 1024
+# After a refused upload the server still reads and drops up to MAX_FILE_SIZE_BYTES plus this
+# much (and for at most DISCARD_TIMEOUT_SECONDS), so a file slightly over the limit is received
+# completely and the client sees the real error. Files far over it get the connection closed.
+DISCARD_EXTRA_BYTES = 5 * 1024 * 1024
+DISCARD_TIMEOUT_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -206,3 +212,37 @@ class MultipartReader:
                 elif kind == "part_end":
                     return
             await self._pump()
+
+
+async def drain_refused_upload(
+    body: AsyncIterator[bytes], *, declared_size: int | None, max_file_bytes: int
+) -> None:
+    """Drain the body of a refused upload, unless it is announced as too big to drain.
+
+    ``declared_size`` is the Content-Length. Over the cap, draining cannot finish anyway (the
+    connection is closed after the cap), so it would only hold the request open for nothing.
+    """
+    cap = max_file_bytes + DISCARD_EXTRA_BYTES
+    if (declared_size or 0) <= cap:
+        await discard_body(body, max_bytes=cap)
+
+
+async def discard_body(body: AsyncIterator[bytes], *, max_bytes: int) -> None:
+    """Read and drop what is left of a request body, so the refusal reaches the client.
+
+    A refused upload (too large, quota full) is answered before the file is read. If the app
+    answers and closes while the browser is still sending, the proxy may report the broken
+    connection as ``502`` instead of the real ``413``. Reading the rest first lets the client
+    finish sending. It gives up after ``max_bytes`` or ``DISCARD_TIMEOUT_SECONDS``, so a huge or
+    slow body cannot hold the request open; the connection is then closed as before.
+    Never raises: a disconnect or a timeout just ends the draining.
+    """
+    total = 0
+    try:
+        async with asyncio.timeout(DISCARD_TIMEOUT_SECONDS):
+            async for chunk in body:
+                total += len(chunk)
+                if total > max_bytes:
+                    return
+    except (TimeoutError, ClientDisconnect):
+        return

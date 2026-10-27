@@ -67,7 +67,7 @@
     <tr>
       <td><a href="/files/{{ file.id }}">{{ file.filename }}</a></td>
       <td>{{ file.owner.username }}</td>
-      <td>{{ file.size_bytes | filesizeformat }}</td>
+      <td>{{ file.size_bytes | filesizeformat(true) }}</td>
       <td>{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
     </tr>
     {% endfor %}

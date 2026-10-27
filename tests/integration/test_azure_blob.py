@@ -35,11 +35,12 @@ async def status_of(url: str) -> int:
 
 
 async def test_ping_succeeds_for_the_configured_container(azure_store: BlobStore) -> None:
+    """ping() returns without error when the container exists and the key works."""
     await azure_store.ping()
 
 
 async def test_ping_fails_for_a_missing_container(azure_settings: dict[str, str]) -> None:
-    """A wrong container name is 503 on /readyz (phase 0)."""
+    """store.ping() raises StorageUnavailable when the container does not exist."""
     settings = make_settings(
         **{**azure_settings, "azure_storage_container": f"no-such-{os.urandom(4).hex()}"}
     )
@@ -76,6 +77,7 @@ async def test_upload_then_download_through_the_sas_url(
 
 
 async def test_empty_upload_creates_an_empty_blob(azure_store: BlobStore, blob_name: str) -> None:
+    """An upload without bytes creates a readable blob of size 0."""
     assert await azure_store.upload_stream(blob_name, stream(), content_type="text/plain") == 0
     url = await azure_store.download_url(
         blob_name, filename="empty.txt", content_type="text/plain", ttl_seconds=60
@@ -115,6 +117,7 @@ async def test_sas_url_cannot_write_or_list(azure_store: BlobStore, blob_name: s
 
 
 async def test_delete_is_idempotent(azure_store: BlobStore, blob_name: str) -> None:
+    """Deleting a blob twice is no error, and the blob is gone afterwards."""
     await azure_store.upload_stream(blob_name, stream(b"data"), content_type="x/y")
     await azure_store.delete(blob_name)
     await azure_store.delete(blob_name)

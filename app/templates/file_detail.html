@@ -16,7 +16,7 @@
 <dl class="row">
   <dt class="col-sm-3">Owner</dt><dd class="col-sm-9">{{ file.owner.username }}</dd>
   <dt class="col-sm-3">Type</dt><dd class="col-sm-9">{{ file.content_type }}</dd>
-  <dt class="col-sm-3">Size</dt><dd class="col-sm-9">{{ file.size_bytes | filesizeformat }}</dd>
+  <dt class="col-sm-3">Size</dt><dd class="col-sm-9">{{ file.size_bytes | filesizeformat(true) }}</dd>
   <dt class="col-sm-3">Uploaded</dt><dd class="col-sm-9">{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</dd>
 </dl>
 

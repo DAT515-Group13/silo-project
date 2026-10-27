@@ -1,7 +1,7 @@
 """Cookies, Origin checks, and the middleware stack (metrics, security headers, body limit).
 
 The page surface authenticates with cookies, the API with Bearer tokens; the two never mix. The
-request ID and trusted host middleware are still planned (phase 6).
+request ID and trusted host middleware are planned hardening steps.
 """
 
 import time

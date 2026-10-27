@@ -10,7 +10,7 @@
   <dd class="col-sm-9">{{ user.role.value }}</dd>
   <dt class="col-sm-3">Storage</dt>
   <dd class="col-sm-9">
-    {{ used_bytes | filesizeformat }} of {{ quota_bytes | filesizeformat }}
+    {{ used_bytes | filesizeformat(true) }} of {{ quota_bytes | filesizeformat(true) }}
     <progress class="d-block w-100" max="{{ quota_bytes }}" value="{{ used_bytes }}"></progress>
   </dd>
 </dl>

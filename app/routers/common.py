@@ -334,7 +334,7 @@ def client_ip(request: Request) -> str | None:
 
 
 def request_id(request: Request) -> str | None:
-    """Return the request ID once the request-ID middleware exists (phase 6), else None."""
+    """Return the request ID once the request-ID middleware exists, else None."""
     return getattr(request.state, "request_id", None)
 
 

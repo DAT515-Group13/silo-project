@@ -9,6 +9,7 @@ from starlette.types import Receive, Scope, Send
 from app.middleware import MAX_BODY_BYTES, BodyLimitMiddleware
 from app.models import Role
 from tests.conftest import ActAs
+from tests.test_security_headers import assert_secure
 
 pytestmark = pytest.mark.anyio
 
@@ -18,10 +19,11 @@ BIG = b"x" * (MAX_BODY_BYTES + 1)
 async def test_declared_oversized_body_is_413(client: httpx.AsyncClient) -> None:
     """A Content-Length over the limit is refused before the body is read.
 
-    The API answers in its JSON error shape, pages in plain text.
+    The API answers in its JSON error shape, pages in plain text; both carry the security headers.
     """
     page = await client.post("/login", content=BIG)
     assert page.status_code == 413
+    assert_secure(page)  # the outermost middleware covers answers that never reach the app
     api = await client.post("/api/v1/auth/login", content=BIG)
     assert api.status_code == 413
     assert api.json() == {"detail": "Request body too large.", "code": "payload_too_large"}

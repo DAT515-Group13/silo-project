@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.main import create_app
-from app.middleware import MAX_BODY_BYTES, SECURITY_HEADERS
+from app.middleware import SECURITY_HEADERS
 from tests.conftest import make_settings
 from tests.fakes import InMemoryBlobStore
 
@@ -28,13 +28,6 @@ async def test_every_response_has_the_headers_and_is_not_cached(
     assert_secure(response)
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
-
-
-async def test_early_413_also_has_the_headers(client: httpx.AsyncClient) -> None:
-    """The outermost middleware covers responses that never reach the app."""
-    response = await client.post("/login", content=b"x" * (MAX_BODY_BYTES + 1))
-    assert response.status_code == 413
-    assert_secure(response)
 
 
 async def test_static_files_stay_cacheable_but_get_the_other_headers(

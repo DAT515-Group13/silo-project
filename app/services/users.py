@@ -422,59 +422,28 @@ async def delete_user(
 ) -> int:
     """Delete a user with all their files (DELETE /admin/users/{id}). Returns the file count.
 
-    Order: first the blobs, then the user row, whose foreign keys
-    cascade to sessions, files, owned teams, memberships and links. Audit rows stay.
+    Same order as ``files.delete_file``: first one transaction deletes the user row (whose
+    foreign keys cascade to sessions, files, owned teams, memberships and links) and writes the
+    audit entry, then the blobs are deleted. A blob that cannot be deleted is logged and left
+    for orphan cleanup (D24); the user is gone either way. Audit rows stay.
 
     Raises:
         NotFound: the actor is not an admin, or the user does not exist.
         LastAdmin: the target is the actor or the last active admin.
-        StorageUnavailable: a blob could not be deleted; no row is deleted then, so the admin
-            can retry (blobs deleted before the failure are gone; delete is idempotent). If the
-            rules fail in step 3 after step 2 (another admin acted in between), the files stay
-            as rows without blobs; this needs a race and is not repaired automatically.
 
-    Side effects: deletes blobs and the user, writes ``user.delete`` with
+    Side effects: deletes the user and then the blobs, writes ``user.delete`` with
     ``details.files_deleted``.
     """
     _require_admin(actor)
 
-    # Step 1: check the rules early and collect the blob names. No lock is held while the
-    # storage is called, which can take a while.
     async with session.begin():
-        target = await session.get(User, user_id)
-        if target is None:
-            raise NotFound
-        # The actor is an active admin, so deleting yourself is covered by this branch.
-        if target.role == Role.admin:
-            admins = await session.scalars(
-                select(User.id).where(User.role == Role.admin, User.status == UserStatus.active)
-            )
-            _check_last_admin(actor, target, set(admins))
-        blob_names = list(
-            await session.scalars(select(File.blob_name).where(File.owner_id == user_id))
-        )
-
-    # Step 2: delete the blobs. A StorageUnavailable propagates before any row is touched.
-    # Sixteen at a time: one request per blob in a row would outlast the proxy timeout for a
-    # user with many files. Delete is idempotent, so a retry after a failure is safe.
-    limit = asyncio.Semaphore(DELETE_CONCURRENCY)
-
-    async def delete_blob(blob_name: str) -> None:
-        async with limit:
-            await store.delete(blob_name)
-
-    await asyncio.gather(*(delete_blob(name) for name in blob_names))
-
-    # Step 3: delete the user. The rules are checked again under the admin locks, because
-    # another admin may have acted since step 1. A file uploaded in the meantime loses its row
-    # with the user; its blob is left for orphan cleanup.
-    async with session.begin():
+        # The rules are checked under the admin locks, so another admin cannot act in between.
         active_admins = await _lock_active_admins(session)
         target = await _lock_target(session, user_id)
         if target.role == Role.admin:
             _check_last_admin(actor, target, active_admins)
-        files_deleted = await session.scalar(
-            select(func.count(File.id)).where(File.owner_id == user_id)
+        blob_names = list(
+            await session.scalars(select(File.blob_name).where(File.owner_id == user_id))
         )
         await session.execute(delete(User).where(User.id == user_id))
         await audit.record(
@@ -484,9 +453,26 @@ async def delete_user(
             target_type="user",
             target_id=user_id,
             target_label=target.username,
-            details={"files_deleted": files_deleted},
+            details={"files_deleted": len(blob_names)},
         )
-    return files_deleted or 0
+
+    # Sixteen at a time: one request per blob in a row would outlast the proxy timeout for a
+    # user with many files. A failed delete only logs, so gather cannot raise.
+    limit = asyncio.Semaphore(DELETE_CONCURRENCY)
+
+    async def delete_blob(blob_name: str) -> None:
+        async with limit:
+            try:
+                await store.delete(blob_name)
+            except Exception as exc:
+                logger.warning(
+                    "Could not delete blob %s (%s); it is left for orphan cleanup",
+                    blob_name,
+                    type(exc).__name__,
+                )
+
+    await asyncio.gather(*(delete_blob(name) for name in blob_names))
+    return len(blob_names)
 
 
 # --- First admin ---------------------------------------------------------------------
