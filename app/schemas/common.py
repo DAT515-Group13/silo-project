@@ -6,9 +6,9 @@ Implements the username rule and the response shapes (errors, pagination).
 import re
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field
 
-from app.security import PASSWORD_MAX_LENGTH
+from app.security import PASSWORD_MAX_LENGTH, normalize_password
 
 USERNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,31}$")
 
@@ -54,8 +54,13 @@ LoginUsername = Annotated[
 ]
 
 # Only the hard upper limit lives here. The configurable minimum (PASSWORD_MIN_LENGTH) is checked
-# by security.check_password_policy.
-Password = Annotated[str, Field(max_length=PASSWORD_MAX_LENGTH)]
+# by security.check_password_policy. The text is normalised (NFKC) first, so the limit counts the
+# same characters as the policy check and the hash (some characters grow: one becomes up to 18).
+Password = Annotated[
+    str,
+    BeforeValidator(lambda value: normalize_password(value) if isinstance(value, str) else value),
+    Field(max_length=PASSWORD_MAX_LENGTH),
+]
 
 
 class UserRefOut(BaseModel):

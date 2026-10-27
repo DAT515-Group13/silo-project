@@ -152,6 +152,24 @@ async def test_password_hash_and_verify() -> None:
 
 
 @pytest.mark.anyio
+async def test_same_text_in_different_unicode_forms_is_the_same_password() -> None:
+    """ "é" as one code point and as "e" plus an accent hash and verify alike (NFKC)."""
+    composed, decomposed = "caf\u00e9-horse-battery", "cafe\u0301-horse-battery"
+    assert composed != decomposed
+    stored = await security.hash_password(composed)
+    assert await security.verify_password(stored, decomposed) is True
+    assert await security.verify_password(stored, "cafe-horse-battery") is False
+
+
+def test_password_policy_counts_the_normalised_password() -> None:
+    """Six "ﬁ" ligatures are twelve letters after NFKC; full-width "ＡＮＮＡ" equals "anna"."""
+    assert security.normalize_password("\ufb01") == "fi"
+    security.check_password_policy("\ufb01" * 6, "anna", 12)  # 12 characters after NFKC
+    with pytest.raises(ValidationFailed):
+        security.check_password_policy("\uff21\uff2e\uff2e\uff21", "anna", 4)  # "ANNA" fullwidth
+
+
+@pytest.mark.anyio
 async def test_malformed_hash_is_a_failed_login_not_an_error() -> None:
     """A broken stored hash gives False instead of an exception."""
     assert await security.verify_password("not a hash", "whatever") is False
@@ -252,3 +270,10 @@ def test_tampered_or_malformed_csrf_token_is_rejected() -> None:
         f"é.{mac}",
     ):
         assert security.verify_csrf_token(bad, secret=SECRET, binding="session-1") is False
+
+
+def test_password_policy_names_the_field() -> None:
+    """The error carries the field the caller asks for (`new_password` on a password change)."""
+    with pytest.raises(ValidationFailed) as info:
+        security.check_password_policy("short", "anna", 12, field="new_password")
+    assert {e["field"] for e in info.value.errors} == {"new_password"}

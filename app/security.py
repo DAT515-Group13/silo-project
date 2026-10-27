@@ -7,6 +7,7 @@ function easy to test.
 import hashlib
 import hmac
 import secrets
+import unicodedata
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -46,6 +47,16 @@ def _limiter() -> anyio.CapacityLimiter:
 # --- Passwords ---------------------------------------------------------------
 
 
+def normalize_password(password: str) -> str:
+    """Return the password in Unicode form NFKC.
+
+    The same text typed on different keyboards or systems can be different code points (for
+    example "é" as one character or as "e" plus an accent). Normalising before hashing and
+    checking makes them the same password. Every hash, verify and policy check goes through this.
+    """
+    return unicodedata.normalize("NFKC", password)
+
+
 def _verify(password_hash: str, password: str) -> bool:
     """Check a password against a hash; a wrong password and a malformed hash both give False.
 
@@ -59,11 +70,13 @@ def _verify(password_hash: str, password: str) -> bool:
 
 async def hash_password(password: str) -> str:
     """Hash a password with Argon2id. Runs in a worker thread: hashing is CPU and memory heavy."""
+    password = normalize_password(password)
     return await anyio.to_thread.run_sync(_hasher.hash, password, limiter=_limiter())
 
 
 async def verify_password(password_hash: str, password: str) -> bool:
     """Return True if the password matches the hash, False for a wrong password or bad hash."""
+    password = normalize_password(password)
     return await anyio.to_thread.run_sync(_verify, password_hash, password, limiter=_limiter())
 
 
@@ -90,18 +103,24 @@ async def verify_dummy_password(password: str) -> None:
 
     Called when the username is unknown or the account is locked.
     """
+    password = normalize_password(password)
     await anyio.to_thread.run_sync(_verify_dummy, password, limiter=_limiter())
 
 
-def check_password_policy(password: str, username: str, min_length: int) -> None:
+def check_password_policy(
+    password: str, username: str, min_length: int, *, field: str = "password"
+) -> None:
     """Check the rules for a new password.
 
-    The password must be between ``min_length`` and ``PASSWORD_MAX_LENGTH`` characters and must
-    not equal the username (case-insensitive). A common-passwords list is a planned hardening step.
+    The password is normalised first (NFKC). It must be between ``min_length`` and
+    ``PASSWORD_MAX_LENGTH`` characters and must not equal the username (case-insensitive). A
+    common-passwords list is a planned hardening step. ``field`` names the input in the errors
+    (``new_password`` for a password change).
 
     Raises:
-        ValidationFailed: with one ``{"field": "password", ...}`` entry per broken rule.
+        ValidationFailed: with one ``{"field": field, ...}`` entry per broken rule.
     """
+    password = normalize_password(password)
     problems: list[str] = []
     if len(password) < min_length:
         problems.append(f"Password must be at least {min_length} characters long.")
@@ -110,7 +129,7 @@ def check_password_policy(password: str, username: str, min_length: int) -> None
     if password.casefold() == username.casefold():
         problems.append("Password must not be the same as the username.")
     if problems:
-        raise ValidationFailed([{"field": "password", "message": m} for m in problems])
+        raise ValidationFailed([{"field": field, "message": m} for m in problems])
 
 
 # --- Access tokens -----------------------------------------------------------
