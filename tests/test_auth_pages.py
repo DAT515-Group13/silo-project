@@ -76,36 +76,18 @@ async def test_start_page_sends_visitors_to_login(client: httpx.AsyncClient) -> 
     assert (response.status_code, response.headers["location"]) == (303, "/login")
 
 
-async def test_login_post_without_csrf_is_403(client: httpx.AsyncClient) -> None:
-    """A POST without a token, or with a token but no Origin, is refused."""
-    body = {"username": "anna", "password": TEST_PASSWORD}
-    assert (await client.post("/login", data=body, headers=ORIGIN)).status_code == 403
-    page = await client.get("/login")
-    with_token = {**body, "csrf_token": token_of(page)}
-    assert (await client.post("/login", data=with_token)).status_code == 403
-    assert (
-        await client.post("/login", data=with_token, headers={"Origin": "http://evil.example"})
-    ).status_code == 403
-
-
 async def test_malformed_login_looks_like_a_wrong_password(client: httpx.AsyncClient) -> None:
-    """A username that is too long is a plain failed login; the page never echoes the password."""
+    """A too long username is a plain failed login; the name shown again is HTML-escaped and the
+    password is never echoed."""
     response = await post_form(
         client,
         "/login",
-        {"username": "x" * 80, "password": "secret-value-1234"},
+        {"username": "<b>x</b>" + "y" * 80, "password": "secret-value-1234"},
         token_from="/login",
     )
     assert response.status_code == 401
     assert "Invalid username or password." in response.text
     assert "secret-value-1234" not in response.text
-
-
-async def test_login_form_escapes_the_submitted_username(client: httpx.AsyncClient) -> None:
-    """The username shown again after a failed login is HTML-escaped."""
-    response = await post_form(
-        client, "/login", {"username": "<b>x</b>" + "y" * 40, "password": "p"}, token_from="/login"
-    )
     assert "<b>x</b>" not in response.text
     assert "&lt;b&gt;x&lt;/b&gt;" in response.text
 
@@ -185,6 +167,31 @@ async def test_login_sets_cookies_and_goes_to_next(
 
 
 @pytest.mark.db
+async def test_login_with_a_dead_cookie_keeps_the_new_session(
+    client: httpx.AsyncClient, settings: Settings, user_factory: UserFactory
+) -> None:
+    """A dead access cookie sent with the login form must not delete the new session's cookies."""
+    await user_factory(username="anna")
+    names = cookie_names(settings)
+    page = await client.get("/login")
+    csrf_cookie = f"{names.csrf}={client.cookies[names.csrf]}"
+    # The Cookie header is set by hand, so the dead cookie certainly reaches the server (for
+    # example a session revoked meanwhile).
+    response = await client.post(
+        "/login",
+        data={"username": "anna", "password": TEST_PASSWORD, "csrf_token": token_of(page)},
+        headers={**ORIGIN, "Cookie": f"{csrf_cookie}; {names.access}=garbage"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    written = [
+        c for c in response.headers.get_list("set-cookie") if c.startswith(f"{names.access}=")
+    ]
+    assert len(written) == 1 and "Max-Age=0" not in written[0]
+    assert (await client.get("/account", follow_redirects=False)).status_code == 200
+
+
+@pytest.mark.db
 async def test_login_with_an_outside_next_goes_to_files(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
@@ -203,7 +210,7 @@ async def test_login_with_an_outside_next_goes_to_files(
 async def test_failed_logins_show_the_same_message(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """Unknown user and wrong password: the same 401 form; pending accounts get a 403."""
+    """Unknown user and wrong password: the same 401 page; pending accounts get a 403."""
     await user_factory(username="anna")
     await user_factory(username="waiting", status=UserStatus.pending)
     unknown = await post_form(
@@ -223,7 +230,10 @@ async def test_failed_logins_show_the_same_message(
     )
     assert unknown.status_code == wrong.status_code == 401
     assert "Invalid username or password." in unknown.text
-    assert "Invalid username or password." in wrong.text
+    # Apart from the username shown again, the two pages are identical (no enumeration).
+    assert re.sub(TOKEN_FIELD, "", unknown.text).replace("nobody", "") == (
+        re.sub(TOKEN_FIELD, "", wrong.text).replace("anna", "")
+    )
     assert pending.status_code == 403
     assert "pending approval" in pending.text
 

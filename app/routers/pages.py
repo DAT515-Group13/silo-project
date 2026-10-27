@@ -21,7 +21,7 @@ from app.errors import (
     UsernameTaken,
     ValidationFailed,
 )
-from app.middleware import mark_logged_out, safe_next, set_auth_cookies
+from app.middleware import mark_logged_in, mark_logged_out, safe_next
 from app.ratelimit import limit
 from app.routers.common import (
     CsrfChecked,
@@ -133,9 +133,8 @@ async def login_submit(
             status_code=exc.status_code,
         )
 
-    response = see_other(target)
-    set_auth_cookies(response, settings, tokens)
-    return response
+    mark_logged_in(request, tokens)
+    return see_other(target)
 
 
 # --- Register --------------------------------------------------------------------------------

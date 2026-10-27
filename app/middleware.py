@@ -159,6 +159,17 @@ def mark_logged_out(request: Request) -> None:
     request.state.clear_auth_cookies = True
 
 
+def mark_logged_in(request: Request, tokens: IssuedTokens) -> None:
+    """Have ``AuthCookieMiddleware`` set the cookies of a new session on this response.
+
+    The login route calls this instead of setting the cookies itself: the CSRF check ran the
+    page dependency first, and if the browser sent dead auth cookies it asked the middleware to
+    delete them. Deleting after the route set the new cookies would log the user out again.
+    """
+    request.state.refreshed_tokens = tokens
+    request.state.clear_auth_cookies = False
+
+
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
