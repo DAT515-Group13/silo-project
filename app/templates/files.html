@@ -4,6 +4,8 @@
 <h1 class="h3 mb-3">Files</h1>
 
 {% if notice %}<div class="alert alert-success">{{ notice }}</div>{% endif %}
+{#- Filled by forms.js when the chosen file is over the limit (see static/forms.js). -#}
+<div class="alert alert-danger" id="upload-error" role="alert" hidden></div>
 {% if errors %}
 <div class="alert alert-danger">
   <ul class="mb-0">{% for message in errors %}<li>{{ message }}</li>{% endfor %}</ul>
@@ -19,7 +21,8 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="col-sm-8">
     <label class="visually-hidden" for="file">File</label>
-    <input class="form-control" type="file" id="file" name="file" required>
+    <input class="form-control" type="file" id="file" name="file" required
+           data-max-bytes="{{ max_file_bytes }}" data-max-label="{{ max_file_bytes | filesizeformat(true) }}">
   </div>
   <div class="col-auto">
     <button type="submit" class="btn btn-primary">Upload</button>

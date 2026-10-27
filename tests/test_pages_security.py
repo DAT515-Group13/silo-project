@@ -144,10 +144,40 @@ async def test_bearer_header_is_ignored_on_pages(
 
 
 def test_templates_have_no_inline_script_or_style() -> None:
-    """The CSP allows only 'self' scripts and styles."""
+    """The CSP allows only 'self' scripts and styles: scripts must be files from /static/."""
     for path in TEMPLATES.glob("*.html"):
-        text = path.read_text().lower()
+        text = path.read_text().lower().replace("<script src=\"{{ url_for('static'", "")
         for forbidden in ("<script", "<style", " style=", "onclick=", "javascript:"):
+            assert forbidden not in text, f"{path.name}: {forbidden}"
+
+
+def test_pages_load_forms_js_and_the_upload_form_feeds_it() -> None:
+    """Every page loads forms.js; the upload form gives it the size limit and a message box.
+
+    The script itself cannot run here, so this only guards the contract between page and script.
+    """
+    assert "static', path='forms.js'" in (TEMPLATES / "base.html").read_text()
+    files_page = (TEMPLATES / "files.html").read_text()
+    script = (TEMPLATES.parent / "static" / "forms.js").read_text()
+    for name in ("data-max-bytes", "data-max-label", 'id="upload-error"'):
+        assert name in files_page
+    for name in ("maxBytes", "maxLabel", "upload-error"):
+        assert name in script
+
+
+def test_static_scripts_never_write_html() -> None:
+    """Our own scripts only set text, so a file name or message can never become markup."""
+    scripts = list(TEMPLATES.parent.glob("static/*.js"))
+    assert scripts  # the guard must not pass because the glob found nothing
+    for path in scripts:
+        text = path.read_text()
+        for forbidden in (
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "eval(",
+            "document.write",
+        ):
             assert forbidden not in text, f"{path.name}: {forbidden}"
 
 
