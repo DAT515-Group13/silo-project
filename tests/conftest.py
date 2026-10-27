@@ -320,8 +320,14 @@ ActAs = Callable[..., CurrentUser]
 class FakeSession:
     """Stands in for an AsyncSession whose database answers ``SELECT 1``."""
 
+    used_bytes = 0
+
     async def execute(self, statement: object) -> None:
         return None
+
+    async def scalar(self, statement: object) -> int:
+        """The answer to ``SUM(used_bytes)``."""
+        return self.used_bytes
 
 
 @pytest.fixture

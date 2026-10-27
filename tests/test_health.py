@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from app import main
 from app.db import get_db
 from app.main import create_app
-from tests.conftest import make_settings, sample
+from app.routers import health
+from tests.conftest import FakeSession, make_settings, sample
 from tests.fakes import InMemoryBlobStore
 
 
@@ -31,6 +32,47 @@ async def test_readyz_ok_when_both_dependencies_work(client: httpx.AsyncClient) 
     assert response.json() == {"status": "ok"}
     assert sample("silo_dependency_up", dependency="database") == 1
     assert sample("silo_dependency_up", dependency="blob_storage") == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("healthy_database")
+async def test_readyz_publishes_the_stored_bytes(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/readyz sets silo_storage_used_bytes to the sum over all users (alert at 80% of the cap)."""
+    monkeypatch.setattr(FakeSession, "used_bytes", 1234)
+    assert (await client.get("/readyz")).status_code == 200
+    assert sample("silo_storage_used_bytes") == 1234
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("healthy_database")
+async def test_a_failing_sum_never_makes_the_pod_unready(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Telemetry must not take pods out of the Service: a broken sum is only logged."""
+
+    async def broken(*args: object) -> int:
+        raise RuntimeError("boom with a secret")
+
+    monkeypatch.setattr(health.users, "total_used_bytes", broken)
+    with caplog.at_level(logging.WARNING, logger="silo"):
+        response = await client.get("/readyz")
+    assert response.status_code == 200
+    assert "RuntimeError" in caplog.text
+    assert "secret" not in caplog.text  # only the exception type is logged
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("cap", "gauge"), [(0, 0), (500, 500)])
+async def test_lifespan_publishes_the_storage_cap(
+    blob_store: InMemoryBlobStore, cap: int, gauge: int
+) -> None:
+    """silo_storage_cap_bytes is STORAGE_TOTAL_MAX_BYTES at startup, 0 when there is no cap."""
+    settings = make_settings(storage_total_max_bytes=cap)
+    app = create_app(settings=settings, blob_store=blob_store, initial_admin=False)
+    async with app.router.lifespan_context(app):
+        assert sample("silo_storage_cap_bytes") == gauge
 
 
 @pytest.mark.anyio

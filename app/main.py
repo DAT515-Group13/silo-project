@@ -21,7 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
 from app.errors import InvalidToken, RateLimited, SiloError, ValidationFailed
-from app.metrics import start_metrics_server
+from app.metrics import STORAGE_CAP, start_metrics_server
 from app.middleware import (
     AuthCookieMiddleware,
     BodyLimitMiddleware,
@@ -118,6 +118,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         if owns_store:
             app.state.blob_store = create_blob_store(settings)
+        # The cap only changes with a restart, so it is set once here (0 = no cap).
+        STORAGE_CAP.set(settings.global_cap() or 0)
         if settings.metrics_port > 0:
             metrics_server = start_metrics_server(settings.metrics_port)
         yield
