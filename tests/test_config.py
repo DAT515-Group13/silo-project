@@ -189,6 +189,17 @@ def test_quota_for_role(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.quota_for_role(Role.admin) == 10 * 1024**3
 
 
+def test_global_cap_is_off_by_default_and_reads_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """STORAGE_TOTAL_MAX_BYTES: 0 (default) means no cap, any other value is a byte count."""
+    assert make(monkeypatch).global_cap() is None
+    assert make(monkeypatch, STORAGE_TOTAL_MAX_BYTES="50").global_cap() == 50
+
+
+def test_global_cap_must_not_be_negative(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A negative total cap is a typo; it stops the startup."""
+    assert "storage_total_max_bytes" in error_text(monkeypatch, STORAGE_TOTAL_MAX_BYTES="-1")
+
+
 @pytest.mark.parametrize(
     "name",
     [

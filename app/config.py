@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     quota_user_bytes: PositiveInt = 1 * _GIB
     quota_team_lead_bytes: PositiveInt = 5 * _GIB
     quota_admin_bytes: PositiveInt = 10 * _GIB
+    # Total bytes for all users together, 0 = no cap. Same unit as the QUOTA_* settings.
+    storage_total_max_bytes: int = Field(default=0, ge=0)
     max_file_size_bytes: PositiveInt
     upload_chunk_bytes: PositiveInt = 4 * _MIB
     sas_url_ttl_seconds: PositiveInt = 300
@@ -164,6 +166,13 @@ class Settings(BaseSettings):
             Role.team_lead: self.quota_team_lead_bytes,
             Role.admin: self.quota_admin_bytes,
         }[role]
+
+    def global_cap(self) -> int | None:
+        """Return the total storage cap in bytes, or None when STORAGE_TOTAL_MAX_BYTES is 0 (off).
+
+        Callers test for None, so a cap of 0 bytes is never compared by mistake.
+        """
+        return self.storage_total_max_bytes or None
 
 
 @lru_cache
