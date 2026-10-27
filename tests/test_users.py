@@ -1,7 +1,8 @@
-"""Storage quotas.
+"""Storage quotas: per role and the service's total cap.
 
 The tests without the ``db`` marker check the pure parts. The ``db`` tests check the atomic
-quota update against PostgreSQL, including two parallel reservations at the quota edge.
+quota update against PostgreSQL, including two parallel reservations at the quota edge. The
+total cap over HTTP (and its parallel edge) is tested in ``test_files_quota.py``.
 """
 
 import pytest
@@ -9,13 +10,15 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.errors import NotFound, QuotaExceeded
+from app.errors import NotFound, QuotaExceeded, StorageFull
 from app.models import Role, User
 from app.services.users import (
     QuotaStatus,
+    get_global_remaining,
     get_quota_status,
     quota_case,
     release_quota,
+    reserve_global,
     reserve_quota,
 )
 from tests.conftest import UserFactory, make_settings
@@ -58,6 +61,64 @@ async def test_negative_sizes_are_refused() -> None:
         await reserve_quota(None, SETTINGS, 1, -1)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         await release_quota(None, 1, -1)  # type: ignore[arg-type]
+
+
+class SumSession:
+    """Stands in for an AsyncSession: ``SUM(used_bytes)`` answers ``used``; records statements."""
+
+    def __init__(self, used: int) -> None:
+        self.used = used
+        self.statements: list[str] = []
+
+    def begin(self) -> "SumSession":
+        return self
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def execute(self, statement: object) -> None:
+        self.statements.append(str(statement))
+
+    async def scalar(self, statement: object) -> int:
+        self.statements.append(str(statement))
+        return self.used
+
+
+async def test_a_disabled_total_cap_never_touches_the_database() -> None:
+    """With STORAGE_TOTAL_MAX_BYTES=0 there is no extra query and no lock on any upload."""
+    settings = make_settings(storage_total_max_bytes=0)
+    session = SumSession(used=0)
+    assert await get_global_remaining(session, settings) is None  # type: ignore[arg-type]
+    await reserve_global(session, settings, 10**12)  # type: ignore[arg-type]
+    assert session.statements == []
+
+
+@pytest.mark.parametrize(("used", "remaining"), [(0, 100), (60, 40), (100, 0), (150, 0)])
+async def test_global_remaining_is_never_negative(used: int, remaining: int) -> None:
+    """A cap lowered below the current total blocks uploads; the hint is 0, never negative."""
+    settings = make_settings(storage_total_max_bytes=100)
+    assert await get_global_remaining(SumSession(used), settings) == remaining  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("size", "fits"), [(40, True), (41, False)])
+async def test_reserve_global_locks_before_it_sums(size: int, fits: bool) -> None:
+    """The advisory lock is taken first, so the sum includes every upload committed before.
+
+    60 of 100 bytes are used: 40 more fit exactly, 41 do not.
+    """
+    settings = make_settings(storage_total_max_bytes=100)
+    session = SumSession(used=60)
+    if fits:
+        await reserve_global(session, settings, size)  # type: ignore[arg-type]
+    else:
+        with pytest.raises(StorageFull):
+            await reserve_global(session, settings, size)  # type: ignore[arg-type]
+    lock, total = session.statements
+    assert "pg_advisory_xact_lock" in lock
+    assert "sum(users.used_bytes)" in total
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------

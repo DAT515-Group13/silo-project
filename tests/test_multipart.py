@@ -89,41 +89,34 @@ async def test_wrong_content_type_is_refused(content_type: str) -> None:
         MultipartReader(content_type, stream(b"", 1), max_parts=1)
 
 
-async def test_too_many_parts_are_refused() -> None:
-    """More parts than max_parts is an error, so a body cannot hide extra fields."""
-    body = build_body(("a", None, b"1"), ("b", None, b"2"), ("c", None, b"3"))
-    reader = MultipartReader(CONTENT_TYPE, stream(body, 10), max_parts=2)
+# A part header of 9000 bytes: over the limit, so it is refused instead of buffered.
+OVERSIZED_HEADERS = (
+    f"--{BOUNDARY}\r\nX-Big: {'a' * 9000}\r\n"
+    f'Content-Disposition: form-data; name="x"\r\n\r\ndata\r\n--{BOUNDARY}--\r\n'
+).encode()
+# A part whose Content-Disposition has no name.
+NAMELESS = f"--{BOUNDARY}\r\nContent-Disposition: form-data\r\n\r\nx\r\n--{BOUNDARY}--\r\n".encode()
+THREE_PARTS = build_body(("a", None, b"1"), ("b", None, b"2"), ("c", None, b"3"))
+
+
+@pytest.mark.parametrize(
+    ("body", "chunk", "max_parts", "message"),
+    [
+        (THREE_PARTS, 10, 2, "too many"),  # a body cannot hide extra fields
+        (OVERSIZED_HEADERS, 100, 1, ""),
+        (BODY[:-40], 20, 2, "unexpectedly"),  # stops before the closing boundary
+        (NAMELESS, 8, 1, "no name"),
+    ],
+    ids=["too many parts", "oversized part headers", "truncated body", "part without name"],
+)
+async def test_malformed_body_is_refused(
+    body: bytes, chunk: int, max_parts: int, message: str
+) -> None:
+    """A malformed multipart body is a validation error (422), never an unhandled error."""
+    reader = MultipartReader(CONTENT_TYPE, stream(body, chunk), max_parts=max_parts)
     with pytest.raises(ValidationFailed) as error:
         await read_all(reader)
-    assert "too many" in error.value.errors[0]["message"]
-
-
-async def test_oversized_part_headers_are_refused() -> None:
-    """A part header over the limit is refused instead of buffered."""
-    body = (
-        f"--{BOUNDARY}\r\nX-Big: {'a' * 9000}\r\n"
-        f'Content-Disposition: form-data; name="x"\r\n\r\ndata\r\n--{BOUNDARY}--\r\n'
-    ).encode()
-    reader = MultipartReader(CONTENT_TYPE, stream(body, 100), max_parts=1)
-    with pytest.raises(ValidationFailed):
-        await read_all(reader)
-
-
-async def test_truncated_body_is_refused() -> None:
-    """A body that stops before the closing boundary (client disconnect) is an error."""
-    reader = MultipartReader(CONTENT_TYPE, stream(BODY[:-40], 20), max_parts=2)
-    with pytest.raises(ValidationFailed) as error:
-        await read_all(reader)
-    assert "unexpectedly" in error.value.errors[0]["message"]
-
-
-async def test_part_without_name_is_refused() -> None:
-    """Every part needs a name in its Content-Disposition header."""
-    body = f"--{BOUNDARY}\r\nContent-Disposition: form-data\r\n\r\nx\r\n--{BOUNDARY}--\r\n".encode()
-    reader = MultipartReader(CONTENT_TYPE, stream(body, 8), max_parts=1)
-    with pytest.raises(ValidationFailed) as error:
-        await read_all(reader)
-    assert "no name" in error.value.errors[0]["message"]
+    assert message in error.value.errors[0]["message"]
 
 
 async def test_client_disconnect_is_a_validation_error() -> None:

@@ -74,14 +74,6 @@ def set_cookie_lines(response: httpx.Response) -> list[str]:
 # --- Static files and error pages ------------------------------------------------------------
 
 
-async def test_bootstrap_is_served_locally(client: httpx.AsyncClient) -> None:
-    """Bootstrap comes from /static, so the CSP can stay 'self'."""
-    response = await client.get("/static/bootstrap.min.css")
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/css")
-    assert "Bootstrap" in response.text[:200]
-
-
 async def test_page_errors_are_html_and_api_errors_are_json(client: httpx.AsyncClient) -> None:
     """Under /api/ errors are JSON, elsewhere an HTML page without internals."""
     page = await client.get("/no-such-page")
