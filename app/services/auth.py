@@ -23,6 +23,7 @@ from app.errors import (
     SiloError,
     UsernameTaken,
 )
+from app.metrics import LOGIN_ATTEMPTS
 from app.models import Outcome, Role, User, UserStatus
 from app.permissions import CurrentUser
 from app.security import (
@@ -169,6 +170,7 @@ async def login(
         await audit.record_failure(
             session, anonymous, AuditAction.auth_login, outcome=Outcome.failed
         )
+        LOGIN_ATTEMPTS.labels("invalid").inc()
         raise InvalidCredentials
 
     # Step 3: a locked account answers like a wrong password, even for the right password, and
@@ -186,6 +188,7 @@ async def login(
             target_label=user.username,
             details={"reason": "locked"},
         )
+        LOGIN_ATTEMPTS.labels("locked").inc()
         raise InvalidCredentials
 
     password_ok = await verify_password(user.password_hash, password)
@@ -224,6 +227,7 @@ async def login(
                     **target,
                 )
         # Raised after the block, so the counter and the lock are committed.
+        LOGIN_ATTEMPTS.labels("invalid").inc()
         raise InvalidCredentials
 
     # Step 5: right password, but the account may not log in.
@@ -238,6 +242,7 @@ async def login(
             target_label=user.username,
             details={"status": user.status.value},
         )
+        LOGIN_ATTEMPTS.labels("inactive").inc()
         raise _INACTIVE_ERRORS[user.status]
 
     # Step 6: success. Hashing happens before the transaction, which should stay short.
@@ -255,6 +260,7 @@ async def login(
             AuditContext.for_user(user.id, user.username, ip=ip, request_id=request_id),
             AuditAction.auth_login,
         )
+    LOGIN_ATTEMPTS.labels("success").inc()
     return tokens
 
 

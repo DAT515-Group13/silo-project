@@ -20,6 +20,7 @@ from tests.conftest import (
     UserFactory,
     add_member,
     make_team,
+    sample,
 )
 from tests.fakes import InMemoryBlobStore, parse_download_url
 
@@ -162,9 +163,11 @@ async def test_download_redirects_to_a_read_only_url(
     owner = await user_factory("owner")
     headers = await bearer_for(owner)
     page = await file_factory(owner.id, filename="x.html", content_type="text/html")
+    before = sample("silo_downloads_total", kind="user")
 
     response = await client.get(f"/api/v1/files/{page.id}/download", headers=headers)
     assert response.status_code == 302
+    assert sample("silo_downloads_total", kind="user") == before + 1
     assert response.headers["cache-control"] == "no-store"
     parts = parse_download_url(response.headers["location"])
     assert parts["blob"] == page.blob_name

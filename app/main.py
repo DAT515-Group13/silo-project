@@ -2,7 +2,7 @@
 
 Run with: ``uvicorn app.main:create_app --factory``. The lifespan owns the database engine and
 the BlobStore. Errors are rendered as JSON under ``/api/`` and as HTML pages elsewhere. The
-request ID and trusted host middleware are added in phase 6.
+request ID and trusted host middleware are still planned (phase 6).
 """
 
 import logging
@@ -21,9 +21,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
 from app.errors import InvalidToken, RateLimited, SiloError, ValidationFailed
+from app.metrics import start_metrics_server
 from app.middleware import (
     AuthCookieMiddleware,
     BodyLimitMiddleware,
+    MetricsMiddleware,
     SecurityHeadersMiddleware,
     clear_auth_cookies,
 )
@@ -104,6 +106,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
     owns_store = app.state.blob_store is None
+    metrics_server = None
     # Everything after the engine is inside the try, so a failed startup still disposes it.
     try:
         # "First admin": runs at every startup, does nothing if the account exists.
@@ -115,8 +118,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         if owns_store:
             app.state.blob_store = create_blob_store(settings)
+        if settings.metrics_port > 0:
+            metrics_server = start_metrics_server(settings.metrics_port)
         yield
     finally:
+        if metrics_server is not None:
+            metrics_server.shutdown()
+            metrics_server.server_close()
         if owns_store and app.state.blob_store is not None:
             await app.state.blob_store.close()
             app.state.blob_store = None
@@ -205,7 +213,7 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
 
 
 async def _http_error_handler(request: Request, exc: StarletteHTTPException) -> Response:
-    if not _is_api(request) and request.url.path not in {"/healthz", "/readyz", "/metrics"}:
+    if not _is_api(request) and request.url.path not in {"/healthz", "/readyz"}:
         message = _PAGE_MESSAGES.get(exc.status_code, str(exc.detail))
         return _error_page(request, exc.status_code, message, exc.headers)
     code = _HTTP_CODES.get(exc.status_code, "http_error")
@@ -266,7 +274,8 @@ def create_app(
     # Added first = innermost, so BaseHTTPMiddleware does not wrap its 413 (see its docstring).
     app.add_middleware(BodyLimitMiddleware)
     app.add_middleware(AuthCookieMiddleware)
-    app.add_middleware(SecurityHeadersMiddleware)  # outermost: also covers error pages and 413
+    app.add_middleware(SecurityHeadersMiddleware)  # also covers error pages and 413
+    app.add_middleware(MetricsMiddleware)  # outermost: counts every response, 413 included
     app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
     app.add_exception_handler(SiloError, _silo_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)

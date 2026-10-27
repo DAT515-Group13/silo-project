@@ -191,6 +191,12 @@ def test_numbers_must_be_positive(monkeypatch: pytest.MonkeyPatch, name: str, va
     assert name.lower() in error_text(monkeypatch, **{name: value})
 
 
+@pytest.mark.parametrize("value", ["-1", "65536"])
+def test_metrics_port_must_be_a_valid_port(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """METRICS_PORT is 0 (off) or a TCP port; anything else stops the startup."""
+    assert "metrics_port" in error_text(monkeypatch, METRICS_PORT=value)
+
+
 @pytest.mark.parametrize("password", ["short", "admin"])
 def test_initial_admin_password_follows_the_policy(
     monkeypatch: pytest.MonkeyPatch, password: str

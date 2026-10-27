@@ -25,7 +25,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.errors import FileTooLarge, NotFound, QuotaExceeded, ValidationFailed
+from app.errors import FileTooLarge, NotFound, QuotaExceeded, StorageUnavailable, ValidationFailed
+from app.metrics import DOWNLOADS, UPLOAD_BYTES, UPLOADS
 from app.models import File, FileShare, Team, User
 from app.permissions import (
     CurrentUser,
@@ -212,6 +213,16 @@ async def _audit_denied(session: AsyncSession, ctx: AuditContext, filename: str,
         logger.exception("Could not write the audit entry of a denied upload")
 
 
+def _count_failed_upload(exc: BaseException) -> None:
+    """Count a refused or failed upload; other errors (bad input, cancelled request) are not."""
+    if isinstance(exc, FileTooLarge):
+        UPLOADS.labels("too_large").inc()
+    elif isinstance(exc, QuotaExceeded):
+        UPLOADS.labels("quota_exceeded").inc()
+    elif isinstance(exc, StorageUnavailable):
+        UPLOADS.labels("storage_error").inc()
+
+
 async def upload(
     session: AsyncSession,
     settings: Settings,
@@ -289,8 +300,11 @@ async def upload(
                 target_label=clean_name,
                 details={"size_bytes": size, "content_type": content_type},
             )
+        UPLOADS.labels("ok").inc()
+        UPLOAD_BYTES.inc(size)
         return FileItem(file=file, owner_username=user.username)
     except BaseException as exc:
+        _count_failed_upload(exc)
         # Step 5: anything after the blob was stored removes it again; used_bytes did not change
         # because the transaction above rolled back. BaseException also covers a cancelled
         # request, and the shield lets the cleanup finish even then.
@@ -441,6 +455,7 @@ async def download_url(
             target_id=str(file_id),
             target_label=item.file.filename,
         )
+    DOWNLOADS.labels("user").inc()
     return url
 
 

@@ -15,7 +15,7 @@ from app.config import Settings
 from app.models import AuditLog, File, User
 from app.services import users as users_service
 from app.services.users import QuotaStatus
-from tests.conftest import BearerFor, Sessionmaker, UserFactory
+from tests.conftest import BearerFor, Sessionmaker, UserFactory, sample
 from tests.fakes import InMemoryBlobStore
 
 pytestmark = [pytest.mark.db, pytest.mark.anyio]
@@ -53,6 +53,8 @@ async def test_upload_stores_blob_row_quota_and_audit(
     """A successful upload creates the blob, the row, the usage and one audit entry."""
     user = await user_factory("anna")
     headers = await bearer_for(user)
+    ok_before = sample("silo_uploads_total", result="ok")
+    bytes_before = sample("silo_upload_bytes_total")
     response = await post_file(client, headers, b"%PDF-1.4 hello", "../report.pdf", "text/plain")
     assert response.status_code == 201, response.text
     body = response.json()
@@ -62,6 +64,8 @@ async def test_upload_stores_blob_row_quota_and_audit(
     assert body["size_bytes"] == 14
     assert body["is_owner"] is True
     assert "blob_name" not in body
+    assert sample("silo_uploads_total", result="ok") == ok_before + 1
+    assert sample("silo_upload_bytes_total") == bytes_before + 14
 
     assert len(blob_store.blobs) == 1
     assert next(iter(blob_store.blobs.values())).data == b"%PDF-1.4 hello"
@@ -85,9 +89,11 @@ async def test_exact_quota_fits_and_one_byte_more_does_not(
     headers = await bearer_for(user)
 
     assert (await post_file(client, headers, b"x" * 60)).status_code == 201
+    refused_before = sample("silo_uploads_total", result="quota_exceeded")
     refused = await post_file(client, headers, b"x" * 41)
     assert refused.status_code == 413
     assert refused.json()["code"] == "quota_exceeded"
+    assert sample("silo_uploads_total", result="quota_exceeded") == refused_before + 1
     assert len(blob_store.blobs) == 1  # only the first upload
     assert await used_bytes(db_sessionmaker, user.id) == 60
 
@@ -117,9 +123,11 @@ async def test_file_over_the_size_limit_leaves_no_blob(
     headers = await bearer_for(user)
 
     assert (await post_file(client, headers, b"x" * 1000)).status_code == 201
+    large_before = sample("silo_uploads_total", result="too_large")
     response = await post_file(client, headers, b"x" * 1001)
     assert response.status_code == 413
     assert response.json()["code"] == "file_too_large"
+    assert sample("silo_uploads_total", result="too_large") == large_before + 1
     assert len(blob_store.blobs) == 1
     assert await count_files(db_sessionmaker) == 1
 

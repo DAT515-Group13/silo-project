@@ -1,9 +1,10 @@
-"""Cookies, Origin checks and cookie refresh for the HTML pages.
+"""Cookies, Origin checks, and the middleware stack (metrics, security headers, body limit).
 
 The page surface authenticates with cookies, the API with Bearer tokens; the two never mix. The
-request ID, security header and trusted host middleware are added in phase 6.
+request ID and trusted host middleware are still planned (phase 6).
 """
 
+import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -15,6 +16,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import Settings
 from app.errors import CsrfFailed
+from app.metrics import HTTP_DURATION, HTTP_REQUESTS
 from app.services.sessions import IssuedTokens
 
 DEFAULT_NEXT = "/files"
@@ -219,6 +221,46 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
+
+
+# Any other method becomes "OTHER": the method comes from the client, so without this list a
+# client could create endless label values (and memory use in Prometheus).
+KNOWN_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+
+
+class MetricsMiddleware:
+    """Count every request and time it, labelled with the route template.
+
+    The label is the template (``/s/{token}``), never the real path: a public link path is a
+    secret. Starlette's router stores the matched route in ``scope["route"]``; no route means
+    ``unmatched``; an unknown HTTP method is ``OTHER``. Outermost middleware, so 413s and error
+    pages are counted too.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        start = time.perf_counter()
+        status = 500  # stays 500 if the app fails before it answers
+
+        async def send_and_note_status(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_and_note_status)
+        finally:
+            route = scope.get("route")
+            name = getattr(route, "path", None) or "unmatched"
+            method = scope["method"] if scope["method"] in KNOWN_METHODS else "OTHER"
+            HTTP_REQUESTS.labels(method, name, str(status)).inc()
+            HTTP_DURATION.labels(method, name).observe(time.perf_counter() - start)
 
 
 # Only the two upload routes stream large bodies (to blob storage, never to disk). Everything

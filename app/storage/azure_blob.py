@@ -25,6 +25,7 @@ from azure.storage.blob.aio import BlobServiceClient
 
 from app.config import Settings
 from app.errors import StorageUnavailable
+from app.metrics import STORAGE_ERRORS
 from app.storage.base import BlobInfo, BlobStore
 
 logger = logging.getLogger("silo")
@@ -38,17 +39,20 @@ SAS_CLOCK_SKEW = timedelta(minutes=1)
 
 
 @contextmanager
-def _translate() -> Iterator[None]:
+def _translate(operation: str) -> Iterator[None]:
     """Turn every storage SDK or network error into ``StorageUnavailable``.
 
     Wrap only calls into the SDK, never the caller's data (for example the upload chunks): errors
-    raised by the caller must propagate unchanged.
+    raised by the caller must propagate unchanged. ``operation`` labels the failure metric. A
+    missing blob is not counted: deleting it counts as success.
     """
     try:
         yield
     except (AzureError, aiohttp.ClientError, TimeoutError, OSError) as exc:
         # `from exc` keeps the cause for debugging. The SDK messages contain the request ID and
         # the account name, never the account key or a SAS signature.
+        if not (operation == "delete" and isinstance(exc, ResourceNotFoundError)):
+            STORAGE_ERRORS.labels(operation).inc()
         raise StorageUnavailable from exc
 
 
@@ -111,7 +115,7 @@ class AzureBlobStore:
             # Fixed-width IDs: Azure requires all block IDs of a blob to have the same length.
             # (The SDK base64-encodes the ID itself.)
             block_id = f"{len(block_ids):08d}"
-            with _translate():
+            with _translate("upload"):
                 await blob.stage_block(block_id, data, length=len(data))
             block_ids.append(block_id)
 
@@ -131,7 +135,7 @@ class AzureBlobStore:
 
         # Only now does the blob appear. An empty upload commits an empty block list, which
         # creates an empty blob.
-        with _translate():
+        with _translate("upload"):
             await blob.commit_block_list(
                 [BlobBlock(block_id=block_id) for block_id in block_ids],
                 content_settings=ContentSettings(content_type=content_type),
@@ -142,7 +146,7 @@ class AzureBlobStore:
         """Delete a blob; a missing blob is fine (idempotent)."""
         blob = self._container.get_blob_client(blob_name)
         try:
-            with _translate():
+            with _translate("delete"):
                 await blob.delete_blob()
         except StorageUnavailable as exc:
             if isinstance(exc.__cause__, ResourceNotFoundError):
@@ -176,7 +180,7 @@ class AzureBlobStore:
 
     async def ping(self) -> None:
         """Check that the configured container exists and the key works (``/readyz``)."""
-        with _translate():
+        with _translate("ping"):
             async with asyncio.timeout(PING_TIMEOUT_SECONDS):
                 await self._container.get_container_properties()
 
@@ -185,7 +189,7 @@ class AzureBlobStore:
         iterator = self._container.list_blobs().__aiter__()
         while True:
             # Only the SDK call is translated, not the consumer's code between two items.
-            with _translate():
+            with _translate("list"):
                 try:
                     blob: Any = await iterator.__anext__()
                 except StopAsyncIteration:
