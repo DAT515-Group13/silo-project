@@ -3,7 +3,7 @@
 Each page and form action calls the same service function as its JSON counterpart in
 ``routers/api/admin.py``; the services answer non-admins with ``NotFound``, which becomes the
 HTML 404 page. Every POST is protected by ``CsrfChecked``. Domain errors (409 ``last_admin``,
-409 ``invalid_user_state``, 503 ``storage_unavailable``) become the HTML error page.
+409 ``invalid_user_state``) become the HTML error page.
 """
 
 from datetime import UTC, datetime

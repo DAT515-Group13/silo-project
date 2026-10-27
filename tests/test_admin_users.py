@@ -278,7 +278,7 @@ async def test_admin_can_demote_another_admin(
 
 
 @pytest.mark.db
-async def test_delete_user_deletes_blobs_then_the_user(
+async def test_delete_user_deletes_the_user_then_the_blobs(
     client: httpx.AsyncClient,
     root: User,
     user_factory: UserFactory,
@@ -287,7 +287,7 @@ async def test_delete_user_deletes_blobs_then_the_user(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Blobs are deleted, then the user with files and owned teams; audit keeps the count."""
+    """The user with files and owned teams is deleted, then the blobs; audit keeps the count."""
     lead = await user_factory(username="lead", role=Role.team_lead)
     leads = await bearer_for(lead)
     await client.post("/api/v1/teams", json={"name": "Design"}, headers=leads)
@@ -309,7 +309,7 @@ async def test_delete_user_deletes_blobs_then_the_user(
 
 
 @pytest.mark.db
-async def test_delete_user_keeps_everything_when_storage_fails(
+async def test_delete_user_succeeds_when_storage_fails(
     client: httpx.AsyncClient,
     root: User,
     user_factory: UserFactory,
@@ -318,12 +318,12 @@ async def test_delete_user_keeps_everything_when_storage_fails(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """A storage failure is 503 storage_unavailable; the user and their file rows stay."""
+    """A blob that cannot be deleted becomes an orphan (D24); the user is deleted anyway."""
     anna = await user_factory(username="anna")
     await file_factory(anna.id)
     blob_store.healthy = False
     response = await client.delete(f"/api/v1/admin/users/{anna.id}", headers=await bearer_for(root))
-    assert (response.status_code, response.json()["code"]) == (503, "storage_unavailable")
-    assert await status_of(db_sessionmaker, anna.id) == (Role.user, UserStatus.active)
+    assert response.status_code == 204
+    assert await status_of(db_sessionmaker, anna.id) is None
     async with db_sessionmaker() as session, session.begin():
-        assert await session.scalar(select(func.count()).select_from(File)) == 1
+        assert await session.scalar(select(func.count()).select_from(File)) == 0
