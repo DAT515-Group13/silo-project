@@ -16,7 +16,15 @@ from app.models import ActorType, AuditLog, Outcome, Role, User, UserStatus
 from app.permissions import CurrentUser
 from app.routers.common import templates
 from app.services import admin
-from tests.conftest import ActAs, FileFactory, PageLogin, Sessionmaker, UserFactory, page_csrf
+from tests.conftest import (
+    ActAs,
+    FakeSession,
+    FileFactory,
+    PageLogin,
+    Sessionmaker,
+    UserFactory,
+    page_csrf,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -87,12 +95,14 @@ async def test_audit_filter_with_a_bad_value_is_422(
     assert (await client.get("/admin/audit?from=yesterday")).status_code == 422
 
 
-async def test_storage_totals_are_for_admins_only(settings: Settings) -> None:
+@pytest.mark.parametrize("role", [Role.user, Role.team_lead])
+async def test_storage_totals_are_for_admins_only(settings: Settings, role: Role) -> None:
     """The total is admin data: everybody else gets NotFound before any query."""
-    for role in (Role.user, Role.team_lead):
-        actor = CurrentUser(id=1, username="anna", role=role, session_id=uuid.uuid4())
-        with pytest.raises(NotFound):
-            await admin.storage_totals(None, actor, settings)  # type: ignore[arg-type]
+    actor = CurrentUser(id=1, username="anna", role=role, session_id=uuid.uuid4())
+    session = FakeSession()
+    with pytest.raises(NotFound):
+        await admin.storage_totals(session, actor, settings)  # type: ignore[arg-type]
+    assert session.statements == []
 
 
 def test_admin_link_shows_only_for_admins() -> None:
@@ -199,12 +209,13 @@ async def test_admin_cannot_act_on_themself(
 
 @pytest.mark.db
 @pytest.mark.parametrize(
-    ("cap", "expected"),
+    ("cap", "expected", "warns"),
     [
-        (0, ["Total stored", "1.0 KiB", "no total cap"]),
-        (4096, ["of 4.0 KiB", "(25%)"]),
-        (1100, ["of 1.1 KiB", "(93%)", "almost full"]),  # 80% or more warns
+        (0, ["1.0 KiB", "no total cap"], False),
+        (4096, ["1.0 KiB", "of 4.0 KiB", "(25%)"], False),
+        (1280, ["of 1.2 KiB", "(80%)"], True),  # exactly 80% already warns (same as the alert)
     ],
+    ids=["no cap", "25 percent", "80 percent"],
 )
 async def test_users_page_shows_the_total_storage(
     client: httpx.AsyncClient,
@@ -214,6 +225,7 @@ async def test_users_page_shows_the_total_storage(
     file_factory: FileFactory,
     cap: int,
     expected: list[str],
+    warns: bool,
 ) -> None:
     """/admin shows one aggregate: all stored bytes, the cap and a warning near the cap."""
     _, headers, _ = admin_login
@@ -225,8 +237,7 @@ async def test_users_page_shows_the_total_storage(
     block = page.text.split('id="total-storage"')[1].split("</p>")[0]
     for text in expected:
         assert text in block
-    if cap < 1100:
-        assert "almost full" not in block
+    assert ("almost full" in block) is warns
 
 
 @pytest.mark.db

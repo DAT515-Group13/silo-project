@@ -14,6 +14,8 @@ from app.services import users
 logger = logging.getLogger("silo")
 
 DATABASE_TIMEOUT_SECONDS = 5
+# The stored-bytes gauge is telemetry: it may add at most this much to a readiness probe.
+STORAGE_SUM_TIMEOUT_SECONDS = 1
 
 router = APIRouter(tags=["health"])
 
@@ -68,7 +70,7 @@ async def readyz(session: DbSession, store: Store) -> JSONResponse:
 async def _publish_storage_used(session: DbSession) -> None:
     """Set ``silo_storage_used_bytes``; telemetry must never make the pod unready."""
     try:
-        async with asyncio.timeout(DATABASE_TIMEOUT_SECONDS):
+        async with asyncio.timeout(STORAGE_SUM_TIMEOUT_SECONDS):
             STORAGE_USED.set(await users.total_used_bytes(session))
     except Exception as exc:
         logger.warning("Could not read the total stored bytes (%s)", type(exc).__name__)

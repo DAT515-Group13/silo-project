@@ -1,6 +1,6 @@
 """Read-only admin views: all files, the audit log and the total storage.
 
-User management lives in ``services/users.py``. Both listings are for admins only; everybody
+User management lives in ``services/users.py``. All three are for admins only; everybody
 else gets ``NotFound``. Admins see file metadata only, never file contents.
 """
 

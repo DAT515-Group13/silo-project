@@ -1,14 +1,13 @@
 """/healthz, /readyz, the lifespan and the blob store selection."""
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from app import main
-from app.db import get_db
 from app.main import create_app
 from app.routers import health
 from tests.conftest import FakeSession, make_settings, sample
@@ -24,42 +23,44 @@ async def test_healthz_checks_no_dependency(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.anyio
-@pytest.mark.usefixtures("healthy_database")
-async def test_readyz_ok_when_both_dependencies_work(client: httpx.AsyncClient) -> None:
-    """Readiness is 200 when SELECT 1 and the blob ping succeed."""
+async def test_readyz_ok_when_both_dependencies_work(
+    client: httpx.AsyncClient, healthy_database: FakeSession
+) -> None:
+    """Readiness is 200 when SELECT 1 and the blob ping succeed; it also publishes the stored
+    bytes (sum over all users) for the "storage almost full" alert."""
+    healthy_database.used_bytes = 1234
     response = await client.get("/readyz")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
     assert sample("silo_dependency_up", dependency="database") == 1
     assert sample("silo_dependency_up", dependency="blob_storage") == 1
-
-
-@pytest.mark.anyio
-@pytest.mark.usefixtures("healthy_database")
-async def test_readyz_publishes_the_stored_bytes(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """/readyz sets silo_storage_used_bytes to the sum over all users (alert at 80% of the cap)."""
-    monkeypatch.setattr(FakeSession, "used_bytes", 1234)
-    assert (await client.get("/readyz")).status_code == 200
     assert sample("silo_storage_used_bytes") == 1234
 
 
 @pytest.mark.anyio
 @pytest.mark.usefixtures("healthy_database")
+@pytest.mark.parametrize("problem", ["RuntimeError", "TimeoutError"])
 async def test_a_failing_sum_never_makes_the_pod_unready(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    problem: str,
 ) -> None:
-    """Telemetry must not take pods out of the Service: a broken sum is only logged."""
+    """Telemetry must not take pods out of the Service: a broken or hanging sum is only logged,
+    and a hanging one costs at most STORAGE_SUM_TIMEOUT_SECONDS."""
 
     async def broken(*args: object) -> int:
+        if problem == "TimeoutError":
+            await asyncio.sleep(30)
         raise RuntimeError("boom with a secret")
 
+    monkeypatch.setattr(health, "STORAGE_SUM_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(health.users, "total_used_bytes", broken)
     with caplog.at_level(logging.WARNING, logger="silo"):
-        response = await client.get("/readyz")
+        async with asyncio.timeout(5):  # the probe itself must not hang
+            response = await client.get("/readyz")
     assert response.status_code == 200
-    assert "RuntimeError" in caplog.text
+    assert f"stored bytes ({problem})" in caplog.text
     assert "secret" not in caplog.text  # only the exception type is logged
 
 
@@ -76,20 +77,42 @@ async def test_lifespan_publishes_the_storage_cap(
 
 
 @pytest.mark.anyio
-@pytest.mark.usefixtures("healthy_database")
-async def test_readyz_503_when_blob_store_fails(
-    client: httpx.AsyncClient, blob_store: InMemoryBlobStore, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize(
+    ("failing", "working", "logged"),
+    [
+        ("blob_storage", "database", "blob storage (StorageUnavailable)"),
+        ("database", "blob_storage", "database (TimeoutError)"),  # accepts, never answers
+    ],
+)
+async def test_readyz_503_when_one_dependency_fails(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    blob_store: InMemoryBlobStore,
+    healthy_database: FakeSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failing: str,
+    working: str,
+    logged: str,
 ) -> None:
-    """A failing ping gives 503 and sets its gauge to 0; the body hides the cause, the log
-    names it."""
-    blob_store.healthy = False
+    """One failing dependency gives 503 and sets only its own gauge to 0; the body hides the
+    cause, the log names it. A hanging database is cut off after DATABASE_TIMEOUT_SECONDS."""
+    if failing == "blob_storage":
+        blob_store.healthy = False
+    else:
+
+        async def hang(statement: object) -> None:
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(healthy_database, "execute", hang)
+        monkeypatch.setattr(health, "DATABASE_TIMEOUT_SECONDS", 0.05)
     with caplog.at_level(logging.WARNING, logger="silo"):
         response = await client.get("/readyz")
     assert response.status_code == 503
     assert response.json() == {"status": "unavailable"}
-    assert "blob storage (StorageUnavailable)" in caplog.text
-    assert sample("silo_dependency_up", dependency="blob_storage") == 0
-    assert sample("silo_dependency_up", dependency="database") == 1
+    assert logged in caplog.text
+    assert sample("silo_dependency_up", dependency=failing) == 0
+    assert sample("silo_dependency_up", dependency=working) == 1
 
 
 @pytest.mark.anyio
@@ -109,6 +132,7 @@ async def test_readyz_503_when_database_is_unreachable(
     assert "database (" in caplog.text
     assert sample("silo_dependency_up", dependency="database") == 0
     assert "pw-secret" not in caplog.text
+    assert "stored bytes" not in caplog.text  # no sum is tried on a database that is down
 
 
 @pytest.mark.db
@@ -124,6 +148,7 @@ async def test_readyz_ok_against_a_real_database(
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
             response = await client.get("/readyz")
     assert response.status_code == 200
+    assert sample("silo_storage_used_bytes") == 0  # the real SUM ran on the empty test database
 
 
 @pytest.mark.anyio
@@ -174,28 +199,6 @@ async def test_lifespan_creates_and_closes_the_azure_store(
         assert store.closed is False
     assert store.closed is True
     assert app.state.blob_store is None
-
-
-@pytest.mark.anyio
-async def test_readyz_503_when_the_database_does_not_answer(
-    app: FastAPI, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A database that accepts the connection but hangs gives 503 after the timeout."""
-    import asyncio
-
-    from app.routers import health
-
-    class HangingSession:
-        async def execute(self, statement: object) -> None:
-            await asyncio.sleep(30)
-
-    async def hanging_db() -> AsyncIterator[HangingSession]:
-        yield HangingSession()
-
-    monkeypatch.setattr(health, "DATABASE_TIMEOUT_SECONDS", 0.05)
-    app.dependency_overrides[get_db] = hanging_db
-    response = await client.get("/readyz")
-    assert response.status_code == 503
 
 
 @pytest.mark.anyio

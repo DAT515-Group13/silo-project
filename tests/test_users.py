@@ -21,7 +21,7 @@ from app.services.users import (
     reserve_global,
     reserve_quota,
 )
-from tests.conftest import UserFactory, make_settings
+from tests.conftest import FakeSession, UserFactory, make_settings
 
 pytestmark = pytest.mark.anyio
 
@@ -63,34 +63,10 @@ async def test_negative_sizes_are_refused() -> None:
         await release_quota(None, 1, -1)  # type: ignore[arg-type]
 
 
-class SumSession:
-    """Stands in for an AsyncSession: ``SUM(used_bytes)`` answers ``used``; records statements."""
-
-    def __init__(self, used: int) -> None:
-        self.used = used
-        self.statements: list[str] = []
-
-    def begin(self) -> "SumSession":
-        return self
-
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, *exc: object) -> None:
-        return None
-
-    async def execute(self, statement: object) -> None:
-        self.statements.append(str(statement))
-
-    async def scalar(self, statement: object) -> int:
-        self.statements.append(str(statement))
-        return self.used
-
-
 async def test_a_disabled_total_cap_never_touches_the_database() -> None:
     """With STORAGE_TOTAL_MAX_BYTES=0 there is no extra query and no lock on any upload."""
     settings = make_settings(storage_total_max_bytes=0)
-    session = SumSession(used=0)
+    session = FakeSession()
     assert await get_global_remaining(session, settings) is None  # type: ignore[arg-type]
     await reserve_global(session, settings, 10**12)  # type: ignore[arg-type]
     assert session.statements == []
@@ -100,7 +76,7 @@ async def test_a_disabled_total_cap_never_touches_the_database() -> None:
 async def test_global_remaining_is_never_negative(used: int, remaining: int) -> None:
     """A cap lowered below the current total blocks uploads; the hint is 0, never negative."""
     settings = make_settings(storage_total_max_bytes=100)
-    assert await get_global_remaining(SumSession(used), settings) == remaining  # type: ignore[arg-type]
+    assert await get_global_remaining(FakeSession(used), settings) == remaining  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(("size", "fits"), [(40, True), (41, False)])
@@ -110,7 +86,7 @@ async def test_reserve_global_locks_before_it_sums(size: int, fits: bool) -> Non
     60 of 100 bytes are used: 40 more fit exactly, 41 do not.
     """
     settings = make_settings(storage_total_max_bytes=100)
-    session = SumSession(used=60)
+    session = FakeSession(used_bytes=60)
     if fits:
         await reserve_global(session, settings, size)  # type: ignore[arg-type]
     else:

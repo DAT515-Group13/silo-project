@@ -318,27 +318,43 @@ ActAs = Callable[..., CurrentUser]
 
 
 class FakeSession:
-    """Stands in for an AsyncSession whose database answers ``SELECT 1``."""
+    """Stands in for an AsyncSession: ``SELECT 1`` works and ``SUM(used_bytes)`` is ``used_bytes``.
 
-    used_bytes = 0
+    Every statement is recorded in ``statements`` (as SQL text), so a test can check what was
+    asked and in which order. ``begin()`` is a no-op transaction.
+    """
 
-    async def execute(self, statement: object) -> None:
+    def __init__(self, used_bytes: int = 0) -> None:
+        self.used_bytes = used_bytes
+        self.statements: list[str] = []
+
+    def begin(self) -> "FakeSession":
+        return self
+
+    async def __aenter__(self) -> None:
         return None
 
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def execute(self, statement: object) -> None:
+        self.statements.append(str(statement))
+
     async def scalar(self, statement: object) -> int:
-        """The answer to ``SUM(used_bytes)``."""
+        self.statements.append(str(statement))
         return self.used_bytes
 
 
 @pytest.fixture
-def healthy_database(app: FastAPI) -> Iterator[None]:
-    """Replace the database dependency, so no PostgreSQL is needed."""
+def healthy_database(app: FastAPI) -> Iterator[FakeSession]:
+    """Replace the database dependency, so no PostgreSQL is needed; yields the fake session."""
+    session = FakeSession()
 
     async def fake_db() -> AsyncIterator[FakeSession]:
-        yield FakeSession()
+        yield session
 
     app.dependency_overrides[get_db] = fake_db
-    yield
+    yield session
     app.dependency_overrides.pop(get_db, None)
 
 
