@@ -372,3 +372,21 @@ async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
+
+
+# --- Team helpers over the API (used by the team and file tests) ---------------------------------
+
+
+async def make_team(client: httpx.AsyncClient, headers: dict, name: str = "Design") -> int:
+    """Create a team as the logged-in user of ``headers`` and return its ID."""
+    response = await client.post("/api/v1/teams", json={"name": name}, headers=headers)
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+async def add_member(client: httpx.AsyncClient, headers: dict, team_id: int, username: str) -> int:
+    """Add a member through the API and return the status code (always 204 when allowed)."""
+    response = await client.post(
+        f"/api/v1/teams/{team_id}/members", json={"username": username}, headers=headers
+    )
+    return response.status_code

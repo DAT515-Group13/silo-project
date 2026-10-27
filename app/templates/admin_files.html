@@ -8,7 +8,7 @@
 <p class="text-body-secondary">{{ total }} file(s). Metadata only: admins cannot download other users' files.</p>
 
 <table class="table">
-  <thead><tr><th>Name</th><th>Owner</th><th>Type</th><th>Size</th><th>Uploaded</th></tr></thead>
+  <thead><tr><th>Name</th><th>Owner</th><th>Type</th><th>Size</th><th>Uploaded</th><th></th></tr></thead>
   <tbody>
     {% for file in files %}
     <tr>
@@ -17,6 +17,14 @@
       <td>{{ file.content_type }}</td>
       <td>{{ file.size_bytes | filesizeformat }}</td>
       <td>{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+      <td class="text-end">
+        {#- Admins may delete any file (section 6); "next" brings them back to this list. -#}
+        <form method="post" action="/files/{{ file.id }}/delete">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="next" value="/admin/files">
+          <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </tbody>

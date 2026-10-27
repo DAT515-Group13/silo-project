@@ -1,14 +1,81 @@
 {% extends "base.html" %}
-{#- Placeholder until the file service exists: shows the storage usage and says what is missing. -#}
 {% block title %}Files{% endblock %}
 {% block content %}
 <h1 class="h3 mb-3">Files</h1>
 
+{% if notice %}<div class="alert alert-success">{{ notice }}</div>{% endif %}
+{% if errors %}
+<div class="alert alert-danger">
+  <ul class="mb-0">{% for message in errors %}<li>{{ message }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
 <p class="mb-1">Storage: {{ used_bytes | filesizeformat }} of {{ quota_bytes | filesizeformat }}</p>
 <progress class="d-block w-100 mb-4" max="{{ quota_bytes }}" value="{{ used_bytes }}"></progress>
 
-<div class="alert alert-info">
-  Uploading, downloading and sharing files is not available yet. Meanwhile you can manage
-  your <a href="/teams">teams</a> and your <a href="/account">account</a>.
-</div>
+{#- The csrf_token input must stay BEFORE the file input: the server reads the form as a stream
+    and checks the token before it reads any of the file (see routers/file_pages.py). -#}
+<form method="post" action="/files/upload" enctype="multipart/form-data" class="row g-2 mb-4">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="col-sm-8">
+    <label class="visually-hidden" for="file">File</label>
+    <input class="form-control" type="file" id="file" name="file" required>
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-primary">Upload</button>
+  </div>
+  <div class="form-text">Up to {{ max_file_bytes | filesizeformat }} per file.</div>
+</form>
+
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item">
+    <a class="nav-link{% if tab == 'mine' %} active{% endif %}" href="/files?tab=mine&amp;sort={{ sort }}">My files</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if tab == 'shared' %} active{% endif %}" href="/files?tab=shared&amp;sort={{ sort }}">Shared with me</a>
+  </li>
+</ul>
+
+<form method="get" action="/files" class="row g-2 mb-3">
+  <input type="hidden" name="tab" value="{{ tab }}">
+  <div class="col-auto">
+    <label class="visually-hidden" for="sort">Sort by</label>
+    <select class="form-select form-select-sm" id="sort" name="sort">
+      {% for value, label in sort_choices %}
+      <option value="{{ value }}"{% if value == sort %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto"><button type="submit" class="btn btn-outline-secondary btn-sm">Sort</button></div>
+</form>
+
+{% if files %}
+<table class="table align-middle">
+  <thead><tr><th>Name</th>{% if tab == 'shared' %}<th>Owner</th>{% endif %}<th>Size</th><th>Uploaded</th><th></th></tr></thead>
+  <tbody>
+    {% for file in files %}
+    <tr>
+      <td><a href="/files/{{ file.id }}">{{ file.filename }}</a></td>
+      {% if tab == 'shared' %}<td>{{ file.owner.username }}</td>{% endif %}
+      <td>{{ file.size_bytes | filesizeformat }}</td>
+      <td>{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+      <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="/files/{{ file.id }}/download">Download</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if pages > 1 %}
+<nav aria-label="File pages">
+  <ul class="pagination">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?tab={{ tab }}&amp;sort={{ sort }}&amp;page={{ page - 1 }}">Previous</a></li>{% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ pages }}</span></li>
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?tab={{ tab }}&amp;sort={{ sort }}&amp;page={{ page + 1 }}">Next</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% elif tab == 'shared' %}
+<p class="text-body-secondary">No files are shared with you yet.</p>
+{% else %}
+<p class="text-body-secondary">You have not uploaded any files yet.</p>
+{% endif %}
 {% endblock %}

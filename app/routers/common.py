@@ -211,37 +211,53 @@ async def verify_origin(
     check_origin(request, settings)
 
 
+def check_csrf_value(
+    request: Request, settings: Settings, user: CurrentUser | None, value: str | None
+) -> None:
+    """Check a submitted CSRF token against the CSRF cookie and the user's session.
+
+    Signed double submit: ``value`` (from the form) must equal the CSRF cookie, and its
+    signature must match the session it was issued for (or the pre-session value on the login
+    and register forms). Split out of ``require_csrf`` so the upload route, which must not let
+    Starlette parse the body, can check the token it read from the stream itself.
+
+    Raises:
+        CsrfFailed: if anything is missing, differs or does not verify.
+    """
+    cookie = request.cookies.get(cookie_names(settings).csrf)
+    if not cookie or not isinstance(value, str) or not value:
+        raise CsrfFailed
+
+    # Constant-time comparison, so response time does not leak how much of the token matched.
+    if not hmac.compare_digest(cookie.encode(), value.encode()):
+        raise CsrfFailed
+
+    # A token for another session, or one made without CSRF_SECRET, does not verify.
+    binding = str(user.session_id) if user else PRE_SESSION_BINDING
+    if not verify_csrf_token(
+        value, secret=settings.csrf_secret.get_secret_value(), binding=binding
+    ):
+        raise CsrfFailed
+
+
 async def require_csrf(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     _origin: Annotated[None, Depends(verify_origin)],
     user: Annotated[CurrentUser | None, Depends(get_optional_page_user)],
 ) -> None:
-    """CSRF protection of every page POST.
+    """CSRF protection of every page POST (not the upload, see ``check_csrf_value``).
 
-    Signed double submit: the token in the ``csrf_token`` form field must equal the CSRF cookie,
-    and its signature must match the session it was issued for (or the pre-session value on the
-    login and register forms). The Origin check has already run.
+    Reads the ``csrf_token`` form field and checks it with ``check_csrf_value``. The Origin
+    check has already run. This reads the whole form, so it must not be used on routes that
+    stream a large body.
 
     Raises:
         CsrfFailed: if anything is missing, differs or does not verify.
     """
-    cookie = request.cookies.get(cookie_names(settings).csrf)
     form = await request.form()
     field = form.get("csrf_token")
-    if not cookie or not isinstance(field, str) or not field:
-        raise CsrfFailed
-
-    # Constant-time comparison, so response time does not leak how much of the token matched.
-    if not hmac.compare_digest(cookie.encode(), field.encode()):
-        raise CsrfFailed
-
-    # A token for another session, or one made without CSRF_SECRET, does not verify.
-    binding = str(user.session_id) if user else PRE_SESSION_BINDING
-    if not verify_csrf_token(
-        field, secret=settings.csrf_secret.get_secret_value(), binding=binding
-    ):
-        raise CsrfFailed
+    check_csrf_value(request, settings, user, field if isinstance(field, str) else None)
 
 
 def render_page(
@@ -281,6 +297,22 @@ def render_page(
 
 
 # --- Shared helpers ------------------------------------------------------------------------------
+
+
+def declared_size(request: Request) -> int | None:
+    """The request's Content-Length as a number, or None if missing or not a number.
+
+    Only a hint for uploads (a client may lie); the bytes are counted while streaming.
+    """
+    try:
+        return int(request.headers["content-length"])
+    except (KeyError, ValueError):
+        return None
+
+
+def link_url(base_url: str, token: str) -> str:
+    """The public URL of a link: ``<BASE_URL>/s/<token>``. A secret: never log it."""
+    return f"{base_url.rstrip('/')}/s/{token}"
 
 
 def client_ip(request: Request) -> str | None:

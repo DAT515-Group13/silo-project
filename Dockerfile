@@ -23,8 +23,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
 # Non-root user with a fixed UID, so Kubernetes can enforce runAsNonRoot / runAsUser.
-RUN groupadd --system --gid 10001 silo \
-    && useradd --system --uid 10001 --gid silo --no-create-home --shell /usr/sbin/nologin silo
+RUN groupadd --gid 10001 silo \
+    && useradd --uid 10001 --gid silo --no-create-home --shell /usr/sbin/nologin silo
 
 COPY --from=builder /opt/venv /opt/venv
 
