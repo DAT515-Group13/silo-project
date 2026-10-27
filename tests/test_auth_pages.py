@@ -72,6 +72,7 @@ async def test_register_page_follows_the_registration_mode(
 
 
 async def test_start_page_sends_visitors_to_login(client: httpx.AsyncClient) -> None:
+    """A visitor without a session who opens / is redirected to /login."""
     response = await client.get("/", follow_redirects=False)
     assert (response.status_code, response.headers["location"]) == (303, "/login")
 

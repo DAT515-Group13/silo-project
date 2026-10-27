@@ -96,15 +96,23 @@ def test_missing_required_variable_is_refused(monkeypatch: pytest.MonkeyPatch, n
     assert name.lower() in error_text(monkeypatch, **{name: None})
 
 
-@pytest.mark.parametrize("name", ["JWT_SECRET", "CSRF_SECRET", "JWT_SECRET_PREVIOUS"])
-def test_short_secret_is_refused(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    """Secrets must be at least 32 bytes."""
-    assert f"{name} must be at least 32 bytes" in error_text(monkeypatch, **{name: "short"})
-
-
-def test_secret_length_is_measured_in_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """16 two-byte characters are 32 bytes and therefore accepted."""
-    assert make(monkeypatch, JWT_SECRET="é" * 16)
+@pytest.mark.parametrize(
+    ("name", "value", "accepted"),
+    [
+        pytest.param("JWT_SECRET", "short", False, id="short JWT_SECRET"),
+        pytest.param("CSRF_SECRET", "short", False, id="short CSRF_SECRET"),
+        pytest.param("JWT_SECRET_PREVIOUS", "short", False, id="short JWT_SECRET_PREVIOUS"),
+        pytest.param("JWT_SECRET", "é" * 16, True, id="16 two-byte characters are 32 bytes"),
+    ],
+)
+def test_secrets_need_32_bytes(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str, accepted: bool
+) -> None:
+    """A secret must be at least 32 bytes, measured in bytes and not characters."""
+    if accepted:
+        assert make(monkeypatch, **{name: value})
+    else:
+        assert f"{name} must be at least 32 bytes" in error_text(monkeypatch, **{name: value})
 
 
 def test_equal_jwt_and_csrf_secret_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,21 +122,30 @@ def test_equal_jwt_and_csrf_secret_is_refused(monkeypatch: pytest.MonkeyPatch) -
     )
 
 
+PLACEHOLDER = "CHANGE-me-" + "x" * 40
+
+
 @pytest.mark.parametrize("env", ["staging", "prod"])
 @pytest.mark.parametrize(
     ("variable", "value"),
     [
-        ("COOKIE_SECURE", "false"),
-        ("ENABLE_DOCS", "true"),
-        ("REGISTRATION_MODE", "open"),
-        ("BASE_URL", "http://silo.example"),
+        pytest.param("COOKIE_SECURE", "false", id="insecure cookies"),
+        pytest.param("ENABLE_DOCS", "true", id="docs enabled"),
+        pytest.param("REGISTRATION_MODE", "open", id="open registration"),
+        pytest.param("BASE_URL", "http://silo.example", id="http BASE_URL"),
+        pytest.param("JWT_SECRET", PLACEHOLDER, id="placeholder JWT_SECRET"),
+        pytest.param("CSRF_SECRET", PLACEHOLDER, id="placeholder CSRF_SECRET"),
+        pytest.param("INITIAL_ADMIN_PASSWORD", PLACEHOLDER, id="placeholder admin password"),
+        pytest.param("DATABASE_URL", PLACEHOLDER, id="placeholder DATABASE_URL"),
+        pytest.param("AZURE_STORAGE_CONTAINER", PLACEHOLDER, id="placeholder container"),
     ],
 )
 def test_unsafe_setting_is_refused_in_staging_and_prod(
     monkeypatch: pytest.MonkeyPatch, env: str, variable: str, value: str
 ) -> None:
-    """staging and prod refuse insecure cookies, docs, open registration and an http BASE_URL."""
-    assert variable in error_text(monkeypatch, APP_ENV=env, **{variable: value})
+    """staging and prod refuse dev conveniences and CHANGE placeholders, one setting at a time."""
+    safe = {"APP_ENV": env, "COOKIE_SECURE": "true", "BASE_URL": "https://silo.example"}
+    assert variable in error_text(monkeypatch, **{**safe, variable: value})
 
 
 def test_unsafe_setting_and_placeholders_are_allowed_locally(
@@ -205,26 +222,6 @@ def test_initial_admin_password_follows_the_policy(
     text = error_text(monkeypatch, INITIAL_ADMIN_PASSWORD=password, INITIAL_ADMIN_USERNAME="admin")
     assert "INITIAL_ADMIN_PASSWORD" in text
     assert password not in text.replace("INITIAL_ADMIN_PASSWORD", "")
-
-
-@pytest.mark.parametrize("env", ["staging", "prod"])
-@pytest.mark.parametrize(
-    "variable",
-    [
-        "JWT_SECRET",
-        "CSRF_SECRET",
-        "INITIAL_ADMIN_PASSWORD",
-        "DATABASE_URL",
-        "AZURE_STORAGE_CONTAINER",
-    ],
-)
-def test_placeholders_are_refused_in_staging_and_prod(
-    monkeypatch: pytest.MonkeyPatch, env: str, variable: str
-) -> None:
-    """Values copied from .env.dev.example (they contain CHANGE) must not run in staging/prod."""
-    safe = {"APP_ENV": env, "COOKIE_SECURE": "true", "BASE_URL": "https://silo.example"}
-    placeholder = "CHANGE-me-" + "x" * 40
-    assert variable in error_text(monkeypatch, **safe, **{variable: placeholder})
 
 
 @pytest.mark.parametrize(
