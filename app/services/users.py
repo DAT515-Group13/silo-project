@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.errors import InvalidUserState, LastAdmin, NotFound, QuotaExceeded
+from app.errors import InvalidUserState, LastAdmin, NotFound, QuotaExceeded, StorageFull
 from app.models import File, Role, User, UserStatus
 from app.permissions import CurrentUser, is_admin
 from app.security import hash_password
@@ -119,6 +119,52 @@ async def reserve_quota(session: AsyncSession, settings: Settings, user_id: int,
         # No row: over the quota (or an unknown user, which a logged-in uploader cannot be).
         raise QuotaExceeded
     return used
+
+
+# Key of the advisory lock that serialises the global storage check. Any fixed number works; it
+# only has to be the same in every process.
+_GLOBAL_QUOTA_LOCK = 51515
+
+
+async def total_used_bytes(session: AsyncSession) -> int:
+    """Return the sum of ``used_bytes`` over all users, inside the caller's transaction."""
+    return await session.scalar(select(func.coalesce(func.sum(User.used_bytes), 0))) or 0
+
+
+async def get_global_remaining(session: AsyncSession, settings: Settings) -> int | None:
+    """Return the bytes left under ``STORAGE_TOTAL_MAX_BYTES`` (upload step 2), or None if off.
+
+    Read in its own transaction and only a hint for streaming: the binding check is
+    ``reserve_global``. Never negative.
+    """
+    cap = settings.global_cap()
+    if cap is None:
+        return None
+    async with session.begin():
+        used = await total_used_bytes(session)
+    return max(cap - used, 0)
+
+
+async def reserve_global(session: AsyncSession, settings: Settings, size: int) -> None:
+    """Check that ``size`` more bytes fit under ``STORAGE_TOTAL_MAX_BYTES`` (upload step 4).
+
+    Runs inside the caller's ``session.begin()`` block, before ``reserve_quota``, and does
+    nothing when the cap is off.
+
+    Raises:
+        StorageFull: the total would pass the cap.
+    """
+    cap = settings.global_cap()
+    if cap is None:
+        return
+    # The per-user UPDATE locks only that user's row, so two users at the global edge could
+    # both see room and both commit. This lock serialises the short step-4 transactions of all
+    # uploads; PostgreSQL releases it at commit or rollback. The sum below is read after the
+    # lock is held, so (READ COMMITTED) it includes everything the previous holder committed.
+    # Deletes need no lock: they only lower the sum.
+    await session.execute(select(func.pg_advisory_xact_lock(_GLOBAL_QUOTA_LOCK)))
+    if await total_used_bytes(session) + size > cap:
+        raise StorageFull
 
 
 async def release_quota(session: AsyncSession, user_id: int, size: int) -> None:
