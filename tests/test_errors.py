@@ -16,6 +16,7 @@ EXPECTED = {
     errors.AccountDisabled: (403, "account_disabled"),
     errors.UsernameTaken: (409, "username_taken"),
     errors.QuotaExceeded: (413, "quota_exceeded"),
+    errors.StorageFull: (507, "storage_full"),
     errors.FileTooLarge: (413, "file_too_large"),
     errors.NotFound: (404, "not_found"),
     errors.LastAdmin: (409, "last_admin"),
@@ -42,6 +43,11 @@ def test_every_error_has_its_status_and_code() -> None:
     assert {c: (c.status_code, c.code) for c in domain} == EXPECTED
     codes = [c.code for c in domain]
     assert len(codes) == len(set(codes)), "two classes share a code"
+
+
+def test_storage_full_is_a_quota_error() -> None:
+    """The upload routes catch QuotaExceeded; the global cap must be handled the same way."""
+    assert issubclass(errors.StorageFull, errors.QuotaExceeded)
 
 
 @pytest.fixture
