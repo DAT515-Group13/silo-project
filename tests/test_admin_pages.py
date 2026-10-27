@@ -164,11 +164,22 @@ async def test_admin_deletes_a_user_with_confirmation(
 
 
 @pytest.mark.db
-async def test_admin_cannot_disable_themself_from_the_page(
-    client: httpx.AsyncClient, admin_login: tuple, db_sessionmaker: Sessionmaker
+async def test_admin_cannot_act_on_themself(
+    client: httpx.AsyncClient,
+    admin_login: tuple,
+    user_factory: UserFactory,
+    db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Acting on yourself shows the 409 page."""
+    """The page offers no controls on your own row, and a forged request is the 409 page."""
     root, headers, data = admin_login
+    anna = await user_factory(username="anna")
+
+    page = (await client.get("/admin", headers=headers)).text
+    assert f"/admin/users/{anna.id}/delete" in page  # other users keep their buttons
+    assert f"/admin/users/{root.id}/delete" not in page
+    assert f'action="/admin/users/{root.id}"' not in page
+    assert "This is your account" in page
+
     response = await client.post(
         f"/admin/users/{root.id}", data={**data, "status": "disabled"}, headers=headers
     )

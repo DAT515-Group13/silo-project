@@ -96,3 +96,33 @@ async def test_upload_routes_receive_the_whole_large_body(path: str) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         response = await c.post(path, content=body())
     assert (response.status_code, response.text) == (200, "500000")
+
+
+async def test_refused_upload_still_reads_the_rest_of_the_body(
+    client: httpx.AsyncClient, act_as: ActAs
+) -> None:
+    """A too-large upload is answered 413 only after the client finished sending.
+
+    Otherwise the proxy can turn the 413 into a 502 (the app closes while the browser sends).
+    """
+    act_as(Role.user)
+    sent: list[int] = []
+    head = b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
+
+    async def body() -> AsyncIterator[bytes]:
+        yield head
+        for i in range(20):
+            sent.append(i)
+            yield b"x" * 1000
+        yield b"\r\n--b--\r\n"
+
+    response = await client.post(
+        "/api/v1/files",
+        content=body(),
+        headers={
+            "content-type": "multipart/form-data; boundary=b",
+            "content-length": str(10**9),  # declared far over MAX_FILE_SIZE_BYTES
+        },
+    )
+    assert (response.status_code, response.json()["code"]) == (413, "file_too_large")
+    assert len(sent) == 20

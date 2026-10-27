@@ -10,7 +10,7 @@
 </div>
 {% endif %}
 
-<p class="mb-1">Storage: {{ used_bytes | filesizeformat }} of {{ quota_bytes | filesizeformat }}</p>
+<p class="mb-1">Storage: {{ used_bytes | filesizeformat(true) }} of {{ quota_bytes | filesizeformat(true) }}</p>
 <progress class="d-block w-100 mb-4" max="{{ quota_bytes }}" value="{{ used_bytes }}"></progress>
 
 {#- The csrf_token input must stay BEFORE the file input: the server reads the form as a stream
@@ -24,7 +24,7 @@
   <div class="col-auto">
     <button type="submit" class="btn btn-primary">Upload</button>
   </div>
-  <div class="form-text">Up to {{ max_file_bytes | filesizeformat }} per file.</div>
+  <div class="form-text">Up to {{ max_file_bytes | filesizeformat(true) }} per file.</div>
 </form>
 
 <ul class="nav nav-tabs mb-3">
@@ -57,7 +57,7 @@
     <tr>
       <td><a href="/files/{{ file.id }}">{{ file.filename }}</a></td>
       {% if tab == 'shared' %}<td>{{ file.owner.username }}</td>{% endif %}
-      <td>{{ file.size_bytes | filesizeformat }}</td>
+      <td>{{ file.size_bytes | filesizeformat(true) }}</td>
       <td>{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
       <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="/files/{{ file.id }}/download">Download</a></td>
     </tr>

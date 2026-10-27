@@ -45,7 +45,7 @@ from app.routers.common import (
     validation_messages,
     verify_origin,
 )
-from app.routers.multipart import MultipartReader
+from app.routers.multipart import DISCARD_EXTRA_BYTES, MultipartReader, discard_body
 from app.schemas.files import FileRenameIn
 from app.schemas.links import LinkCreateIn
 from app.services import files, links, teams, users
@@ -167,11 +167,10 @@ async def upload_submit(
     Raises:
         CsrfFailed: Origin, token or part order is wrong (403).
     """
+    body = request.stream()
     try:
         async with upload_slot(user.id):
-            reader = MultipartReader(
-                request.headers.get("content-type", ""), request.stream(), max_parts=2
-            )
+            reader = MultipartReader(request.headers.get("content-type", ""), body, max_parts=2)
             # Part 1: the CSRF token. Nothing of the file has been read when this is checked.
             first = await reader.next_part()
             if first is None or first.name != "csrf_token" or first.filename is not None:
@@ -195,6 +194,8 @@ async def upload_submit(
                 declared_size=declared_size(request),
             )
     except (FileTooLarge, QuotaExceeded) as exc:
+        # Let the browser finish sending, or the proxy may turn this 413 into a 502.
+        await discard_body(body, max_bytes=settings.max_file_size_bytes + DISCARD_EXTRA_BYTES)
         return await _files_page(
             request, session, settings, user, errors=[exc.detail], status_code=exc.status_code
         )

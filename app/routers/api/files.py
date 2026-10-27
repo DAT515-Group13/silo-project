@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from app.errors import ValidationFailed
+from app.errors import FileTooLarge, QuotaExceeded, ValidationFailed
 from app.ratelimit import limit, upload_slot
 from app.routers.common import (
     ApiUser,
@@ -25,7 +25,7 @@ from app.routers.common import (
     declared_size,
     file_out,
 )
-from app.routers.multipart import MultipartReader
+from app.routers.multipart import DISCARD_EXTRA_BYTES, MultipartReader, discard_body
 from app.schemas.common import Page
 from app.schemas.files import FileOut, FileRenameIn, FileTeamOut
 from app.services import files
@@ -69,24 +69,28 @@ async def upload_file(
     user already has 3 uploads running, 503 `storage_unavailable`.
     """
     # At most 3 uploads at the same time per user.
-    async with upload_slot(user.id):
-        reader = MultipartReader(
-            request.headers.get("content-type", ""), request.stream(), max_parts=1
-        )
-        part = await reader.next_part()
-        if part is None or part.name != "file" or part.filename is None:
-            raise ValidationFailed([{"field": "file", "message": "Field 'file' is required."}])
-        item = await files.upload(
-            session,
-            settings,
-            store,
-            user,
-            ctx,
-            filename=part.filename,
-            client_type=part.content_type,
-            chunks=reader.iter_data(),
-            declared_size=declared_size(request),
-        )
+    body = request.stream()
+    try:
+        async with upload_slot(user.id):
+            reader = MultipartReader(request.headers.get("content-type", ""), body, max_parts=1)
+            part = await reader.next_part()
+            if part is None or part.name != "file" or part.filename is None:
+                raise ValidationFailed([{"field": "file", "message": "Field 'file' is required."}])
+            item = await files.upload(
+                session,
+                settings,
+                store,
+                user,
+                ctx,
+                filename=part.filename,
+                client_type=part.content_type,
+                chunks=reader.iter_data(),
+                declared_size=declared_size(request),
+            )
+    except (FileTooLarge, QuotaExceeded):
+        # Let the client finish sending, or the proxy may turn this 413 into a 502.
+        await discard_body(body, max_bytes=settings.max_file_size_bytes + DISCARD_EXTRA_BYTES)
+        raise
     return file_out(item, user.id)
 
 

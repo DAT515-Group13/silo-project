@@ -7,11 +7,12 @@ No database is needed.
 
 from collections.abc import AsyncIterator
 
+import anyio
 import pytest
 from starlette.requests import ClientDisconnect
 
 from app.errors import ValidationFailed
-from app.routers.multipart import MultipartReader, PartInfo
+from app.routers.multipart import MultipartReader, PartInfo, discard_body
 
 pytestmark = pytest.mark.anyio
 
@@ -136,3 +137,49 @@ async def test_client_disconnect_is_a_validation_error() -> None:
     with pytest.raises(ValidationFailed) as error:
         await read_all(reader)
     assert "unexpectedly" in error.value.errors[0]["message"]
+
+
+# --- Draining the rest of a refused upload --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("max_bytes", "chunks_read"),
+    [(10_000_000, 1000), (450, 5)],  # whole rest; gives up at the first total above the limit
+)
+async def test_discard_body_reads_the_rest_up_to_the_limit(
+    max_bytes: int, chunks_read: int
+) -> None:
+    """A refused upload reads what is left (the client can finish sending), but not forever."""
+    seen: list[int] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        for i in range(1000):
+            seen.append(i)
+            yield b"x" * 100
+
+    await discard_body(body(), max_bytes=max_bytes)
+    assert len(seen) == chunks_read
+
+
+async def test_discard_body_ignores_a_client_disconnect() -> None:
+    """A client that goes away while the body is drained is not an error."""
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b"x"
+        raise ClientDisconnect
+
+    await discard_body(body(), max_bytes=10_000)
+
+
+async def test_discard_body_gives_up_when_the_client_is_too_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client that stops sending cannot hold the request open for long."""
+    monkeypatch.setattr("app.routers.multipart.DISCARD_TIMEOUT_SECONDS", 0.05)
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b"x"
+        await anyio.sleep(5)
+        yield b"y"
+
+    await discard_body(body(), max_bytes=10_000)
