@@ -22,6 +22,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
+from prometheus_client import REGISTRY
 from sqlalchemy import text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
@@ -33,6 +34,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.config import Settings, get_settings
+from app.db import get_db
 from app.main import create_app
 from app.middleware import cookie_names
 from app.models import Base, File, FileShare, Role, User, UserStatus
@@ -43,6 +45,12 @@ from app.services import sessions
 from tests.fakes import InMemoryBlobStore
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def sample(name: str, **labels: str) -> float:
+    """Current value of one Prometheus time series; 0 if it does not exist yet."""
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
 
 # Page forms: the Origin header of this site and the hidden CSRF field of a rendered form.
 ORIGIN = {"Origin": "http://testserver"}
@@ -307,6 +315,25 @@ def app(settings: Settings, blob_store: InMemoryBlobStore) -> FastAPI:
 
 
 ActAs = Callable[..., CurrentUser]
+
+
+class FakeSession:
+    """Stands in for an AsyncSession whose database answers ``SELECT 1``."""
+
+    async def execute(self, statement: object) -> None:
+        return None
+
+
+@pytest.fixture
+def healthy_database(app: FastAPI) -> Iterator[None]:
+    """Replace the database dependency, so no PostgreSQL is needed."""
+
+    async def fake_db() -> AsyncIterator[FakeSession]:
+        yield FakeSession()
+
+    app.dependency_overrides[get_db] = fake_db
+    yield
+    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture

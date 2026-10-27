@@ -22,7 +22,7 @@ from app.storage.azure_blob import (
     create_blob_store,
     parse_connection_string,
 )
-from tests.conftest import make_settings
+from tests.conftest import make_settings, sample
 
 pytestmark = pytest.mark.anyio
 
@@ -164,20 +164,27 @@ async def test_azure_too_many_blocks_is_refused() -> None:
 
 
 async def test_azure_delete_is_idempotent_but_reports_real_errors() -> None:
+    """A missing blob is no error and is not counted; a real failure is both."""
     store, container = make_store()
+    before = sample("silo_storage_errors_total", operation="delete")
     container.failures["delete"] = ResourceNotFoundError("gone")
     await store.delete("b1")  # a missing blob is fine
+    assert sample("silo_storage_errors_total", operation="delete") == before
     container.failures["delete"] = HttpResponseError("boom")
     with pytest.raises(StorageUnavailable):
         await store.delete("b1")
+    assert sample("silo_storage_errors_total", operation="delete") == before + 1
 
 
 async def test_azure_ping() -> None:
+    """A missing container fails the ping and counts as a storage error."""
     store, container = make_store()
+    before = sample("silo_storage_errors_total", operation="ping")
     await store.ping()
     container.failures["ping"] = ResourceNotFoundError("no such container")
     with pytest.raises(StorageUnavailable):
         await store.ping()
+    assert sample("silo_storage_errors_total", operation="ping") == before + 1
 
 
 async def test_azure_lists_old_blobs_and_translates_errors() -> None:

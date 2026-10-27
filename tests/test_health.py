@@ -1,7 +1,7 @@
 """/healthz, /readyz, the lifespan and the blob store selection."""
 
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
@@ -10,27 +10,8 @@ from fastapi import FastAPI
 from app import main
 from app.db import get_db
 from app.main import create_app
-from tests.conftest import make_settings
+from tests.conftest import make_settings, sample
 from tests.fakes import InMemoryBlobStore
-
-
-class FakeSession:
-    """Stands in for an AsyncSession whose database answers ``SELECT 1``."""
-
-    async def execute(self, statement: object) -> None:
-        return None
-
-
-@pytest.fixture
-def healthy_database(app: FastAPI) -> Iterator[None]:
-    """Replace the database dependency, so no PostgreSQL is needed."""
-
-    async def fake_db() -> AsyncIterator[FakeSession]:
-        yield FakeSession()
-
-    app.dependency_overrides[get_db] = fake_db
-    yield
-    app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.mark.anyio
@@ -48,6 +29,8 @@ async def test_readyz_ok_when_both_dependencies_work(client: httpx.AsyncClient) 
     response = await client.get("/readyz")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert sample("silo_dependency_up", dependency="database") == 1
+    assert sample("silo_dependency_up", dependency="blob_storage") == 1
 
 
 @pytest.mark.anyio
@@ -55,20 +38,24 @@ async def test_readyz_ok_when_both_dependencies_work(client: httpx.AsyncClient) 
 async def test_readyz_503_when_blob_store_fails(
     client: httpx.AsyncClient, blob_store: InMemoryBlobStore, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A failing ping gives 503; the body hides the cause, the log names it."""
+    """A failing ping gives 503 and sets its gauge to 0; the body hides the cause, the log
+    names it."""
     blob_store.healthy = False
     with caplog.at_level(logging.WARNING, logger="silo"):
         response = await client.get("/readyz")
     assert response.status_code == 503
     assert response.json() == {"status": "unavailable"}
     assert "blob storage (StorageUnavailable)" in caplog.text
+    assert sample("silo_dependency_up", dependency="blob_storage") == 0
+    assert sample("silo_dependency_up", dependency="database") == 1
 
 
 @pytest.mark.anyio
 async def test_readyz_503_when_database_is_unreachable(
     blob_store: InMemoryBlobStore, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A refused database connection gives 503 and the log never shows the DSN."""
+    """A refused database connection gives 503, sets its gauge to 0, and the log never shows
+    the DSN."""
     settings = make_settings(database_url="postgresql+asyncpg://user:pw-secret@127.0.0.1:1/none")
     app = create_app(settings=settings, blob_store=blob_store, initial_admin=False)
     transport = httpx.ASGITransport(app=app)
@@ -78,6 +65,7 @@ async def test_readyz_503_when_database_is_unreachable(
                 response = await client.get("/readyz")
     assert response.status_code == 503
     assert "database (" in caplog.text
+    assert sample("silo_dependency_up", dependency="database") == 0
     assert "pw-secret" not in caplog.text
 
 

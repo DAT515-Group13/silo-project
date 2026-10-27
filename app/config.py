@@ -8,7 +8,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import PositiveInt, SecretStr, field_validator, model_validator
+from pydantic import Field, PositiveInt, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.errors import ValidationFailed
@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     login_lock_minutes: PositiveInt = 15
     password_min_length: PositiveInt = 12
     enable_docs: bool = False
+    # Internal port for /metrics, 0 = off. Never the app port: the public Service must not reach it.
+    metrics_port: int = Field(default=0, ge=0, le=65535)
 
     @field_validator("base_url")
     @classmethod

@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from app.metrics import DEPENDENCY_UP
 from app.routers.common import DbSession, Store
 
 logger = logging.getLogger("silo")
@@ -41,6 +42,9 @@ async def readyz(session: DbSession, store: Store) -> JSONResponse:
         # Log the exception type only: the message of a driver error can contain the DSN.
         logger.warning("Readiness check failed: database (%s)", type(exc).__name__)
         healthy = False
+        DEPENDENCY_UP.labels("database").set(0)
+    else:
+        DEPENDENCY_UP.labels("database").set(1)
 
     # Check 2: the configured blob container is reachable.
     try:
@@ -48,6 +52,9 @@ async def readyz(session: DbSession, store: Store) -> JSONResponse:
     except Exception as exc:
         logger.warning("Readiness check failed: blob storage (%s)", type(exc).__name__)
         healthy = False
+        DEPENDENCY_UP.labels("blob_storage").set(0)
+    else:
+        DEPENDENCY_UP.labels("blob_storage").set(1)
 
     if healthy:
         return JSONResponse({"status": "ok"})

@@ -35,6 +35,8 @@ COPY alembic.ini ./
 
 USER 10001:10001
 EXPOSE 8000
+# Internal metrics port (METRICS_PORT); not part of the public Service.
+EXPOSE 9000
 
 # Liveness only; it does not check any dependency (same as /healthz).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \

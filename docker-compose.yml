@@ -39,6 +39,8 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
+      # Metrics for Prometheus (METRICS_PORT in .env.dev); localhost only.
+      - "127.0.0.1:9000:9000"
 
 volumes:
   silo-db:

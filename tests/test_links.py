@@ -21,7 +21,7 @@ from app.main import RedactLinkTokens
 from app.models import AuditLog, Role, ShareLink, User, UserStatus
 from app.schemas.links import LinkCreateIn
 from app.security import hash_token
-from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory
+from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory, sample
 from tests.fakes import InMemoryBlobStore, parse_download_url
 
 pytestmark = pytest.mark.anyio
@@ -168,9 +168,11 @@ async def test_public_link_redirects_counts_and_audits(
     file = await file_factory(owner.id, filename="plan.html", content_type="text/html")
     headers = await bearer_for(owner)
     link_id, token = await make_link(client, headers, file.id)
+    before = sample("silo_downloads_total", kind="public_link")
 
     response = await open_link(client, token)
     assert response.status_code == 302
+    assert sample("silo_downloads_total", kind="public_link") == before + 1
     for name, value in PUBLIC_HEADERS.items():
         assert response.headers[name] == value
     parts = parse_download_url(response.headers["location"])

@@ -23,7 +23,14 @@ from app.models import AuditLog, AuthSession, Role, User, UserStatus
 from app.security import decode_access_token
 from app.services import auth
 from app.services.users import ensure_initial_admin
-from tests.conftest import GOOD_PASSWORD, TEST_PASSWORD, Sessionmaker, UserFactory, make_settings
+from tests.conftest import (
+    GOOD_PASSWORD,
+    TEST_PASSWORD,
+    Sessionmaker,
+    UserFactory,
+    make_settings,
+    sample,
+)
 
 
 async def count_users(sm: Sessionmaker) -> int:
@@ -105,7 +112,9 @@ async def test_successful_login_issues_tokens_and_a_session(
 ) -> None:
     """Right credentials give a token pair, a session, a login time and an audit entry."""
     user = await user_factory(username="anna", role=Role.team_lead)
+    before = sample("silo_login_attempts_total", result="success")
     tokens = await attempt(db_sessionmaker, settings, "Anna", TEST_PASSWORD, ip="203.0.113.7")
+    assert sample("silo_login_attempts_total", result="success") == before + 1
 
     claims = decode_access_token(
         tokens.access_token,
@@ -134,9 +143,12 @@ async def test_lockout_after_five_failures(
     """
     await user_factory(username="anna")
     now = datetime.now(UTC)
+    invalid_before = sample("silo_login_attempts_total", result="invalid")
+    locked_before = sample("silo_login_attempts_total", result="locked")
     for _ in range(5):
         with pytest.raises(InvalidCredentials):
             await attempt(db_sessionmaker, settings, "anna", "wrong-password-123", now=now)
+    assert sample("silo_login_attempts_total", result="invalid") == invalid_before + 5
 
     user = await get_user(db_sessionmaker, "anna")
     assert user.failed_login_count == 5
@@ -149,6 +161,7 @@ async def test_lockout_after_five_failures(
 
     after = await get_user(db_sessionmaker, "anna")
     assert (after.failed_login_count, after.locked_until) == (5, user.locked_until)
+    assert sample("silo_login_attempts_total", result="locked") == locked_before + 6
     async with db_sessionmaker() as db:
         actions = (await db.scalars(select(AuditLog.action))).all()
         details = (

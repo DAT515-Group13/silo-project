@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.errors import LinkLimit, NotFound, ValidationFailed
+from app.metrics import DOWNLOADS
 from app.models import File, ShareLink, User, UserStatus
 from app.permissions import CurrentUser, can_modify_file, can_revoke_link
 from app.security import generate_refresh_token, hash_token
@@ -235,4 +236,5 @@ async def resolve_public_link(
             target_label=file.filename,
             details={"file_id": str(file_id)},
         )
+    DOWNLOADS.labels("public_link").inc()
     return url
