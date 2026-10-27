@@ -45,7 +45,7 @@ from app.routers.common import (
     validation_messages,
     verify_origin,
 )
-from app.routers.multipart import DISCARD_EXTRA_BYTES, MultipartReader, discard_body
+from app.routers.multipart import MultipartReader, drain_refused_upload
 from app.schemas.files import FileRenameIn
 from app.schemas.links import LinkCreateIn
 from app.services import files, links, teams, users
@@ -195,7 +195,9 @@ async def upload_submit(
             )
     except (FileTooLarge, QuotaExceeded) as exc:
         # Let the browser finish sending, or the proxy may turn this 413 into a 502.
-        await discard_body(body, max_bytes=settings.max_file_size_bytes + DISCARD_EXTRA_BYTES)
+        await drain_refused_upload(
+            body, declared_size=declared_size(request), max_file_bytes=settings.max_file_size_bytes
+        )
         return await _files_page(
             request, session, settings, user, errors=[exc.detail], status_code=exc.status_code
         )

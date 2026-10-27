@@ -9,6 +9,7 @@ from starlette.types import Receive, Scope, Send
 from app.middleware import MAX_BODY_BYTES, BodyLimitMiddleware
 from app.models import Role
 from tests.conftest import ActAs
+from tests.test_security_headers import assert_secure
 
 pytestmark = pytest.mark.anyio
 
@@ -18,10 +19,11 @@ BIG = b"x" * (MAX_BODY_BYTES + 1)
 async def test_declared_oversized_body_is_413(client: httpx.AsyncClient) -> None:
     """A Content-Length over the limit is refused before the body is read.
 
-    The API answers in its JSON error shape, pages in plain text.
+    The API answers in its JSON error shape, pages in plain text; both carry the security headers.
     """
     page = await client.post("/login", content=BIG)
     assert page.status_code == 413
+    assert_secure(page)  # the outermost middleware covers answers that never reach the app
     api = await client.post("/api/v1/auth/login", content=BIG)
     assert api.status_code == 413
     assert api.json() == {"detail": "Request body too large.", "code": "payload_too_large"}
@@ -96,33 +98,3 @@ async def test_upload_routes_receive_the_whole_large_body(path: str) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         response = await c.post(path, content=body())
     assert (response.status_code, response.text) == (200, "500000")
-
-
-async def test_refused_upload_still_reads_the_rest_of_the_body(
-    client: httpx.AsyncClient, act_as: ActAs
-) -> None:
-    """A too-large upload is answered 413 only after the client finished sending.
-
-    Otherwise the proxy can turn the 413 into a 502 (the app closes while the browser sends).
-    """
-    act_as(Role.user)
-    sent: list[int] = []
-    head = b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
-
-    async def body() -> AsyncIterator[bytes]:
-        yield head
-        for i in range(20):
-            sent.append(i)
-            yield b"x" * 1000
-        yield b"\r\n--b--\r\n"
-
-    response = await client.post(
-        "/api/v1/files",
-        content=body(),
-        headers={
-            "content-type": "multipart/form-data; boundary=b",
-            "content-length": str(10**9),  # declared far over MAX_FILE_SIZE_BYTES
-        },
-    )
-    assert (response.status_code, response.json()["code"]) == (413, "file_too_large")
-    assert len(sent) == 20

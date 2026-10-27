@@ -5,13 +5,14 @@ tests go through HTTP with real tokens and check the permission matrix of sectio
 is always 404, never 403.
 """
 
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 from sqlalchemy import select
 
 from app.config import Settings
 from app.models import AuditLog, File, Role, User
-from app.services.files import MULTIPART_MARGIN_BYTES
 from tests.conftest import (
     ActAs,
     BearerFor,
@@ -48,29 +49,49 @@ async def test_upload_with_a_bad_body_is_422(
     assert response.json()["code"] == "validation_error"
 
 
-async def test_huge_content_length_is_413_without_storing_anything(
+@pytest.mark.parametrize(
+    ("extra", "drained"),
+    [
+        (1024 * 1024, True),  # over the limit, under the drain cap (+ 5 MiB): the rest is read
+        (10**9, False),  # announced far over the cap: draining could not finish, so it is skipped
+    ],
+)
+async def test_oversized_content_length_is_413_and_drains_only_below_the_cap(
     client: httpx.AsyncClient,
     act_as: ActAs,
     settings: Settings,
     blob_store: InMemoryBlobStore,
-    monkeypatch: pytest.MonkeyPatch,
+    extra: int,
+    drained: bool,
 ) -> None:
-    """Upload step 1: a Content-Length far above the limit is refused before any blob work.
+    """Upload step 1: a Content-Length over the limit is refused before any blob work.
 
-    The denied-upload audit entry cannot be written without a database; that is only logged.
+    A body that is still small enough is read to the end before the 413 is sent, otherwise the
+    proxy can turn the 413 into a 502 (plan D27). The denied-upload audit entry cannot be written
+    without a database; that is only logged.
     """
-    settings.max_file_size_bytes = 1000
-
-    async def must_not_run(*args: object, **kwargs: object) -> int:
-        raise AssertionError("the upload reached blob storage")
-
-    monkeypatch.setattr(blob_store, "upload_stream", must_not_run)
     act_as(Role.user)
-    too_big = b"x" * (1000 + MULTIPART_MARGIN_BYTES + 1)
-    response = await client.post("/api/v1/files", files={"file": ("a.bin", too_big)})
-    assert response.status_code == 413
-    assert response.json()["code"] == "file_too_large"
+    sent: list[int] = []
+    head = b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
+
+    async def body() -> AsyncIterator[bytes]:
+        yield head
+        for i in range(20):
+            sent.append(i)
+            yield b"x" * 1000
+        yield b"\r\n--b--\r\n"
+
+    response = await client.post(
+        "/api/v1/files",
+        content=body(),
+        headers={
+            "content-type": "multipart/form-data; boundary=b",
+            "content-length": str(settings.max_file_size_bytes + extra),
+        },
+    )
+    assert (response.status_code, response.json()["code"]) == (413, "file_too_large")
     assert blob_store.blobs == {}
+    assert (len(sent) == 20) is drained
 
 
 async def test_sort_and_scope_are_validated(client: httpx.AsyncClient, act_as: ActAs) -> None:

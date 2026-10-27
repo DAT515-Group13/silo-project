@@ -214,6 +214,19 @@ class MultipartReader:
             await self._pump()
 
 
+async def drain_refused_upload(
+    body: AsyncIterator[bytes], *, declared_size: int | None, max_file_bytes: int
+) -> None:
+    """Drain the body of a refused upload, unless it is announced as too big to drain.
+
+    ``declared_size`` is the Content-Length. Over the cap, draining cannot finish anyway (the
+    connection is closed after the cap), so it would only hold the request open for nothing.
+    """
+    cap = max_file_bytes + DISCARD_EXTRA_BYTES
+    if (declared_size or 0) <= cap:
+        await discard_body(body, max_bytes=cap)
+
+
 async def discard_body(body: AsyncIterator[bytes], *, max_bytes: int) -> None:
     """Read and drop what is left of a request body, so the refusal reaches the client.
 
