@@ -25,6 +25,7 @@ class AuditAction(enum.StrEnum):
     auth_refresh_reuse = "auth.refresh_reuse"
     auth_lockout = "auth.lockout"
     auth_session_revoke = "auth.session_revoke"
+    auth_password_change = "auth.password_change"  # noqa: S105 - action name
     file_upload = "file.upload"
     file_download = "file.download"
     file_rename = "file.rename"

@@ -305,3 +305,92 @@ async def test_account_page_can_sign_out_one_device_or_all(
         c.split("=")[0] for c in everywhere.headers.get_list("set-cookie") if "Max-Age=0" in c
     }
     assert {names.access, names.refresh} <= cleared
+
+
+@pytest.mark.db
+async def test_account_password_form_changes_the_password(
+    client: httpx.AsyncClient, user_factory: UserFactory
+) -> None:
+    """Wrong current and weak new passwords show the page again (422) and change nothing.
+
+    The right current password and a good new one redirect, show the banner, and the new password
+    works at login.
+    """
+    await user_factory(username="anna")
+    await post_form(
+        client, "/login", {"username": "anna", "password": TEST_PASSWORD}, token_from="/login"
+    )
+    account = await client.get("/account")
+    assert 'action="/account/password"' in account.text
+
+    async def submit(current: str, new: str) -> httpx.Response:
+        return await client.post(
+            "/account/password",
+            data={
+                "csrf_token": token_of(account),
+                "current_password": current,
+                "new_password": new,
+            },
+            headers=ORIGIN,
+            follow_redirects=False,
+        )
+
+    wrong = await submit("wrong-password-123", GOOD_PASSWORD)
+    assert wrong.status_code == 422
+    assert "Current password is wrong." in wrong.text
+
+    weak = await submit(TEST_PASSWORD, "short")
+    assert weak.status_code == 422
+    assert "Password must be at least" in weak.text
+
+    # Both failures left the password alone, so TEST_PASSWORD is still the current one.
+    done = await submit(TEST_PASSWORD, GOOD_PASSWORD)
+    assert (done.status_code, done.headers["location"]) == (303, "/account?password_changed=true")
+    assert "Password changed." in (await client.get("/account?password_changed=true")).text
+    login = await client.post(
+        "/api/v1/auth/login", json={"username": "anna", "password": GOOD_PASSWORD}
+    )
+    assert login.status_code == 200
+
+
+@pytest.mark.db
+async def test_password_change_page_and_api_share_one_limit(
+    client: httpx.AsyncClient, user_factory: UserFactory
+) -> None:
+    """5 per minute per user, counted once for the API and the form together.
+
+    Five wrong guesses on the API are 422; then both the form and the API answer 429.
+    """
+    await user_factory(username="anna")
+    await post_form(
+        client, "/login", {"username": "anna", "password": TEST_PASSWORD}, token_from="/login"
+    )
+    token = (
+        await client.post(
+            "/api/v1/auth/login", json={"username": "anna", "password": TEST_PASSWORD}
+        )
+    ).json()["access_token"]
+    for _ in range(5):
+        response = await client.post(
+            "/api/v1/me/password",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"current_password": "wrong-password-123", "new_password": GOOD_PASSWORD},
+        )
+        assert response.status_code == 422
+    account = await client.get("/account")
+    page = await client.post(
+        "/account/password",
+        data={
+            "csrf_token": token_of(account),
+            "current_password": "wrong-password-123",
+            "new_password": GOOD_PASSWORD,
+        },
+        headers=ORIGIN,
+    )
+    assert page.status_code == 429
+    again = await client.post(
+        "/api/v1/me/password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"current_password": "wrong-password-123", "new_password": GOOD_PASSWORD},
+    )
+    assert again.status_code == 429

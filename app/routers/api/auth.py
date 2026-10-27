@@ -19,6 +19,7 @@ from app.routers.common import (
 from app.schemas.auth import (
     LoginIn,
     MeOut,
+    PasswordChangeIn,
     RefreshIn,
     RegisterIn,
     RegistrationAcceptedOut,
@@ -169,4 +170,23 @@ async def me(request: Request, user: ApiUser, session: DbSession, settings: Sett
         role=account.role,
         used_bytes=account.used_bytes,
         quota_bytes=settings.quota_for_role(account.role),
+    )
+
+
+@router.post("/me/password", status_code=204)
+@limit("password", "password_ip")
+async def change_password(
+    body: PasswordChangeIn,
+    request: Request,
+    user: ApiUser,
+    ctx: AuditCtx,
+    session: DbSession,
+    settings: SettingsDep,
+) -> None:
+    """Change the current user's password and sign out all other sessions.
+
+    Errors: 422 `validation_error` for a wrong `current_password` or a weak `new_password`.
+    """
+    await auth.change_password(
+        session, settings, user, ctx, body.current_password, body.new_password
     )

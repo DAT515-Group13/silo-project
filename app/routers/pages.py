@@ -11,7 +11,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Form, Query, Request, Response
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.errors import (
     AccountDisabled,
     AccountPending,
@@ -22,6 +24,7 @@ from app.errors import (
     ValidationFailed,
 )
 from app.middleware import mark_logged_in, mark_logged_out, safe_next
+from app.permissions import CurrentUser
 from app.ratelimit import limit
 from app.routers.common import (
     CsrfChecked,
@@ -36,7 +39,12 @@ from app.routers.common import (
     see_other,
     validation_messages,
 )
-from app.schemas.auth import REGISTRATION_ACCEPTED_MESSAGE, LoginIn, RegisterIn
+from app.schemas.auth import (
+    REGISTRATION_ACCEPTED_MESSAGE,
+    LoginIn,
+    PasswordChangeIn,
+    RegisterIn,
+)
 from app.services import auth, sessions, users
 
 router = APIRouter(include_in_schema=False)
@@ -240,12 +248,17 @@ async def logout_submit(
     return see_other("/login")
 
 
-@router.get("/account")
-@limit("read")
-async def account_page(
-    request: Request, user: PageUser, session: DbSession, settings: SettingsDep
+async def _account_response(
+    request: Request,
+    user: CurrentUser,
+    session: AsyncSession,
+    settings: Settings,
+    *,
+    errors: list[str] | None = None,
+    password_changed: bool = False,
+    status_code: int = 200,
 ) -> Response:
-    """Show the user's storage usage and active sessions."""
+    """Render the account page (usage, sessions, password form)."""
     rows = await sessions.list_active(session, user.id)
     account = await users.get_user(session, user.id)
     return render_page(
@@ -257,8 +270,55 @@ async def account_page(
             "sessions": rows,
             "used_bytes": account.used_bytes,
             "quota_bytes": settings.quota_for_role(account.role),
+            "errors": errors or [],
+            "password_changed": password_changed,
+            "password_min_length": settings.password_min_length,
         },
+        status_code=status_code,
     )
+
+
+@router.get("/account")
+@limit("read")
+async def account_page(
+    request: Request,
+    user: PageUser,
+    session: DbSession,
+    settings: SettingsDep,
+    password_changed: bool = False,
+) -> Response:
+    """Show the user's storage usage, active sessions and the password form."""
+    return await _account_response(
+        request, user, session, settings, password_changed=password_changed
+    )
+
+
+@router.post("/account/password", dependencies=[CsrfChecked])
+@limit("password", "password_ip")
+async def change_password_submit(
+    request: Request,
+    user: PageUser,
+    ctx: PageAuditCtx,
+    session: DbSession,
+    settings: SettingsDep,
+    current_password: Annotated[str, Form()] = "",
+    new_password: Annotated[str, Form()] = "",
+) -> Response:
+    """Change the password; other sessions end, this one stays. Errors show the page again."""
+    try:
+        form = PasswordChangeIn.model_validate(
+            {"current_password": current_password, "new_password": new_password}
+        )
+        await auth.change_password(
+            session, settings, user, ctx, form.current_password, form.new_password
+        )
+    except ValidationError as exc:
+        errors = validation_messages(exc)
+    except ValidationFailed as exc:
+        errors = [item["message"] for item in exc.errors]
+    else:
+        return see_other("/account?password_changed=true")
+    return await _account_response(request, user, session, settings, errors=errors, status_code=422)
 
 
 @router.post("/account/logout-all", dependencies=[CsrfChecked])
