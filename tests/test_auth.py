@@ -20,8 +20,10 @@ from app.errors import (
     ValidationFailed,
 )
 from app.models import AuditLog, AuthSession, Role, User, UserStatus
+from app.permissions import CurrentUser
 from app.security import decode_access_token
-from app.services import auth
+from app.services import auth, sessions
+from app.services.audit import AuditContext
 from app.services.users import ensure_initial_admin
 from tests.conftest import GOOD_PASSWORD, TEST_PASSWORD, Sessionmaker, UserFactory, make_settings
 
