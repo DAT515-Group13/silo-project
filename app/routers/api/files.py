@@ -66,7 +66,8 @@ async def upload_file(
     """Upload one file as multipart field `file`.
 
     Errors: 413 `file_too_large` or `quota_exceeded`, 422 for a malformed body, 429 when the
-    user already has 3 uploads running, 503 `storage_unavailable`.
+    user already has 3 uploads running, 503 `storage_unavailable`, 507 `storage_full` when the
+    service's total cap (`STORAGE_TOTAL_MAX_BYTES`) is reached.
     """
     # At most 3 uploads at the same time per user.
     body = request.stream()
