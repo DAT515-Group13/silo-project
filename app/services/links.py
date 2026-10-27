@@ -11,7 +11,7 @@ The token and the URL are never written to the audit log or to any other log.
 
 import re
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,7 +70,6 @@ async def create_link(
                 }
             ]
         )
-    now = datetime.now(UTC)
     token = generate_refresh_token()
     async with session.begin():
         # Locking the file serializes parallel creates for it, so two requests cannot both
@@ -94,7 +93,8 @@ async def create_link(
             file_id=file_id,
             token_hash=hash_token(token),
             created_by=user.id,
-            expires_at=now + timedelta(hours=hours),
+            # The database clock, like every check of a link (_active, resolve_public_link).
+            expires_at=func.now() + timedelta(hours=hours),
         )
         session.add(link)
         await session.flush()
