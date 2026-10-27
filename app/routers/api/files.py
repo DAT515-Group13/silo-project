@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from app.errors import FileTooLarge, QuotaExceeded, ValidationFailed
+from app.errors import FileTooLarge, QuotaExceeded, RateLimited, ValidationFailed
 from app.ratelimit import limit, upload_slot
 from app.routers.common import (
     ApiUser,
@@ -27,7 +27,7 @@ from app.routers.common import (
 )
 from app.routers.multipart import MultipartReader, drain_refused_upload
 from app.schemas.common import Page
-from app.schemas.files import FileOut, FileRenameIn, FileTeamOut
+from app.schemas.files import NO_FILE_MESSAGE, FileOut, FileRenameIn, FileTeamOut
 from app.services import files
 
 router = APIRouter(prefix="/api/v1", tags=["files"])
@@ -75,7 +75,7 @@ async def upload_file(
             reader = MultipartReader(request.headers.get("content-type", ""), body, max_parts=1)
             part = await reader.next_part()
             if part is None or part.name != "file" or part.filename is None:
-                raise ValidationFailed([{"field": "file", "message": "Field 'file' is required."}])
+                raise ValidationFailed([{"field": "file", "message": NO_FILE_MESSAGE}])
             item = await files.upload(
                 session,
                 settings,
@@ -87,8 +87,8 @@ async def upload_file(
                 chunks=reader.iter_data(),
                 declared_size=declared_size(request),
             )
-    except (FileTooLarge, QuotaExceeded):
-        # Let the client finish sending, or the proxy may turn this 413 into a 502.
+    except (FileTooLarge, QuotaExceeded, RateLimited, ValidationFailed):
+        # Let the client finish sending, or the proxy may turn this answer into a 502.
         await drain_refused_upload(
             body, declared_size=declared_size(request), max_file_bytes=settings.max_file_size_bytes
         )
@@ -132,7 +132,7 @@ async def download_file(
 ) -> RedirectResponse:
     """Redirect to a short-lived read-only URL of the blob (owner or team member)."""
     url = await files.download_url(session, settings, store, user, file_id, ctx)
-    return RedirectResponse(url, status_code=302, headers={"Cache-Control": "no-store"})
+    return RedirectResponse(url, status_code=302)
 
 
 @router.delete("/files/{file_id}", status_code=204)

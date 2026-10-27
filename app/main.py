@@ -2,7 +2,7 @@
 
 Run with: ``uvicorn app.main:create_app --factory``. The lifespan owns the database engine and
 the BlobStore. Errors are rendered as JSON under ``/api/`` and as HTML pages elsewhere. The
-request ID and trusted host middleware are still planned (phase 6).
+request ID and trusted host middleware are planned hardening steps.
 """
 
 import logging
