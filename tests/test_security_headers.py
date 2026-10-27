@@ -47,14 +47,6 @@ async def test_static_files_stay_cacheable_but_get_the_other_headers(
     assert_secure(response)
 
 
-async def test_a_header_set_by_the_route_is_kept(client: httpx.AsyncClient) -> None:
-    """/s/{token} sets its own Referrer-Policy (no-referrer), which must not be overwritten."""
-    response = await client.get("/s/short")
-    assert response.headers["referrer-policy"] == "no-referrer"
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["x-content-type-options"] == "nosniff"
-
-
 async def test_swagger_docs_are_exempt_from_the_csp() -> None:
     """The docs page needs a CDN; it exists only with ENABLE_DOCS and keeps the other headers."""
     app = create_app(

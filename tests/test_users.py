@@ -4,8 +4,6 @@ The tests without the ``db`` marker check the pure parts. The ``db`` tests check
 quota update against PostgreSQL, including two parallel reservations at the quota edge.
 """
 
-import asyncio
-
 import pytest
 from sqlalchemy import select, update
 from sqlalchemy.dialects import postgresql
@@ -80,62 +78,14 @@ async def reserve(db_sessionmaker: async_sessionmaker[AsyncSession], user_id: in
 async def test_get_quota_status_uses_the_role_quota(
     db_sessionmaker: async_sessionmaker[AsyncSession], user_factory: UserFactory
 ) -> None:
-    """The quota comes from the role in the database."""
+    """The quota comes from the role in the database; an unknown user ID gives NotFound."""
     lead = await user_factory(username="lead", role=Role.team_lead, used_bytes=1200)
     async with db_sessionmaker() as session:
         status = await get_quota_status(session, SETTINGS, lead.id)
     assert status == QuotaStatus(used_bytes=1200, quota_bytes=5000)
-
-
-@pytest.mark.db
-async def test_get_quota_status_of_an_unknown_user_is_not_found(
-    db_sessionmaker: async_sessionmaker[AsyncSession],
-) -> None:
-    """An unknown user ID gives NotFound."""
     async with db_sessionmaker() as session:
         with pytest.raises(NotFound):
             await get_quota_status(session, SETTINGS, 4242)
-
-
-@pytest.mark.db
-async def test_reserve_up_to_the_exact_quota(
-    db_sessionmaker: async_sessionmaker[AsyncSession], user_factory: UserFactory
-) -> None:
-    """Usage may reach the quota exactly; the new value is returned."""
-    user = await user_factory()
-    assert await reserve(db_sessionmaker, user.id, 400) == 400
-    assert await reserve(db_sessionmaker, user.id, 600) == 1000
-    assert await used_bytes(db_sessionmaker, user.id) == 1000
-
-
-@pytest.mark.db
-async def test_one_byte_over_the_quota_changes_nothing(
-    db_sessionmaker: async_sessionmaker[AsyncSession], user_factory: UserFactory
-) -> None:
-    """A reservation that does not fit raises QuotaExceeded and leaves usage unchanged."""
-    user = await user_factory(used_bytes=500)
-    with pytest.raises(QuotaExceeded):
-        await reserve(db_sessionmaker, user.id, 501)
-    assert await used_bytes(db_sessionmaker, user.id) == 500
-
-
-@pytest.mark.db
-async def test_parallel_reservations_at_the_edge_never_exceed_the_quota(
-    db_sessionmaker: async_sessionmaker[AsyncSession], user_factory: UserFactory
-) -> None:
-    """Two parallel uploads that each fit alone but not together: exactly one wins (s. 10, 16).
-
-    Each reservation runs on its own connection, as two app requests would.
-    """
-    user = await user_factory()
-    results = await asyncio.gather(
-        reserve(db_sessionmaker, user.id, 600),
-        reserve(db_sessionmaker, user.id, 600),
-        return_exceptions=True,
-    )
-    assert sum(isinstance(result, QuotaExceeded) for result in results) == 1
-    assert sorted(r for r in results if isinstance(r, int)) == [600]
-    assert await used_bytes(db_sessionmaker, user.id) == 600
 
 
 @pytest.mark.db

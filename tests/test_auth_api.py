@@ -216,12 +216,13 @@ async def test_delete_session_own_and_foreign(
 async def test_logout_takes_effect_immediately(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """After POST /auth/logout the access token is rejected at once."""
+    """After POST /auth/logout the access token is rejected at once; other devices stay in."""
     await user_factory(username="anna")
-    logged_in = await login(client)
+    logged_in, other_device = await login(client), await login(client)
     assert (await client.get("/api/v1/me", headers=bearer(logged_in))).status_code == 200
     assert (await client.post("/api/v1/auth/logout", headers=bearer(logged_in))).status_code == 204
     assert (await client.get("/api/v1/me", headers=bearer(logged_in))).status_code == 401
+    assert (await client.get("/api/v1/me", headers=bearer(other_device))).status_code == 200
 
 
 async def test_logout_all_ends_every_session(

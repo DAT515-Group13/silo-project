@@ -43,9 +43,16 @@ async def rotate(sm: Sessionmaker, settings: Settings, token: str, now: datetime
 async def test_create_session_stores_only_the_hash(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """A new session has a usable access token and a refresh token stored as SHA-256 only."""
+    """A new session has a usable access token and a refresh token stored as SHA-256 only.
+
+    The session ends after SESSION_MAX_DAYS; the refresh token idles out after REFRESH_TOKEN_DAYS.
+    """
     user = await user_factory(username="anna", role=Role.team_lead)
-    tokens = await login(db_sessionmaker, settings, user)
+    now = datetime.now(UTC)
+    tokens = await login(db_sessionmaker, settings, user, now)
+    auth_session = await load_session(db_sessionmaker, tokens.session_id)
+    assert auth_session.expires_at == now + timedelta(days=settings.session_max_days)
+    assert tokens.refresh_expires_in == settings.refresh_token_days * 86400
 
     claims = decode_access_token(
         tokens.access_token,
@@ -62,18 +69,6 @@ async def test_create_session_stores_only_the_hash(
     assert stored.token_hash == hash_token(tokens.refresh_token)
     assert stored.token_hash != tokens.refresh_token
     assert stored.used_at is None
-
-
-async def test_session_and_refresh_lifetimes(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """Session ends after SESSION_MAX_DAYS; the refresh token idles out after REFRESH_TOKEN_DAYS."""
-    user = await user_factory()
-    now = datetime.now(UTC)
-    tokens = await login(db_sessionmaker, settings, user, now)
-    auth_session = await load_session(db_sessionmaker, tokens.session_id)
-    assert auth_session.expires_at == now + timedelta(days=settings.session_max_days)
-    assert tokens.refresh_expires_in == settings.refresh_token_days * 86400
 
 
 async def test_refresh_token_never_outlives_the_session(
@@ -190,10 +185,11 @@ async def test_concurrent_refresh_with_one_token(
 async def test_unknown_expired_and_revoked_tokens_are_invalid(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """Unknown token, idle-expired token and revoked session all give the same InvalidToken."""
+    """Unknown token, idle-expired token, revoked session and disabled user: same InvalidToken."""
     user = await user_factory()
     t0 = datetime.now(UTC)
     tokens = await login(db_sessionmaker, settings, user, t0)
+    second = await login(db_sessionmaker, settings, user, t0)
 
     with pytest.raises(InvalidToken):
         await rotate(db_sessionmaker, settings, "no-such-token")
@@ -206,17 +202,11 @@ async def test_unknown_expired_and_revoked_tokens_are_invalid(
     with pytest.raises(InvalidToken):
         await rotate(db_sessionmaker, settings, tokens.refresh_token)
 
-
-async def test_disabled_user_cannot_refresh(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """A user who is no longer active gets no new tokens."""
-    user = await user_factory()
-    tokens = await login(db_sessionmaker, settings, user)
+    # The other session is still alive, but a user who is no longer active gets no new tokens.
     async with db_sessionmaker() as db, db.begin():
         (await db.get_one(User, user.id)).status = UserStatus.disabled
     with pytest.raises(InvalidToken):
-        await rotate(db_sessionmaker, settings, tokens.refresh_token)
+        await rotate(db_sessionmaker, settings, second.refresh_token)
 
 
 async def test_session_limit_revokes_the_least_recently_used(
@@ -292,8 +282,17 @@ async def test_list_active_and_revoke_are_limited_to_the_owner(
 async def test_revoke_all_can_keep_one_session(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """revoke_all ends every active session of the user, except the one named in keep."""
+    """revoke_all ends every active session of the user, except the one named in keep.
+
+    An expired session is not counted and keeps no revocation reason.
+    """
     user = await user_factory()
+    old = await login(
+        db_sessionmaker,
+        settings,
+        user,
+        datetime.now(UTC) - timedelta(days=settings.session_max_days + 1),
+    )
     a = await login(db_sessionmaker, settings, user)
     b = await login(db_sessionmaker, settings, user)
     async with db_sessionmaker() as db, db.begin():
@@ -304,22 +303,6 @@ async def test_revoke_all_can_keep_one_session(
     assert revoked.revoked_reason == "logout_all"
     async with db_sessionmaker() as db, db.begin():
         assert await sessions.revoke_all(db, user.id, RevokeReason.admin) == 1
-
-
-async def test_revoke_all_skips_expired_sessions(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """An expired session is not counted and keeps no revocation reason."""
-    user = await user_factory()
-    old = await login(
-        db_sessionmaker,
-        settings,
-        user,
-        datetime.now(UTC) - timedelta(days=settings.session_max_days + 1),
-    )
-    await login(db_sessionmaker, settings, user)
-    async with db_sessionmaker() as db, db.begin():
-        assert await sessions.revoke_all(db, user.id, RevokeReason.logout_all) == 1
     assert (await load_session(db_sessionmaker, old.session_id)).revoked_at is None
 
 

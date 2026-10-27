@@ -13,6 +13,7 @@ import os
 import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -37,7 +38,7 @@ from app.middleware import cookie_names
 from app.models import Base, File, FileShare, Role, User, UserStatus
 from app.permissions import CurrentUser
 from app.routers.common import get_current_api_user, get_optional_page_user
-from app.security import create_csrf_token, hash_password
+from app.security import create_access_token, create_csrf_token, hash_password
 from app.services import sessions
 from tests.fakes import InMemoryBlobStore
 
@@ -253,7 +254,9 @@ def file_factory(db_sessionmaker: async_sessionmaker[AsyncSession]) -> FileFacto
     """Insert file rows directly: ``await file_factory(owner_id, team_id=None, size_bytes=10)``.
 
     Only the metadata row (and optionally a share with ``team_id``); no blob is written. The
-    blob name is random, as in the real upload flow.
+    blob name is random, as in the real upload flow. The size is added to the owner's
+    ``used_bytes`` like a real upload, so deleting the file later cannot push the counter below
+    zero (the CHECK constraint would turn that into a 500).
     """
 
     async def create(owner_id: int, team_id: int | None = None, **fields: Any) -> File:
@@ -267,6 +270,11 @@ def file_factory(db_sessionmaker: async_sessionmaker[AsyncSession]) -> FileFacto
         async with db_sessionmaker() as session, session.begin():
             file = File(owner_id=owner_id, **values)
             session.add(file)
+            await session.execute(
+                update(User)
+                .where(User.id == owner_id)
+                .values(used_bytes=User.used_bytes + values["size_bytes"])
+            )
             await session.flush()
             if team_id is not None:
                 session.add(FileShare(file_id=file.id, team_id=team_id))
@@ -390,3 +398,40 @@ async def add_member(client: httpx.AsyncClient, headers: dict, team_id: int, use
         f"/api/v1/teams/{team_id}/members", json={"username": username}, headers=headers
     )
     return response.status_code
+
+
+# --- Small helpers shared by several test files --------------------------------------------------
+
+
+def token_for(settings: Settings, user_id: int, session_id: uuid.UUID, **kwargs: object) -> str:
+    """Create an access token the way the app does, with overridable values."""
+    values: dict = {
+        "user_id": user_id,
+        "session_id": session_id,
+        "secret": settings.jwt_secret.get_secret_value(),
+        "issuer": settings.jwt_issuer,
+        "audience": settings.jwt_audience,
+        "ttl": timedelta(minutes=15),
+    }
+    return create_access_token(**{**values, **kwargs})
+
+
+def bearer(token: str) -> dict[str, str]:
+    """The Authorization header for an access token."""
+    return {"Authorization": f"Bearer {token}"}
+
+
+def route_calls(dependant) -> set:
+    """Every function a route depends on, directly or through other dependencies."""
+    found = {dependant.call}
+    for sub in dependant.dependencies:
+        found |= route_calls(sub)
+    return found
+
+
+async def post(
+    client: httpx.AsyncClient, login: tuple[dict, dict], path: str, **fields: str
+) -> httpx.Response:
+    """POST a page form as the user of ``page_login``: cookies, Origin and CSRF field included."""
+    headers, form = login
+    return await client.post(path, data={**form, **fields}, headers=headers, follow_redirects=False)

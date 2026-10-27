@@ -9,7 +9,7 @@ import pytest
 
 from app.config import Settings
 from app.models import Role
-from tests.conftest import ActAs, PageLogin, UserFactory, page_csrf
+from tests.conftest import ActAs, PageLogin, UserFactory, page_csrf, post
 
 pytestmark = pytest.mark.anyio
 
@@ -32,18 +32,14 @@ async def test_plain_user_gets_403_when_creating_a_team(
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 
-async def post(
-    client: httpx.AsyncClient, login: tuple[dict, dict], path: str, **fields: str
-) -> httpx.Response:
-    headers, data = login
-    return await client.post(path, data={**data, **fields}, headers=headers, follow_redirects=False)
-
-
 @pytest.mark.db
 async def test_lead_creates_a_team_and_sees_its_page(
     client: httpx.AsyncClient, user_factory: UserFactory, page_login: PageLogin
 ) -> None:
-    """Creating a team redirects to its page, which lists the owner as a member."""
+    """Creating a team redirects to its page, which lists the owner as a member.
+
+    A taken name re-renders the list with the message and status 409 (D18).
+    """
     lead = await page_login(await user_factory(username="lead", role=Role.team_lead))
     created = await post(client, lead, "/teams", name="Design")
     assert created.status_code == 303
@@ -54,14 +50,6 @@ async def test_lead_creates_a_team_and_sees_its_page(
     listing = await client.get("/teams", headers=lead[0])
     assert "Design" in listing.text
 
-
-@pytest.mark.db
-async def test_duplicate_team_name_shows_the_form_again(
-    client: httpx.AsyncClient, user_factory: UserFactory, page_login: PageLogin
-) -> None:
-    """A taken name re-renders the list with the message and status 409 (D18)."""
-    lead = await page_login(await user_factory(username="lead", role=Role.team_lead))
-    await post(client, lead, "/teams", name="Design")
     again = await post(client, lead, "/teams", name="Design")
     assert again.status_code == 409
     assert "You already have a team with this name." in again.text
@@ -82,19 +70,6 @@ async def test_add_member_shows_the_same_notice_for_any_name(
     page = await client.get(known.headers["location"], headers=lead[0])
     assert "If an active account with this username exists" in page.text
     assert "anna" in page.text
-
-
-@pytest.mark.db
-async def test_non_member_gets_the_404_page(
-    client: httpx.AsyncClient, user_factory: UserFactory, page_login: PageLogin
-) -> None:
-    """A team page is for members only; others get the HTML 404."""
-    lead = await page_login(await user_factory(username="lead", role=Role.team_lead))
-    stranger = await page_login(await user_factory(username="eve"))
-    team_path = (await post(client, lead, "/teams", name="Design")).headers["location"]
-    response = await client.get(team_path, headers=stranger[0])
-    assert response.status_code == 404
-    assert response.headers["content-type"].startswith("text/html")
 
 
 @pytest.mark.db

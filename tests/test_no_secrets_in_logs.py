@@ -11,8 +11,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from tests.conftest import ORIGIN, make_settings, token_of
-from tests.test_auth_dependency import bearer, token_for
+from tests.conftest import ORIGIN, bearer, make_settings, token_for, token_of
 
 pytestmark = pytest.mark.anyio
 

@@ -64,10 +64,7 @@ def test_valid_configuration_uses_spec_defaults(monkeypatch: pytest.MonkeyPatch)
     assert (s.login_max_failed, s.login_lock_minutes, s.password_min_length) == (5, 15, 12)
     assert s.enable_docs is False
     assert s.jwt_secret_previous is None
-
-
-def test_cookie_secure_defaults_to_true(monkeypatch: pytest.MonkeyPatch) -> None:
-    """COOKIE_SECURE is true unless explicitly turned off."""
+    # COOKIE_SECURE is true unless explicitly turned off.
     assert make(monkeypatch, COOKIE_SECURE=None).cookie_secure is True
 
 
@@ -134,9 +131,16 @@ def test_unsafe_setting_is_refused_in_staging_and_prod(
     assert variable in error_text(monkeypatch, APP_ENV=env, **{variable: value})
 
 
-def test_unsafe_setting_is_allowed_locally(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The same settings are fine for APP_ENV=local."""
-    assert make(monkeypatch, ENABLE_DOCS="true", REGISTRATION_MODE="open")
+def test_unsafe_setting_and_placeholders_are_allowed_locally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settings staging and prod refuse are fine for APP_ENV=local (also CHANGE values)."""
+    assert make(
+        monkeypatch,
+        ENABLE_DOCS="true",
+        REGISTRATION_MODE="open",
+        JWT_SECRET="CHANGE-me-" + "x" * 40,
+    )
 
 
 def test_staging_with_safe_settings_starts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -215,11 +219,6 @@ def test_placeholders_are_refused_in_staging_and_prod(
     safe = {"APP_ENV": env, "COOKIE_SECURE": "true", "BASE_URL": "https://silo.example"}
     placeholder = "CHANGE-me-" + "x" * 40
     assert variable in error_text(monkeypatch, **safe, **{variable: placeholder})
-
-
-def test_placeholders_are_allowed_locally(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Local development may keep the example values."""
-    assert make(monkeypatch, JWT_SECRET="CHANGE-me-" + "x" * 40)
 
 
 @pytest.mark.parametrize(

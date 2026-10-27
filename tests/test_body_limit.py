@@ -27,30 +27,26 @@ async def test_declared_oversized_body_is_413(client: httpx.AsyncClient) -> None
     assert api.json() == {"detail": "Request body too large.", "code": "payload_too_large"}
 
 
-async def test_chunked_oversized_body_is_413(client: httpx.AsyncClient) -> None:
-    """Without Content-Length the bytes are counted while they arrive."""
+@pytest.mark.parametrize(
+    ("path", "content_type"),
+    [
+        ("/login", "application/x-www-form-urlencoded"),
+        ("/api/v1/auth/login", "application/json"),
+    ],
+)
+async def test_chunked_oversized_body_is_413(
+    client: httpx.AsyncClient, path: str, content_type: str
+) -> None:
+    """Without Content-Length the bytes are counted while they arrive (the API answers in JSON)."""
 
     async def body() -> AsyncIterator[bytes]:
         for _ in range(3):
             yield BIG[: MAX_BODY_BYTES // 2 + 1]
 
-    response = await client.post(
-        "/login", content=body(), headers={"Content-Type": "application/x-www-form-urlencoded"}
-    )
+    response = await client.post(path, content=body(), headers={"Content-Type": content_type})
     assert response.status_code == 413
-
-
-async def test_api_json_body_over_the_limit_is_413_json(client: httpx.AsyncClient) -> None:
-    """The API answers with the JSON error shape."""
-
-    async def body() -> AsyncIterator[bytes]:
-        yield BIG
-
-    response = await client.post(
-        "/api/v1/auth/login", content=body(), headers={"Content-Type": "application/json"}
-    )
-    assert response.status_code == 413
-    assert response.json()["code"] == "payload_too_large"
+    if path.startswith("/api/"):
+        assert response.json()["code"] == "payload_too_large"
 
 
 async def test_large_multipart_never_reaches_the_disk(

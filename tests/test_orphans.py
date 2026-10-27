@@ -60,22 +60,17 @@ def stocked_store() -> InMemoryBlobStore:
 
 
 async def test_only_old_unreferenced_blobs_are_deleted(referenced: set[str]) -> None:
-    """A used blob and a blob younger than 24 hours stay; the old orphan goes."""
+    """A used blob and a blob younger than 24 hours stay; the old orphan goes and is audited."""
     referenced.add("old-used")
     store, session = stocked_store(), FakeSession()
     result = await cleanup_orphans(session, store, now=NOW)  # type: ignore[arg-type]
     assert (result.scanned, result.deleted) == (2, 1)
     assert set(store.blobs) == {"old-used", "new-orphan"}
-
-
-async def test_cleanup_writes_one_system_audit_entry(referenced: set[str]) -> None:
-    """Actor system, with the counts in the details (section 10)."""
-    store, session = stocked_store(), FakeSession()
-    await cleanup_orphans(session, store, now=NOW)  # type: ignore[arg-type]
+    # One audit entry, actor system, with the counts in the details (section 10).
     (entry,) = session.added
     assert entry.action == "storage.orphan_cleanup"
     assert (entry.actor_type, entry.outcome) == (ActorType.system, Outcome.success)
-    assert entry.details == {"scanned": 2, "deleted": 2}
+    assert entry.details == {"scanned": 2, "deleted": 1}
 
 
 async def test_dry_run_changes_and_audits_nothing(referenced: set[str]) -> None:

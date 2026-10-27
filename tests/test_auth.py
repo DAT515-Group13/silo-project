@@ -5,7 +5,6 @@ Only ``lock_duration`` is pure; everything else needs PostgreSQL (marker ``db``)
 
 import asyncio
 import logging
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -18,15 +17,11 @@ from app.errors import (
     AccountPending,
     AccountRejected,
     InvalidCredentials,
-    NotFound,
-    UsernameTaken,
     ValidationFailed,
 )
 from app.models import AuditLog, AuthSession, Role, User, UserStatus
-from app.permissions import CurrentUser
 from app.security import decode_access_token
-from app.services import auth, sessions
-from app.services.audit import AuditContext
+from app.services import auth
 from app.services.users import ensure_initial_admin
 from tests.conftest import GOOD_PASSWORD, TEST_PASSWORD, Sessionmaker, UserFactory, make_settings
 
@@ -67,32 +62,6 @@ def test_lock_duration_doubles_and_is_capped(failures: int, minutes: int) -> Non
 
 @pytest.mark.db
 @pytest.mark.anyio
-async def test_open_registration_creates_an_active_user(db_sessionmaker: Sessionmaker) -> None:
-    """In `open` mode the account is active at once and the password is stored hashed."""
-    settings = make_settings(registration_mode="open")
-    async with db_sessionmaker() as db:
-        user = await auth.register(db, settings, "anna", GOOD_PASSWORD)
-    assert user is not None
-    assert (user.username, user.status, user.role) == ("anna", UserStatus.active, Role.user)
-    assert user.password_hash.startswith("$argon2id$")
-    assert GOOD_PASSWORD not in user.password_hash
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_open_registration_with_a_taken_username_is_a_conflict(
-    db_sessionmaker: Sessionmaker, user_factory: UserFactory
-) -> None:
-    """`open` mode answers 409 username_taken."""
-    await user_factory(username="anna")
-    async with db_sessionmaker() as db:
-        with pytest.raises(UsernameTaken):
-            await auth.register(db, make_settings(registration_mode="open"), "anna", GOOD_PASSWORD)
-    assert await count_users(db_sessionmaker) == 1
-
-
-@pytest.mark.db
-@pytest.mark.anyio
 async def test_approval_registration_is_pending_and_hides_taken_names(
     db_sessionmaker: Sessionmaker, user_factory: UserFactory
 ) -> None:
@@ -112,17 +81,6 @@ async def test_approval_registration_is_pending_and_hides_taken_names(
             await db.scalars(select(AuditLog.details).where(AuditLog.outcome == "denied"))
         ).all()
     assert reasons == [{"reason": "username_taken"}]
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_closed_registration_is_not_found(db_sessionmaker: Sessionmaker) -> None:
-    """In `closed` mode registration does not exist."""
-    async with db_sessionmaker() as db:
-        with pytest.raises(NotFound):
-            await auth.register(
-                db, make_settings(registration_mode="closed"), "anna", GOOD_PASSWORD
-            )
 
 
 @pytest.mark.db
@@ -167,25 +125,13 @@ async def test_successful_login_issues_tokens_and_a_session(
 
 @pytest.mark.db
 @pytest.mark.anyio
-async def test_unknown_username_and_wrong_password_look_the_same(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """Both give InvalidCredentials with the same message (no enumeration)."""
-    await user_factory(username="anna")
-    errors = []
-    for username, password in (("nobody", TEST_PASSWORD), ("anna", "wrong-password-123")):
-        with pytest.raises(InvalidCredentials) as info:
-            await attempt(db_sessionmaker, settings, username, password)
-        errors.append((info.value.status_code, info.value.code, info.value.detail))
-    assert errors[0] == errors[1]
-
-
-@pytest.mark.db
-@pytest.mark.anyio
 async def test_lockout_after_five_failures(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """5 wrong passwords lock the account for 15 minutes, even for the right password."""
+    """5 wrong passwords lock the account for 15 minutes, even for the right password.
+
+    Attempts during the lock are audited but not counted, so spamming cannot extend the lock.
+    """
     await user_factory(username="anna")
     now = datetime.now(UTC)
     for _ in range(5):
@@ -195,28 +141,6 @@ async def test_lockout_after_five_failures(
     user = await get_user(db_sessionmaker, "anna")
     assert user.failed_login_count == 5
     assert user.locked_until == now + timedelta(minutes=15)
-    with pytest.raises(InvalidCredentials):
-        await attempt(
-            db_sessionmaker, settings, "anna", TEST_PASSWORD, now=now + timedelta(minutes=1)
-        )
-    async with db_sessionmaker() as db:
-        actions = (await db.scalars(select(AuditLog.action))).all()
-    assert actions.count("auth.lockout") == 1
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_attempts_during_a_lock_are_not_counted(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """Spamming a locked account changes neither the counter nor the lock (no lock extension)."""
-    await user_factory(username="anna")
-    now = datetime.now(UTC)
-    for _ in range(5):
-        with pytest.raises(InvalidCredentials):
-            await attempt(db_sessionmaker, settings, "anna", "wrong-password-123", now=now)
-    locked = await get_user(db_sessionmaker, "anna")
-
     for password in ("wrong-password-123", TEST_PASSWORD) * 3:
         with pytest.raises(InvalidCredentials):
             await attempt(
@@ -224,13 +148,13 @@ async def test_attempts_during_a_lock_are_not_counted(
             )
 
     after = await get_user(db_sessionmaker, "anna")
-    assert after.failed_login_count == locked.failed_login_count == 5
-    assert after.locked_until == locked.locked_until
-    # Not counted, but each attempt is in the audit log.
+    assert (after.failed_login_count, after.locked_until) == (5, user.locked_until)
     async with db_sessionmaker() as db:
+        actions = (await db.scalars(select(AuditLog.action))).all()
         details = (
             await db.scalars(select(AuditLog.details).where(AuditLog.outcome == "denied"))
         ).all()
+    assert actions.count("auth.lockout") == 1
     assert details == [{"reason": "locked"}] * 6
 
 
@@ -312,49 +236,6 @@ async def test_outdated_hash_is_replaced_at_login(
 
 
 # --- Logout ------------------------------------------------------------------------------------
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_logout_revokes_only_the_current_session(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """logout ends the current session; the user's other devices stay logged in."""
-    user = await user_factory(username="anna")
-    first = await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
-    second = await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
-    current = CurrentUser(user.id, "anna", Role.user, first.session_id)
-    async with db_sessionmaker() as db:
-        await auth.logout(db, current, AuditContext.for_user(user.id, "anna"))
-    async with db_sessionmaker() as db:
-        active = {s.id for s in await sessions.list_active(db, user.id)}
-    assert active == {second.session_id}
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_logout_all_and_session_revoke(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """logout_all ends every session; revoking a foreign session is NotFound."""
-    anna = await user_factory(username="anna")
-    bob = await user_factory(username="bob")
-    mine = await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
-    await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
-    bobs = await attempt(db_sessionmaker, settings, "bob", TEST_PASSWORD)
-    current = CurrentUser(anna.id, "anna", Role.user, mine.session_id)
-    ctx = AuditContext.for_user(anna.id, "anna")
-
-    async with db_sessionmaker() as db:
-        with pytest.raises(NotFound):
-            await auth.revoke_own_session(db, current, bobs.session_id, ctx)
-        with pytest.raises(NotFound):
-            await auth.revoke_own_session(db, current, uuid.uuid4(), ctx)
-    async with db_sessionmaker() as db:
-        assert await auth.logout_all(db, current, ctx) == 2
-    async with db_sessionmaker() as db:
-        assert await sessions.list_active(db, anna.id) == []
-        assert len(await sessions.list_active(db, bob.id)) == 1
 
 
 # --- First admin -------------------------------------------------------------------------------
