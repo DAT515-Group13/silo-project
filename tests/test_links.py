@@ -241,7 +241,7 @@ async def test_deleting_the_file_kills_its_links(
     bearer_for: BearerFor,
 ) -> None:
     """Links are removed with their file (cascade), so the token stops working."""
-    owner = await user_factory("owner")
+    owner = await user_factory("owner", used_bytes=10)  # the delete gives these bytes back
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
     _, token = await make_link(client, headers, file.id)
@@ -335,7 +335,7 @@ async def test_who_may_manage_links(
     stranger = await user_factory("stranger")
     admin = await user_factory("boss", role=Role.admin)
     file = await file_factory(owner.id)
-    owner_h, stranger_h, admin_h = (await bearer_for(u) for u in (owner, stranger, admin))
+    owner_h, stranger_h, admin_h = [await bearer_for(u) for u in (owner, stranger, admin)]
     link_id, token = await make_link(client, owner_h, file.id)
 
     base = f"/api/v1/files/{file.id}/links"
@@ -377,7 +377,11 @@ async def test_the_token_never_reaches_logs_or_audit(
     await client.delete(f"/api/v1/links/{link_id}", headers=headers)
     await open_link(client, token)
 
-    assert token not in caplog.text
+    # The test client logs the URLs it requests; only the server's own records count here.
+    server_logs = "\n".join(
+        r.getMessage() for r in caplog.records if not r.name.startswith(("httpx", "httpcore"))
+    )
+    assert token not in server_logs
     async with db_sessionmaker() as session:
         rows = (await session.scalars(select(AuditLog))).all()
     assert {"link.create", "link.download", "link.revoke"} <= {row.action for row in rows}

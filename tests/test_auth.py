@@ -238,6 +238,23 @@ async def test_outdated_hash_is_replaced_at_login(
 # --- Logout ------------------------------------------------------------------------------------
 
 
+@pytest.mark.db
+@pytest.mark.anyio
+async def test_logout_revokes_only_the_current_session(
+    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
+) -> None:
+    """logout ends the current session; the user's other devices stay logged in."""
+    user = await user_factory(username="anna")
+    first = await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
+    second = await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
+    current = CurrentUser(user.id, "anna", Role.user, first.session_id)
+    async with db_sessionmaker() as db:
+        await auth.logout(db, current, AuditContext.for_user(user.id, "anna"))
+    async with db_sessionmaker() as db:
+        active = {s.id for s in await sessions.list_active(db, user.id)}
+    assert active == {second.session_id}
+
+
 # --- First admin -------------------------------------------------------------------------------
 
 

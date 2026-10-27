@@ -208,7 +208,7 @@ async def test_admin_deletes_a_file_from_the_admin_list(
 
     The quota and audit side of an admin delete are checked in test_files.py.
     """
-    owner = await user_factory("owner")
+    owner = await user_factory("owner", used_bytes=10)  # the delete gives these bytes back
     stranger = await page_login(await user_factory("stranger"))
     admin = await page_login(await user_factory("boss", role=Role.admin))
     file = await file_factory(owner.id)

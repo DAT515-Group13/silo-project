@@ -4,3 +4,5 @@ resources:
   - deployment.yaml
   - service.yaml
   - migrate-job.yaml
+  - ingress.yaml
+  - networkpolicy.yaml

@@ -1,0 +1,81 @@
+# 1) Default: nothing in this namespace may receive or send traffic, unless a rule below allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# 2) Everyone in the namespace may use cluster DNS (otherwise "postgres" or Azure names don't resolve).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+---
+# 3) The app: reached only from Traefik; may call PostgreSQL and HTTPS outside the cluster (Azure).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: silo
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: silo
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - { port: 8000, protocol: TCP }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - { port: 5432, protocol: TCP }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8]   # pod + service networks; Azure is public
+      ports:
+        - { port: 443, protocol: TCP }
+---
+# 4) The migration job: only PostgreSQL.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: silo-migrate
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: silo-migrate
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - { port: 5432, protocol: TCP }
+        
