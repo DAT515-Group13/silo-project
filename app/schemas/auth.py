@@ -35,6 +35,13 @@ class RegistrationAcceptedOut(BaseModel):
     detail: str = REGISTRATION_ACCEPTED_MESSAGE
 
 
+class PasswordChangeIn(InputModel):
+    """Body of ``POST /me/password``."""
+
+    current_password: Password
+    new_password: Password
+
+
 class RefreshIn(InputModel):
     """Body of ``POST /auth/refresh``."""
 

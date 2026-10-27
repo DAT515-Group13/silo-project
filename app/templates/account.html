@@ -41,6 +41,33 @@
   </tbody>
 </table>
 
+<h2 class="h5 mt-4">Change password</h2>
+{% if password_changed %}
+<div class="alert alert-success">Password changed. Your other sessions were signed out.</div>
+{% endif %}
+{% if errors %}
+<div class="alert alert-danger" role="alert">
+  <ul class="mb-0">
+    {% for message in errors %}<li>{{ message }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+<form method="post" action="/account/password" class="mb-4 col-md-6 col-lg-4 px-0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="mb-3">
+    <label for="current_password" class="form-label">Current password</label>
+    <input type="password" class="form-control" id="current_password" name="current_password"
+           autocomplete="current-password" required>
+  </div>
+  <div class="mb-3">
+    <label for="new_password" class="form-label">New password</label>
+    <input type="password" class="form-control" id="new_password" name="new_password"
+           autocomplete="new-password" minlength="{{ password_min_length }}" maxlength="128" required>
+    <div class="form-text">At least {{ password_min_length }} characters.</div>
+  </div>
+  <button type="submit" class="btn btn-primary">Change password</button>
+</form>
+
 <form method="post" action="/account/logout-all">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button type="submit" class="btn btn-danger">Sign out everywhere</button>

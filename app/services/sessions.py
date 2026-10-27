@@ -39,6 +39,7 @@ class RevokeReason(enum.StrEnum):
     user_disabled = "user_disabled"
     admin = "admin"
     session_limit = "session_limit"
+    password_change = "password_change"  # noqa: S105 - reason name
 
 
 @dataclass(frozen=True)

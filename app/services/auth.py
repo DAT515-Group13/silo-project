@@ -22,6 +22,7 @@ from app.errors import (
     NotFound,
     SiloError,
     UsernameTaken,
+    ValidationFailed,
 )
 from app.metrics import LOGIN_ATTEMPTS
 from app.models import Outcome, Role, User, UserStatus
@@ -313,3 +314,69 @@ async def revoke_own_session(
             target_type="session",
             target_id=session_id,
         )
+
+
+async def change_password(
+    session: AsyncSession,
+    settings: Settings,
+    user: CurrentUser,
+    ctx: AuditContext,
+    current_password: str,
+    new_password: str,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Change the user's own password (POST /me/password). Returns how many other sessions ended.
+
+    The current session stays signed in; every other session of the user is revoked.
+
+    Raises:
+        ValidationFailed: the new password breaks the policy, or ``current_password`` is wrong
+            (field ``current_password``). Not 401: a client must not mistake it for a dead token.
+    """
+    check_password_policy(
+        new_password, user.username, settings.password_min_length, field="new_password"
+    )
+    async with session.begin():
+        old_hash = await session.scalar(select(User.password_hash).where(User.id == user.id))
+    changed = False
+    revoked = 0
+    if old_hash is not None and await verify_password(old_hash, current_password):
+        new_hash = await hash_password(new_password)
+        async with session.begin():
+            # The old hash is part of the condition: of two parallel changes with the same
+            # current password only one updates a row, the other counts as a wrong password.
+            updated = await session.scalar(
+                update(User)
+                .where(User.id == user.id, User.password_hash == old_hash)
+                .values(password_hash=new_hash)
+                .returning(User.id)
+            )
+            if updated is not None:
+                changed = True
+                revoked = await sessions.revoke_all(
+                    session, user.id, RevokeReason.password_change, keep=user.session_id, now=now
+                )
+                await audit.record(
+                    session,
+                    ctx,
+                    AuditAction.auth_password_change,
+                    target_type="user",
+                    target_id=user.id,
+                    target_label=user.username,
+                    details={"revoked": revoked},
+                )
+    if not changed:
+        await audit.record_failure(
+            session,
+            ctx,
+            AuditAction.auth_password_change,
+            outcome=Outcome.failed,
+            target_type="user",
+            target_id=user.id,
+            target_label=user.username,
+        )
+        raise ValidationFailed(
+            [{"field": "current_password", "message": "Current password is wrong."}]
+        )
+    return revoked

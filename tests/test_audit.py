@@ -10,7 +10,8 @@ from app.services.audit import AuditAction, AuditContext, record, record_failure
 # The exact list of audit actions.
 SPEC_ACTIONS = {
     "auth.register", "auth.login", "auth.logout", "auth.logout_all", "auth.refresh",
-    "auth.refresh_reuse", "auth.lockout", "auth.session_revoke", "file.upload",
+    "auth.refresh_reuse", "auth.lockout", "auth.session_revoke", "auth.password_change",
+    "file.upload",
     "file.download", "file.rename", "file.delete", "file.share", "file.unshare",
     "link.create", "link.revoke", "link.download", "team.create", "team.delete",
     "team.member_add", "team.member_remove", "user.approve", "user.reject",

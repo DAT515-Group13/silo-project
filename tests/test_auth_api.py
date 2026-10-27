@@ -6,8 +6,11 @@ All tests go through HTTP and need PostgreSQL (marker ``db``).
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
+from app.models import AuditLog, AuthSession, Outcome
 from tests.conftest import GOOD_PASSWORD, TEST_PASSWORD, UserFactory, use_mode
 
 pytestmark = [pytest.mark.db, pytest.mark.anyio]
@@ -236,3 +239,82 @@ async def test_logout_all_ends_every_session(
     assert (await client.get("/api/v1/me", headers=bearer(a1))).status_code == 401
     assert (await client.get("/api/v1/me", headers=bearer(a2))).status_code == 401
     assert (await client.get("/api/v1/me", headers=bearer(bob))).status_code == 200
+
+
+# --- Password change ---------------------------------------------------------------------------
+
+
+async def change_password(
+    client: httpx.AsyncClient, headers: dict[str, str], current: str, new: str
+) -> httpx.Response:
+    return await client.post(
+        "/api/v1/me/password",
+        headers=headers,
+        json={"current_password": current, "new_password": new},
+    )
+
+
+async def test_password_change_keeps_this_session_and_ends_the_others(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """204; only the old password stops working and only the other session ends.
+
+    The ended session is marked `password_change` and one `auth.password_change` entry says
+    how many sessions were revoked.
+    """
+    await user_factory(username="anna")
+    here, other = await login(client), await login(client)
+    response = await change_password(client, bearer(here), TEST_PASSWORD, GOOD_PASSWORD)
+    assert response.status_code == 204
+    assert (await client.get("/api/v1/me", headers=bearer(here))).status_code == 200
+    assert (await client.get("/api/v1/me", headers=bearer(other))).status_code == 401
+    async with db_sessionmaker() as db:
+        reasons = (
+            await db.scalars(select(AuthSession.revoked_reason).order_by(AuthSession.created_at))
+        ).all()
+        entries = (
+            await db.execute(
+                select(AuditLog.outcome, AuditLog.details).where(
+                    AuditLog.action == "auth.password_change"
+                )
+            )
+        ).all()
+    assert reasons == [None, "password_change"]
+    assert entries == [(Outcome.success, {"revoked": 1})]
+    assert (await login(client, "anna", TEST_PASSWORD)).status_code == 401
+    assert (await login(client, "anna", GOOD_PASSWORD)).status_code == 200
+
+
+async def test_password_change_wrong_current_is_422_and_changes_nothing(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """422 on `current_password`, a `failed` audit entry, and the old password still works."""
+    await user_factory(username="anna")
+    here = await login(client)
+    response = await change_password(client, bearer(here), "wrong-password-123", GOOD_PASSWORD)
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["field"] == "current_password"
+    async with db_sessionmaker() as db:
+        outcomes = (
+            await db.scalars(
+                select(AuditLog.outcome).where(AuditLog.action == "auth.password_change")
+            )
+        ).all()
+    assert outcomes == [Outcome.failed]
+    assert (await login(client, "anna", TEST_PASSWORD)).status_code == 200
+
+
+async def test_password_change_applies_the_password_policy(
+    client: httpx.AsyncClient, user_factory: UserFactory
+) -> None:
+    """A too short new password and a new password equal to the username give 422."""
+    await user_factory(username="anna")
+    here = await login(client)
+    for bad in ("short", "ANNA"):
+        response = await change_password(client, bearer(here), TEST_PASSWORD, bad)
+        assert response.status_code == 422
+        assert response.json()["errors"][0]["field"] == "new_password"
