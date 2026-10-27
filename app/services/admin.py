@@ -1,4 +1,4 @@
-"""Read-only admin listings: all files and the audit log.
+"""Read-only admin views: all files, the audit log and the total storage.
 
 User management lives in ``services/users.py``. Both listings are for admins only; everybody
 else gets ``NotFound``. Admins see file metadata only, never file contents.
@@ -10,9 +10,11 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.errors import NotFound
 from app.models import AuditLog, File, Outcome, User
 from app.permissions import CurrentUser, is_admin
+from app.services import users
 from app.services.pagination import fetch_page
 from app.services.teams import FileItem
 
@@ -86,3 +88,19 @@ async def list_audit(
     async with session.begin():
         rows, total = await fetch_page(session, statement, page=page, size=size)
     return [row[0] for row in rows], total
+
+
+async def storage_totals(
+    session: AsyncSession, actor: CurrentUser, settings: Settings
+) -> tuple[int, int | None]:
+    """Return ``(bytes stored by all users, STORAGE_TOTAL_MAX_BYTES or None)`` for /admin.
+
+    One aggregate number: the admin sees no per-file or per-user data through it.
+
+    Raises:
+        NotFound: the actor is not an admin.
+    """
+    _require_admin(actor)
+    async with session.begin():
+        used = await users.total_used_bytes(session)
+    return used, settings.global_cap()

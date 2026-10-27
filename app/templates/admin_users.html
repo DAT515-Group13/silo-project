@@ -9,6 +9,14 @@
   </div>
 </div>
 
+<p class="mb-3" id="total-storage">
+  Total stored: <strong>{{ stored_bytes | filesizeformat(true) }}</strong>
+  {% if storage_cap %}of {{ storage_cap | filesizeformat(true) }}
+  ({{ (stored_bytes * 100 // storage_cap) }}%){% if stored_bytes * 100 >= storage_cap * 80 %}
+  <span class="badge text-bg-warning">almost full</span>{% endif %}
+  {% else %}<span class="text-body-secondary">(no total cap)</span>{% endif %}
+</p>
+
 <form method="get" action="/admin" class="row g-2 mb-3">
   <div class="col-auto">
     <label class="visually-hidden" for="status">Status</label>

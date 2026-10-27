@@ -11,9 +11,11 @@ import pytest
 from sqlalchemy import select
 
 from app.config import Settings
+from app.errors import NotFound
 from app.models import ActorType, AuditLog, Outcome, Role, User, UserStatus
 from app.permissions import CurrentUser
 from app.routers.common import templates
+from app.services import admin
 from tests.conftest import ActAs, FileFactory, PageLogin, Sessionmaker, UserFactory, page_csrf
 
 pytestmark = pytest.mark.anyio
@@ -83,6 +85,14 @@ async def test_audit_filter_with_a_bad_value_is_422(
     assert (await client.get("/admin/audit?outcome=bogus")).status_code == 422
     assert (await client.get("/admin/audit?actor_id=abc")).status_code == 422
     assert (await client.get("/admin/audit?from=yesterday")).status_code == 422
+
+
+async def test_storage_totals_are_for_admins_only(settings: Settings) -> None:
+    """The total is admin data: everybody else gets NotFound before any query."""
+    for role in (Role.user, Role.team_lead):
+        actor = CurrentUser(id=1, username="anna", role=role, session_id=uuid.uuid4())
+        with pytest.raises(NotFound):
+            await admin.storage_totals(None, actor, settings)  # type: ignore[arg-type]
 
 
 def test_admin_link_shows_only_for_admins() -> None:
@@ -185,6 +195,38 @@ async def test_admin_cannot_act_on_themself(
     )
     assert response.status_code == 409
     assert await state(db_sessionmaker, root.id) == UserStatus.active
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("cap", "expected"),
+    [
+        (0, ["Total stored", "1.0 KiB", "no total cap"]),
+        (4096, ["of 4.0 KiB", "(25%)"]),
+        (1100, ["of 1.1 KiB", "(93%)", "almost full"]),  # 80% or more warns
+    ],
+)
+async def test_users_page_shows_the_total_storage(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    admin_login: tuple,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    cap: int,
+    expected: list[str],
+) -> None:
+    """/admin shows one aggregate: all stored bytes, the cap and a warning near the cap."""
+    _, headers, _ = admin_login
+    settings.storage_total_max_bytes = cap
+    anna = await user_factory(username="anna")
+    await file_factory(anna.id, size_bytes=1024)
+    page = await client.get("/admin", headers=headers)
+    assert page.status_code == 200
+    block = page.text.split('id="total-storage"')[1].split("</p>")[0]
+    for text in expected:
+        assert text in block
+    if cap < 1100:
+        assert "almost full" not in block
 
 
 @pytest.mark.db

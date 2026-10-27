@@ -91,12 +91,15 @@ async def users_page(
     items, total = await users.list_users(
         session, user, status=status_filter, page=page, size=PER_PAGE
     )
+    stored, cap = await admin.storage_totals(session, user, settings)
     return render_page(
         request,
         settings,
         user,
         "admin_users.html",
         {
+            "stored_bytes": stored,
+            "storage_cap": cap,
             "items": items,
             "status": status_filter.value if status_filter else "",
             "statuses": [s.value for s in UserStatus],
