@@ -141,7 +141,7 @@ async def test_upload_through_the_page_then_list_rename_and_delete(
     ("data", "name", "status", "message"),
     [
         (b"too long for the quota", "a.txt", 413, "Storage quota exceeded."),
-        (b"", "", 422, "Filename must not be empty."),  # no file chosen
+        (b"", "", 422, "Choose a file to upload."),  # no file chosen: httpx sends no filename
     ],
 )
 async def test_refused_upload_shows_the_message_and_keeps_nothing(

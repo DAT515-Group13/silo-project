@@ -1,4 +1,4 @@
-"""Registration, login, lockout, logout and the first admin.
+"""Registration, login, lockout and the first admin (logout is tested over HTTP).
 
 Only ``lock_duration`` is pure; everything else needs PostgreSQL (marker ``db``).
 """
@@ -20,10 +20,8 @@ from app.errors import (
     ValidationFailed,
 )
 from app.models import AuditLog, AuthSession, Role, User, UserStatus
-from app.permissions import CurrentUser
 from app.security import decode_access_token
-from app.services import auth, sessions
-from app.services.audit import AuditContext
+from app.services import auth
 from app.services.users import ensure_initial_admin
 from tests.conftest import GOOD_PASSWORD, TEST_PASSWORD, Sessionmaker, UserFactory, make_settings
 
@@ -235,26 +233,6 @@ async def test_outdated_hash_is_replaced_at_login(
     stored = (await get_user(db_sessionmaker, "anna")).password_hash
     assert stored != weak
     assert "m=65536" in stored
-
-
-# --- Logout ------------------------------------------------------------------------------------
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_logout_revokes_only_the_current_session(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """logout ends the current session; the user's other devices stay logged in."""
-    user = await user_factory(username="anna")
-    first = await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
-    second = await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
-    current = CurrentUser(user.id, "anna", Role.user, first.session_id)
-    async with db_sessionmaker() as db:
-        await auth.logout(db, current, AuditContext.for_user(user.id, "anna"))
-    async with db_sessionmaker() as db:
-        active = {s.id for s in await sessions.list_active(db, user.id)}
-    assert active == {second.session_id}
 
 
 # --- First admin -------------------------------------------------------------------------------
