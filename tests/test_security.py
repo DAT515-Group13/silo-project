@@ -1,9 +1,12 @@
 """Passwords, access tokens, random tokens and CSRF tokens."""
 
 import hashlib
+import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import anyio
 import jwt
 import pytest
 from argon2 import PasswordHasher
@@ -155,6 +158,32 @@ async def test_malformed_hash_is_a_failed_login_not_an_error() -> None:
     """A broken stored hash gives False instead of an exception."""
     assert await security.verify_password("not a hash", "whatever") is False
     assert await security.verify_password("", "whatever") is False
+
+
+@pytest.mark.anyio
+async def test_password_checks_wait_for_the_hash_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the limiter at 1, two parallel verifications never run at the same time."""
+    running = 0
+    most = 0
+    lock = threading.Lock()
+
+    def slow_verify(password_hash: str, password: str) -> bool:
+        nonlocal running, most
+        with lock:
+            running += 1
+            most = max(most, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+        return False
+
+    monkeypatch.setattr(security, "_verify", slow_verify)
+    monkeypatch.setattr(security, "_hash_limiter", anyio.CapacityLimiter(1))
+    async with anyio.create_task_group() as group:
+        for _ in range(2):
+            group.start_soon(security.verify_password, "hash", "password")
+    assert most == 1
+    assert security.MAX_PARALLEL_HASHES == 4
 
 
 def test_weaker_hash_needs_rehash() -> None:
