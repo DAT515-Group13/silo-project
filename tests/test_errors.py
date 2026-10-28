@@ -16,6 +16,7 @@ EXPECTED = {
     errors.AccountDisabled: (403, "account_disabled"),
     errors.UsernameTaken: (409, "username_taken"),
     errors.QuotaExceeded: (413, "quota_exceeded"),
+    errors.StorageFull: (507, "storage_full"),
     errors.FileTooLarge: (413, "file_too_large"),
     errors.NotFound: (404, "not_found"),
     errors.LastAdmin: (409, "last_admin"),

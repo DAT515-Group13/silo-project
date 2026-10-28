@@ -22,6 +22,11 @@ HTTP_DURATION = Histogram(
 DEPENDENCY_UP = Gauge(
     "silo_dependency_up", "1 if the last readiness check passed, else 0.", ["dependency"]
 )
+# Bytes stored by all users (sum of users.used_bytes), set by /readyz, and the configured total cap
+# (STORAGE_TOTAL_MAX_BYTES, 0 = no cap), set once at startup. Every pod reports the same total, so
+# alert on max(), not sum().
+STORAGE_USED = Gauge("silo_storage_used_bytes", "Bytes stored by all users (sum of used_bytes).")
+STORAGE_CAP = Gauge("silo_storage_cap_bytes", "STORAGE_TOTAL_MAX_BYTES, 0 = no cap.")
 STORAGE_ERRORS = Counter("silo_storage_errors_total", "Failed blob storage calls.", ["operation"])
 LOGIN_ATTEMPTS = Counter("silo_login_attempts_total", "Login attempts by result.", ["result"])
 UPLOADS = Counter("silo_uploads_total", "Uploads by result.", ["result"])

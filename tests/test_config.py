@@ -190,6 +190,21 @@ def test_quota_for_role(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
+    ("value", "cap"),
+    [(None, None), ("0", None), ("50", 50), ("-1", "invalid")],
+    ids=["unset", "zero", "bytes", "negative"],
+)
+def test_global_cap_setting(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, cap: int | None | str
+) -> None:
+    """STORAGE_TOTAL_MAX_BYTES: unset or 0 means no cap, a number is bytes, negative is refused."""
+    if cap == "invalid":
+        assert "storage_total_max_bytes" in error_text(monkeypatch, STORAGE_TOTAL_MAX_BYTES=value)
+    else:
+        assert make(monkeypatch, STORAGE_TOTAL_MAX_BYTES=value).global_cap() == cap
+
+
+@pytest.mark.parametrize(
     "name",
     [
         "SAS_URL_TTL_SECONDS",

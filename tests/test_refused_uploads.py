@@ -10,7 +10,7 @@ from contextlib import AsyncExitStack
 import httpx
 import pytest
 
-from app.errors import FileTooLarge
+from app.errors import FileTooLarge, StorageFull
 from app.models import Role
 from app.ratelimit import _FALLBACK_RETRY_AFTER as FALLBACK_RETRY_AFTER
 from app.ratelimit import MAX_CONCURRENT_UPLOADS, upload_slot
@@ -61,14 +61,36 @@ async def test_fourth_parallel_upload_is_429(
     assert running == MAX_CONCURRENT_UPLOADS  # the fourth never reached the service
 
 
-@pytest.mark.parametrize("busy", [True, False], ids=["429 too many uploads", "422 wrong part"])
+@pytest.mark.parametrize(
+    ("case", "status", "code"),
+    [
+        ("busy", 429, "rate_limited"),
+        ("wrong part", 422, "validation_error"),
+        ("service full", 507, "storage_full"),
+    ],
+)
 async def test_refused_upload_still_reads_the_whole_body(
-    client: httpx.AsyncClient, act_as: ActAs, busy: bool
+    client: httpx.AsyncClient,
+    act_as: ActAs,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    status: int,
+    code: str,
 ) -> None:
-    """A 429 or a validation error is sent after the rest of the body was read (no proxy 502)."""
+    """A refused upload is answered after the rest of the body was read (no proxy 502, D27).
+
+    "service full" stands for the global cap: ``StorageFull`` is a ``QuotaExceeded``, so the
+    route drains the body and answers 507 without any route change.
+    """
     user = act_as(Role.user)
-    field = "file" if busy else "other"  # a part that is not `file` is a validation error
+    field = "other" if case == "wrong part" else "file"  # a part that is not `file` is a 422
     sent = 0
+
+    async def full(*args: object, **kwargs: object) -> None:
+        raise StorageFull  # refused before reading the file, like step 2 of the upload
+
+    if case == "service full":
+        monkeypatch.setattr(files, "upload", full)
 
     async def body() -> AsyncIterator[bytes]:
         nonlocal sent
@@ -82,7 +104,7 @@ async def test_refused_upload_still_reads_the_whole_body(
         sent += 1
 
     async with AsyncExitStack() as stack:
-        if busy:  # all slots of this user are taken by other uploads
+        if case == "busy":  # all slots of this user are taken by other uploads
             for _ in range(MAX_CONCURRENT_UPLOADS):
                 await stack.enter_async_context(upload_slot(user.id))
         response = await client.post(
@@ -91,5 +113,5 @@ async def test_refused_upload_still_reads_the_whole_body(
             headers={"Content-Type": f"multipart/form-data; boundary={BOUNDARY}"},
         )
 
-    assert response.status_code == (429 if busy else 422)
+    assert (response.status_code, response.json()["code"]) == (status, code)
     assert sent == CHUNK_COUNT + 2  # the client could send everything

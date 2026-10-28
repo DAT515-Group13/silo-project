@@ -131,11 +131,13 @@ async def test_upload_through_the_page_then_list_rename_and_delete(
 
 @db
 @pytest.mark.parametrize(
-    ("data", "name", "status", "message"),
+    ("data", "name", "quota", "cap", "status", "message"),
     [
-        (b"too long for the quota", "a.txt", 413, "Storage quota exceeded."),
-        (b"", "", 422, "Choose a file to upload."),  # no file chosen: httpx sends no filename
+        (b"too long", "a.txt", 4, 0, 413, "Storage quota exceeded."),
+        (b"too long", "a.txt", 1000, 4, 507, "The service storage is full."),
+        (b"", "", 4, 0, 422, "Choose a file to upload."),  # no file chosen: httpx sends no name
     ],
+    ids=["own quota", "service full", "no file"],
 )
 async def test_refused_upload_shows_the_message_and_keeps_nothing(
     client: httpx.AsyncClient,
@@ -145,11 +147,14 @@ async def test_refused_upload_shows_the_message_and_keeps_nothing(
     blob_store: InMemoryBlobStore,
     data: bytes,
     name: str,
+    quota: int,
+    cap: int,
     status: int,
     message: str,
 ) -> None:
     """A refused upload shows the list again with a readable message and leaves no blob."""
-    settings.quota_user_bytes = 4
+    settings.quota_user_bytes = quota
+    settings.storage_total_max_bytes = cap
     login = await page_login(await user_factory("anna"))
     response = await upload(client, login, data, name)
     assert response.status_code == status

@@ -204,3 +204,92 @@ async def test_failed_database_step_deletes_the_blob(
     assert blob_store.blobs == {}
     assert await count_files(db_sessionmaker) == 0
     assert await used_bytes(db_sessionmaker, user.id) == 0
+
+
+async def test_global_cap_refuses_with_507_and_leaves_no_blob(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Uploads of all users share STORAGE_TOTAL_MAX_BYTES; over it is 507 storage_full."""
+    settings.storage_total_max_bytes = 100
+    anna = await user_factory("anna")
+    bob = await user_factory("bob")
+    bob_headers = await bearer_for(bob)
+
+    assert (await post_file(client, await bearer_for(anna), b"x" * 60)).status_code == 201
+    refused_before = sample("silo_uploads_total", result="storage_full")
+    refused = await post_file(client, bob_headers, b"x" * 41)
+    assert refused.status_code == 507
+    assert refused.json()["code"] == "storage_full"
+    assert sample("silo_uploads_total", result="storage_full") == refused_before + 1
+    assert len(blob_store.blobs) == 1
+    assert await used_bytes(db_sessionmaker, bob.id) == 0
+
+    assert (await post_file(client, bob_headers, b"x" * 40)).status_code == 201
+    # Full: even a tiny file is refused before anything is read.
+    assert (await post_file(client, bob_headers, b"x")).status_code == 507
+
+    async with db_sessionmaker() as session:
+        codes = (
+            await session.scalars(
+                select(AuditLog.details["code"].astext).where(AuditLog.outcome == "denied")
+            )
+        ).all()
+    assert codes == ["storage_full", "storage_full"]
+
+
+async def test_cap_off_changes_nothing_and_a_delete_frees_global_space(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+) -> None:
+    """With the cap at 0 only role quotas count; a cap lowered below the total blocks uploads
+    but keeps the files (like a lowered role, section 11); deleting a file gives room back."""
+    anna = await user_factory("anna")
+    headers = await bearer_for(anna)
+    assert (await post_file(client, headers, b"x" * 500)).status_code == 201  # default: no cap
+
+    settings.storage_total_max_bytes = 400  # below what is already stored
+    assert (await post_file(client, headers, b"x")).status_code == 507
+    settings.storage_total_max_bytes = 600
+    assert (await post_file(client, headers, b"x" * 200)).status_code == 507
+    listing = await client.get("/api/v1/files", headers=headers)
+    file_id = listing.json()["items"][0]["id"]
+    assert (await client.delete(f"/api/v1/files/{file_id}", headers=headers)).status_code == 204
+    assert (await post_file(client, headers, b"x" * 200)).status_code == 201
+
+
+async def test_parallel_uploads_of_two_users_at_the_global_edge(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Two users whose files fit alone but not together: exactly one wins (section 16).
+
+    Both see the same stale "everything is free" hint, so only the locked step 4 decides.
+    """
+    settings.storage_total_max_bytes = 100
+    anna = await user_factory("anna")
+    bob = await user_factory("bob")
+
+    async def stale_remaining(*args: object, **kwargs: object) -> int:
+        return 100
+
+    monkeypatch.setattr(users_service, "get_global_remaining", stale_remaining)
+
+    results = await asyncio.gather(
+        post_file(client, await bearer_for(anna), b"a" * 70, "a.txt"),
+        post_file(client, await bearer_for(bob), b"b" * 70, "b.txt"),
+    )
+    assert sorted(r.status_code for r in results) == [201, 507]
+    assert await count_files(db_sessionmaker) == 1
+    assert len(blob_store.blobs) == 1  # the loser's blob was deleted again

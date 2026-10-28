@@ -33,9 +33,11 @@ async def test_every_response_has_the_headers_and_is_not_cached(
 async def test_static_files_stay_cacheable_but_get_the_other_headers(
     client: httpx.AsyncClient,
 ) -> None:
-    """Bootstrap may be cached by the browser; it is not private."""
+    """Bootstrap is served from /static (so the CSP can stay 'self') and may be cached."""
     response = await client.get("/static/bootstrap.min.css")
     assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/css")
+    assert "Bootstrap" in response.text[:200]
     assert response.headers.get("cache-control") != "no-store"
     assert_secure(response)
 

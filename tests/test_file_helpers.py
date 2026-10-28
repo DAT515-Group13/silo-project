@@ -8,9 +8,16 @@ types a browser would render are always downloaded as ``application/octet-stream
 import pytest
 from pydantic import ValidationError
 
-from app.errors import FileTooLarge, QuotaExceeded
+from app.errors import (
+    FileTooLarge,
+    QuotaExceeded,
+    StorageFull,
+    StorageUnavailable,
+    ValidationFailed,
+)
 from app.schemas.files import FileRenameIn, sanitize_filename
 from app.services.files import (
+    _count_failed_upload,
     _limited,
     _with_head,
     choose_content_type,
@@ -18,6 +25,7 @@ from app.services.files import (
     normalize_content_type,
     sniff_content_type,
 )
+from tests.conftest import sample
 
 
 @pytest.mark.parametrize(
@@ -160,17 +168,73 @@ async def test_head_of_a_short_or_empty_stream() -> None:
     assert [c async for c in stream] == []
 
 
+@pytest.mark.parametrize(
+    ("limits", "error"),
+    [
+        # (max_size, remaining, global_remaining); None = no total cap.
+        ((5, 5, None), None),  # exactly at every limit fits
+        ((5, 5, 5), None),
+        ((4, 100, None), FileTooLarge),
+        ((100, 4, None), QuotaExceeded),
+        ((100, 100, 4), StorageFull),
+        ((4, 4, 4), FileTooLarge),  # the size limit wins a tie
+        ((100, 4, 4), QuotaExceeded),  # then the user's own quota, then the service cap
+    ],
+    ids=[
+        "fits",
+        "fits-with-cap",
+        "too-large",
+        "own-quota",
+        "service-full",
+        "tie-size",
+        "tie-quota",
+    ],
+)
 @pytest.mark.anyio
-async def test_limited_stops_at_the_size_limit_and_the_quota() -> None:
-    """Counting stops a stream the moment a limit is passed; the size limit wins a tie."""
-    ok = [c async for c in _limited(chunks_of(b"abc", b"de"), max_size=5, remaining=5)]
-    assert b"".join(ok) == b"abcde"
-    with pytest.raises(FileTooLarge):
-        [c async for c in _limited(chunks_of(b"abc", b"def"), max_size=5, remaining=100)]
-    with pytest.raises(QuotaExceeded):
-        [c async for c in _limited(chunks_of(b"abc", b"def"), max_size=100, remaining=5)]
-    with pytest.raises(FileTooLarge):
-        [c async for c in _limited(chunks_of(b"abcdef"), max_size=5, remaining=5)]
+async def test_limited_stops_at_the_first_limit_passed(
+    limits: tuple[int, int, int | None], error: type[Exception] | None
+) -> None:
+    """Counting stops at the chunk that passes a limit: that chunk is never passed on.
+
+    The stream is 3 + 2 bytes. The order of the checks decides the message: file too large,
+    the user's own quota, then the service's total cap.
+    """
+    max_size, remaining, global_remaining = limits
+    stream = _limited(
+        chunks_of(b"abc", b"de"),
+        max_size=max_size,
+        remaining=remaining,
+        global_remaining=global_remaining,
+    )
+    yielded: list[bytes] = []
+    if error is None:
+        yielded = [c async for c in stream]
+        assert yielded == [b"abc", b"de"]
+        return
+    with pytest.raises(error) as raised:
+        async for chunk in stream:
+            yielded.append(chunk)
+    assert type(raised.value) is error  # exact class: a QuotaExceeded is never a StorageFull
+    assert yielded == [b"abc"]  # the chunk that passed the limit was not sent to storage
+
+
+@pytest.mark.parametrize(
+    ("exc", "label"),
+    [
+        (FileTooLarge(), "too_large"),
+        (QuotaExceeded(), "quota_exceeded"),
+        (StorageFull(), "storage_full"),  # a subclass of QuotaExceeded, so checked first
+        (StorageUnavailable(), "storage_error"),
+        (ValidationFailed([]), None),  # the client's mistake, not a refused upload
+    ],
+)
+def test_failed_upload_is_counted_under_one_label(exc: Exception, label: str | None) -> None:
+    """A refused upload adds 1 to exactly one ``silo_uploads_total`` label (section 8.3)."""
+    labels = ["too_large", "quota_exceeded", "storage_full", "storage_error"]
+    before = {name: sample("silo_uploads_total", result=name) for name in labels}
+    _count_failed_upload(exc)
+    change = {name: sample("silo_uploads_total", result=name) - before[name] for name in labels}
+    assert change == {name: (1 if name == label else 0) for name in labels}
 
 
 @pytest.mark.anyio

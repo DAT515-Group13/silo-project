@@ -25,7 +25,14 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.errors import FileTooLarge, NotFound, QuotaExceeded, StorageUnavailable, ValidationFailed
+from app.errors import (
+    FileTooLarge,
+    NotFound,
+    QuotaExceeded,
+    StorageFull,
+    StorageUnavailable,
+    ValidationFailed,
+)
 from app.metrics import DOWNLOADS, UPLOAD_BYTES, UPLOADS
 from app.models import File, FileShare, Team, User
 from app.permissions import (
@@ -160,12 +167,17 @@ async def _with_head(chunks: AsyncIterator[bytes]) -> tuple[bytes, AsyncIterator
 
 
 async def _limited(
-    chunks: AsyncIterator[bytes], *, max_size: int, remaining: int
+    chunks: AsyncIterator[bytes],
+    *,
+    max_size: int,
+    remaining: int,
+    global_remaining: int | None = None,
 ) -> AsyncIterator[bytes]:
-    """Pass chunks on while counting; stop as soon as the file is too large or over quota.
+    """Pass chunks on while counting; stop as soon as a limit is passed.
 
-    Raising here aborts the blob upload before anything is committed (upload step 2). The size
-    limit is checked first, so a file that breaks both limits is reported as too large.
+    Raising here aborts the blob upload before anything is committed (upload step 2). The order
+    is: file size limit, the user's own quota, then the service's total cap (``None`` = no cap),
+    so a user over their own quota is told that, not that the service is full.
     """
     total = 0
     async for chunk in chunks:
@@ -174,6 +186,8 @@ async def _limited(
             raise FileTooLarge
         if total > remaining:
             raise QuotaExceeded
+        if global_remaining is not None and total > global_remaining:
+            raise StorageFull
         yield chunk
 
 
@@ -217,6 +231,9 @@ def _count_failed_upload(exc: BaseException) -> None:
     """Count a refused or failed upload; other errors (bad input, cancelled request) are not."""
     if isinstance(exc, FileTooLarge):
         UPLOADS.labels("too_large").inc()
+    elif isinstance(exc, StorageFull):
+        # Before QuotaExceeded: StorageFull is a subclass of it.
+        UPLOADS.labels("storage_full").inc()
     elif isinstance(exc, QuotaExceeded):
         UPLOADS.labels("quota_exceeded").inc()
     elif isinstance(exc, StorageUnavailable):
@@ -244,10 +261,12 @@ async def upload(
         ValidationFailed: the file name is empty after cleaning.
         FileTooLarge: over ``MAX_FILE_SIZE_BYTES`` (no blob is created).
         QuotaExceeded: does not fit into the user's remaining quota (no blob remains).
+        StorageFull: does not fit under ``STORAGE_TOTAL_MAX_BYTES`` (no blob remains).
         StorageUnavailable: blob storage failed.
 
     Side effects: one blob, one ``files`` row, the user's ``used_bytes`` and an audit entry
-    ``file.upload``; denied uploads (too large, over quota) get a ``denied`` audit entry.
+    ``file.upload``; denied uploads (too large, over quota, service full) get a ``denied``
+    audit entry.
     """
     try:
         clean_name = sanitize_filename(filename)
@@ -266,13 +285,21 @@ async def upload(
         status = await users.get_quota_status(session, settings, user.id)
         if not status.can_upload:
             raise QuotaExceeded
+        global_remaining = await users.get_global_remaining(session, settings)
+        if global_remaining is not None and global_remaining <= 0:
+            raise StorageFull
 
         # Step 3: detect the type from the first bytes; stream the rest to blob storage.
         head, stream = await _with_head(chunks)
         content_type = choose_content_type(head, client_type)
         size = await store.upload_stream(
             blob_name,
-            _limited(stream, max_size=max_size, remaining=status.remaining),
+            _limited(
+                stream,
+                max_size=max_size,
+                remaining=status.remaining,
+                global_remaining=global_remaining,
+            ),
             content_type=content_type,
         )
         blob_stored = True
@@ -280,6 +307,7 @@ async def upload(
         # Step 4: one short transaction. The atomic quota UPDATE is the real check: a parallel
         # upload may have used the space meanwhile.
         async with session.begin():
+            await users.reserve_global(session, settings, size)
             await users.reserve_quota(session, settings, user.id, size)
             file = File(
                 owner_id=user.id,

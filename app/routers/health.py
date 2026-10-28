@@ -5,14 +5,19 @@ import logging
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
-from app.metrics import DEPENDENCY_UP
+from app.metrics import DEPENDENCY_UP, STORAGE_USED
 from app.routers.common import DbSession, Store
+from app.services import users
 
 logger = logging.getLogger("silo")
 
 DATABASE_TIMEOUT_SECONDS = 5
+# The stored-bytes gauge is telemetry: it may add at most this much to a readiness probe.
+# PostgreSQL enforces it (statement_timeout), so a slow sum is aborted by the server and the
+# connection stays usable; the asyncio timeout is only a backstop for a network that hangs.
+STORAGE_SUM_TIMEOUT_SECONDS = 1
 
 router = APIRouter(tags=["health"])
 
@@ -29,7 +34,9 @@ async def readyz(session: DbSession, store: Store) -> JSONResponse:
 
     Returns 200 ``{"status": "ok"}`` when both work, otherwise 503 ``{"status": "unavailable"}``.
     Both checks always run, so the log shows every failing dependency. The response body never
-    says which one failed: details go to the log only.
+    says which one failed: details go to the log only. When the database works, the total stored
+    bytes are also published as a gauge (for the "storage almost full" alert); a failure there
+    never changes the answer.
     """
     healthy = True
 
@@ -45,6 +52,7 @@ async def readyz(session: DbSession, store: Store) -> JSONResponse:
         DEPENDENCY_UP.labels("database").set(0)
     else:
         DEPENDENCY_UP.labels("database").set(1)
+        await _publish_storage_used(session)
 
     # Check 2: the configured blob container is reachable.
     try:
@@ -59,3 +67,19 @@ async def readyz(session: DbSession, store: Store) -> JSONResponse:
     if healthy:
         return JSONResponse({"status": "ok"})
     return JSONResponse({"status": "unavailable"}, status_code=503)
+
+
+async def _publish_storage_used(session: DbSession) -> None:
+    """Set ``silo_storage_used_bytes``; telemetry must never make the pod unready."""
+    try:
+        async with asyncio.timeout(2 * STORAGE_SUM_TIMEOUT_SECONDS):
+            # Transaction-local (is_local=True): it ends with the request's transaction, so no
+            # later query on this connection is limited. set_config takes the value as a
+            # parameter; SET LOCAL could not.
+            milliseconds = max(1, int(STORAGE_SUM_TIMEOUT_SECONDS * 1000))
+            await session.execute(
+                select(func.set_config("statement_timeout", str(milliseconds), True))
+            )
+            STORAGE_USED.set(await users.total_used_bytes(session))
+    except Exception as exc:
+        logger.warning("Could not read the total stored bytes (%s)", type(exc).__name__)

@@ -106,6 +106,18 @@ class QuotaExceeded(SiloError):
     detail = "Storage quota exceeded."
 
 
+class StorageFull(QuotaExceeded):
+    """The upload does not fit into the total storage of the service (STORAGE_TOTAL_MAX_BYTES).
+
+    A subclass of ``QuotaExceeded`` so the upload routes handle both the same way (drain the
+    body, show the message). The service, not the user, is out of room, hence 507.
+    """
+
+    status_code = 507  # RFC 4918 Insufficient Storage; 413 is kept for the user's own quota
+    code = "storage_full"
+    detail = "The service storage is full. Contact an admin."
+
+
 class FileTooLarge(SiloError):
     """The upload is larger than ``MAX_FILE_SIZE_BYTES``."""
 

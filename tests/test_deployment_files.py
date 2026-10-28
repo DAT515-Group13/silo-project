@@ -27,6 +27,28 @@ def test_env_example_is_a_valid_configuration(monkeypatch: pytest.MonkeyPatch) -
     assert settings.cookie_secure is False
 
 
+def test_env_example_lists_the_storage_limits_and_only_real_settings() -> None:
+    """The four storage limits are in the example, and no key in it is a typo.
+
+    `Settings` ignores unknown variables, so a misspelled QUOTA_USERS_BYTES would silently do
+    nothing; every key must be a field of `Settings` (or a compose-only variable).
+    """
+    keys = {
+        line.split("=", 1)[0]
+        for line in read(".env.dev.example").splitlines()
+        if "=" in line and not line.startswith("#")
+    }
+    assert {
+        "QUOTA_USER_BYTES",
+        "QUOTA_TEAM_LEAD_BYTES",
+        "QUOTA_ADMIN_BYTES",
+        "STORAGE_TOTAL_MAX_BYTES",
+    } <= keys
+    compose_only = {"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"}
+    unknown = {k for k in keys if k.lower() not in Settings.model_fields} - compose_only
+    assert not unknown
+
+
 def test_env_example_has_placeholders_only() -> None:
     """Every secret in the example is marked CHANGE (no real secrets in the repo)."""
     text = read(".env.dev.example")
