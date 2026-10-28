@@ -48,7 +48,7 @@
       <td>{{ target.status.value }}</td>
       <td>{{ target.used_bytes | filesizeformat(true) }}</td>
       <td>{{ item.file_count }}</td>
-      <td>{{ target.last_login_at.strftime("%Y-%m-%d %H:%M") ~ " UTC" if target.last_login_at else "-" }}</td>
+      <td>{{ target.last_login_at | utc_time if target.last_login_at else "-" }}</td>
       <td>
         {% if target.status.value == "pending" %}
         <form method="post" action="/admin/users/{{ target.id }}/approve" class="d-inline">

@@ -17,7 +17,7 @@
   <dt class="col-sm-3">Owner</dt><dd class="col-sm-9">{{ file.owner.username }}</dd>
   <dt class="col-sm-3">Type</dt><dd class="col-sm-9">{{ file.content_type }}</dd>
   <dt class="col-sm-3">Size</dt><dd class="col-sm-9">{{ file.size_bytes | filesizeformat(true) }}</dd>
-  <dt class="col-sm-3">Uploaded</dt><dd class="col-sm-9">{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</dd>
+  <dt class="col-sm-3">Uploaded</dt><dd class="col-sm-9">{{ file.created_at | utc_time }}</dd>
 </dl>
 
 <a class="btn btn-primary mb-4" href="/files/{{ file.id }}/download">Download</a>
@@ -79,8 +79,8 @@
   <tbody>
     {% for link in links %}
     <tr>
-      <td>{{ link.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
-      <td>{{ link.expires_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+      <td>{{ link.created_at | utc_time }}</td>
+      <td>{{ link.expires_at | utc_time }}</td>
       <td>
         {% if link.revoked_at %}<span class="badge text-bg-secondary">revoked</span>
         {% elif link.expires_at <= now %}<span class="badge text-bg-secondary">expired</span>

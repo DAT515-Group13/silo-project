@@ -4,7 +4,7 @@ Tests without the ``db`` marker never reach the database (no valid cookie is inv
 """
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -29,6 +29,7 @@ from app.routers.common import (
     CsrfChecked,
     PageUser,
     require_csrf,
+    utc_time,
     verify_origin,
 )
 from app.security import create_access_token, create_csrf_token
@@ -552,3 +553,14 @@ def test_origin_comparison_ignores_default_ports(base_url: str, sender: str, all
     else:
         with pytest.raises(CsrfFailed):
             check_origin(request, settings)
+
+
+def test_times_are_time_elements_that_forms_js_can_localize() -> None:
+    """Times are ``<time datetime=...>`` with the exact moment; the script finds them by attribute.
+
+    Only the element and its attribute are checked, not the text format.
+    """
+    html = str(utc_time(datetime(2026, 10, 28, 14, 30, tzinfo=UTC)))
+    assert html.startswith('<time datetime="2026-10-28T14:30:00+00:00" data-local>')
+    script = (TEMPLATES.parent / "static" / "forms.js").read_text()
+    assert "time[data-local]" in script and '"datetime"' in script

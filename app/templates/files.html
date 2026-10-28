@@ -61,7 +61,7 @@
       <td><a href="/files/{{ file.id }}">{{ file.filename }}</a></td>
       {% if tab == 'shared' %}<td>{{ file.owner.username }}</td>{% endif %}
       <td>{{ file.size_bytes | filesizeformat(true) }}</td>
-      <td>{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+      <td>{{ file.created_at | utc_time }}</td>
       <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="/files/{{ file.id }}/download">Download</a></td>
     </tr>
     {% endfor %}
