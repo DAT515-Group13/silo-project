@@ -54,12 +54,13 @@ from app.routers.common import (
 )
 from app.routers.multipart import MultipartReader, drain_refused_upload
 from app.schemas.files import NO_FILE_MESSAGE, FileRenameIn
-from app.schemas.links import LinkCreateIn
+from app.schemas.links import LinkCreateIn, LinkExpiryIn
 from app.services import files, links, teams, users
 
 router = APIRouter(include_in_schema=False)
 
 FILES_PER_PAGE = 20
+LINKS_PER_PAGE = 20
 # The CSRF token is about 70 characters; anything much longer in the first part is not one.
 MAX_CSRF_FIELD_BYTES = 256
 
@@ -447,3 +448,79 @@ async def revoke_link_submit(
     file = await links.revoke_link(session, user, link_id, ctx)
     default = f"/files/{file.id}" if file.owner_id == user.id else "/admin/files"
     return see_other(safe_next(next_url, default))
+
+
+# --- Overview of all own links -------------------------------------------------------------------
+
+
+async def _links_page(
+    request: Request,
+    session: DbSession,
+    settings: Settings,
+    user: CurrentUser,
+    *,
+    page: int = 1,
+    notice: str | None = None,
+    errors: list[str] | None = None,
+    status_code: int = 200,
+) -> Response:
+    """Render ``links.html``: every link of the user's files, one page."""
+    rows, total = await links.list_my_links(session, user, page=page, size=LINKS_PER_PAGE)
+    return render_page(
+        request,
+        settings,
+        user,
+        "links.html",
+        {
+            "rows": rows,
+            "now": datetime.now(UTC),
+            "max_link_hours": settings.public_link_max_hours,
+            "page": page,
+            "pages": max(1, -(-total // LINKS_PER_PAGE)),
+            "total": total,
+            "notice": notice,
+            "errors": errors or [],
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/links")
+@limit("read")
+async def links_page(
+    request: Request,
+    user: PageUser,
+    session: DbSession,
+    settings: SettingsDep,
+    page: PageNumber = 1,
+    updated: bool = False,
+) -> Response:
+    """All public links of the user's files, with a form to change the expiry of active ones."""
+    notice = "Expiry changed." if updated else None
+    return await _links_page(request, session, settings, user, page=page, notice=notice)
+
+
+@router.post("/links/{link_id}/expiry", dependencies=[CsrfChecked])
+@limit("write")
+async def change_expiry_submit(
+    request: Request,
+    link_id: IntId,
+    user: PageUser,
+    ctx: PageAuditCtx,
+    session: DbSession,
+    settings: SettingsDep,
+    expires_in_hours: Annotated[str, Form()] = "",
+) -> Response:
+    """Change the expiry of an active link; a bad value shows the overview with a message."""
+    try:
+        form = LinkExpiryIn.model_validate({"expires_in_hours": expires_in_hours})
+        await links.change_expiry(session, settings, user, link_id, form.expires_in_hours, ctx)
+    except ValidationError as exc:
+        return await _links_page(
+            request, session, settings, user, errors=validation_messages(exc), status_code=422
+        )
+    except ValidationFailed as exc:
+        return await _links_page(
+            request, session, settings, user, errors=_messages(exc), status_code=422
+        )
+    return see_other("/links?updated=1")

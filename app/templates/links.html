@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}My links{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">My public links</h1>
+{% if notice %}<div class="alert alert-success">{{ notice }}</div>{% endif %}
+{% if errors %}
+<div class="alert alert-danger">
+  <ul class="mb-0">{% for message in errors %}<li>{{ message }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+<p class="text-body-secondary">{{ total }} link(s). The URL of a link is shown only when it is created.</p>
+
+{% if rows %}
+<table class="table align-middle">
+  <thead><tr><th>File</th><th>Created</th><th>Expires</th><th>Status</th><th>Downloads</th><th></th></tr></thead>
+  <tbody>
+    {% for link, file in rows %}
+    <tr>
+      <td><a href="/files/{{ file.id }}">{{ file.filename }}</a></td>
+      <td>{{ link.created_at | utc_time }}</td>
+      <td>{{ link.expires_at | utc_time }}</td>
+      <td>
+        {% if link.revoked_at %}<span class="badge text-bg-secondary">revoked</span>
+        {% elif link.expires_at <= now %}<span class="badge text-bg-secondary">expired</span>
+        {% else %}<span class="badge text-bg-success">active</span>{% endif %}
+      </td>
+      <td>{{ link.download_count }}</td>
+      <td class="text-end">
+        {% if not link.revoked_at and link.expires_at > now %}
+        <form method="post" action="/links/{{ link.id }}/expiry" class="d-inline-flex gap-1">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input class="form-control form-control-sm w-auto" type="number" name="expires_in_hours"
+                 value="24" min="1" max="{{ max_link_hours }}" required
+                 aria-label="New lifetime in hours">
+          <button type="submit" class="btn btn-outline-primary btn-sm">Set expiry</button>
+        </form>
+        <form method="post" action="/links/{{ link.id }}/revoke" class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="next" value="/links">
+          <button type="submit" class="btn btn-outline-danger btn-sm">Revoke</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="text-body-secondary">You have no public links yet. Create one on the page of a file.</p>
+{% endif %}
+
+{% if pages > 1 %}
+<nav aria-label="Link pages">
+  <ul class="pagination">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page - 1 }}">Previous</a></li>{% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ pages }}</span></li>
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page + 1 }}">Next</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}
