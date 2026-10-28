@@ -47,6 +47,12 @@ spec:
               app.kubernetes.io/name: traefik
       ports:
         - { port: 8000, protocol: TCP }
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - { port: 9000, protocol: TCP }
   egress:
     - to:
         - podSelector:
