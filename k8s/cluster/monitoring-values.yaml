@@ -1,0 +1,27 @@
+prometheus:
+  prometheusSpec:
+    retention: 3d
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+      limits: { memory: 1Gi }
+
+grafana:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts: [grafana.152.94.171.92.nip.io]
+    tls:
+      - hosts: [grafana.152.94.171.92.nip.io]
+  livenessProbe:
+    initialDelaySeconds: 1200
+
+# Not reachable on Talos (bound to localhost on the control plane)
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeEtcd: { enabled: false }
+kubeProxy: { enabled: false }
+
+alertmanager:
+  enabled: false
