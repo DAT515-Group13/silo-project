@@ -38,6 +38,17 @@ async def test_readyz_ok_when_both_dependencies_work(
 
 
 @pytest.mark.anyio
+async def test_the_sum_is_limited_by_the_server_not_by_cancelling(
+    client: httpx.AsyncClient, healthy_database: FakeSession
+) -> None:
+    """PostgreSQL aborts a slow sum itself (transaction-local statement_timeout, set before the
+    sum), so the request's connection is never cancelled mid-query."""
+    assert (await client.get("/readyz")).status_code == 200
+    setting, total = healthy_database.statements[-2:]
+    assert "set_config" in setting and "sum(users.used_bytes)" in total
+
+
+@pytest.mark.anyio
 @pytest.mark.usefixtures("healthy_database")
 @pytest.mark.parametrize("problem", ["RuntimeError", "TimeoutError"])
 async def test_a_failing_sum_never_makes_the_pod_unready(

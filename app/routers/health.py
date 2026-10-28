@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
 from app.metrics import DEPENDENCY_UP, STORAGE_USED
 from app.routers.common import DbSession, Store
@@ -15,6 +15,8 @@ logger = logging.getLogger("silo")
 
 DATABASE_TIMEOUT_SECONDS = 5
 # The stored-bytes gauge is telemetry: it may add at most this much to a readiness probe.
+# PostgreSQL enforces it (statement_timeout), so a slow sum is aborted by the server and the
+# connection stays usable; the asyncio timeout is only a backstop for a network that hangs.
 STORAGE_SUM_TIMEOUT_SECONDS = 1
 
 router = APIRouter(tags=["health"])
@@ -70,7 +72,14 @@ async def readyz(session: DbSession, store: Store) -> JSONResponse:
 async def _publish_storage_used(session: DbSession) -> None:
     """Set ``silo_storage_used_bytes``; telemetry must never make the pod unready."""
     try:
-        async with asyncio.timeout(STORAGE_SUM_TIMEOUT_SECONDS):
+        async with asyncio.timeout(2 * STORAGE_SUM_TIMEOUT_SECONDS):
+            # Transaction-local (is_local=True): it ends with the request's transaction, so no
+            # later query on this connection is limited. set_config takes the value as a
+            # parameter; SET LOCAL could not.
+            milliseconds = max(1, int(STORAGE_SUM_TIMEOUT_SECONDS * 1000))
+            await session.execute(
+                select(func.set_config("statement_timeout", str(milliseconds), True))
+            )
             STORAGE_USED.set(await users.total_used_bytes(session))
     except Exception as exc:
         logger.warning("Could not read the total stored bytes (%s)", type(exc).__name__)
