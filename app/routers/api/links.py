@@ -10,8 +10,18 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.ratelimit import limit
-from app.routers.common import ApiUser, AuditCtx, DbSession, IntId, SettingsDep, link_url
-from app.schemas.links import LinkCreatedOut, LinkCreateIn, LinkOut
+from app.routers.common import (
+    ApiUser,
+    AuditCtx,
+    DbSession,
+    IntId,
+    PageNumber,
+    PageSize,
+    SettingsDep,
+    link_url,
+)
+from app.schemas.common import Page
+from app.schemas.links import LinkCreatedOut, LinkCreateIn, LinkOut, LinkUpdateIn, MyLinkOut
 from app.services import links
 
 router = APIRouter(prefix="/api/v1", tags=["links"])
@@ -61,6 +71,65 @@ async def list_links(
         )
         for link in await links.list_links(session, user, file_id)
     ]
+
+
+@router.get("/links", response_model=Page[MyLinkOut])
+@limit("read")
+async def list_my_links(
+    request: Request,
+    user: ApiUser,
+    session: DbSession,
+    status: links.LinkStatus = "active",
+    file_id: uuid.UUID | None = None,
+    page: PageNumber = 1,
+    size: PageSize = 20,
+) -> Page[MyLinkOut]:
+    """Links of my files, newest first, paginated; no tokens or URLs.
+
+    `?status=active|expired|revoked|all` (default `active`) and `?file_id=` narrow the list.
+    """
+    rows, total = await links.list_my_links(
+        session, user, status=status, file_id=file_id, page=page, size=size
+    )
+    items = [
+        MyLinkOut(
+            id=link.id,
+            expires_at=link.expires_at,
+            revoked_at=link.revoked_at,
+            download_count=link.download_count,
+            created_at=link.created_at,
+            file_id=file.id,
+            filename=file.filename,
+        )
+        for link, file in rows
+    ]
+    return Page[MyLinkOut](items=items, total=total, page=page, size=size)
+
+
+@router.patch("/links/{link_id}", response_model=LinkOut)
+@limit("write")
+async def change_link_expiry(
+    request: Request,
+    link_id: IntId,
+    body: LinkUpdateIn,
+    user: ApiUser,
+    ctx: AuditCtx,
+    session: DbSession,
+    settings: SettingsDep,
+) -> LinkOut:
+    """Set a new expiry (hours from now) on a link (owner only); an expired link is renewed.
+
+    Errors: 404 for no access or a revoked link, 409 `link_limit` when renewing would make 11
+    active links, 422 for a lifetime above `PUBLIC_LINK_MAX_HOURS`.
+    """
+    link = await links.change_expiry(session, settings, user, link_id, body.expires_in_hours, ctx)
+    return LinkOut(
+        id=link.id,
+        expires_at=link.expires_at,
+        revoked_at=link.revoked_at,
+        download_count=link.download_count,
+        created_at=link.created_at,
+    )
 
 
 @router.delete("/links/{link_id}", status_code=204)

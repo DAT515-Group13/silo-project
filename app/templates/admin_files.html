@@ -16,7 +16,7 @@
       <td>{{ file.owner.username }}</td>
       <td>{{ file.content_type }}</td>
       <td>{{ file.size_bytes | filesizeformat(true) }}</td>
-      <td>{{ file.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+      <td>{{ file.created_at | utc_time }}</td>
       <td class="text-end">
         {#- Admins may delete any file (section 6); "next" brings them back to this list. -#}
         <form method="post" action="/files/{{ file.id }}/delete">

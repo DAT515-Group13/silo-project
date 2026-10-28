@@ -4,6 +4,7 @@ The full link URL is shown only once, in ``LinkCreatedOut``; listings (``LinkOut
 neither the token nor the URL, because only a hash of the token is stored.
 """
 
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -36,3 +37,19 @@ class LinkOut(BaseModel):
     revoked_at: datetime | None = None
     download_count: int
     created_at: datetime
+
+
+class LinkUpdateIn(InputModel):
+    """Body of ``PATCH /links/{id}``: the new lifetime, counted from now.
+
+    The upper bound is ``PUBLIC_LINK_MAX_HOURS``, checked by the service.
+    """
+
+    expires_in_hours: int = Field(ge=1)
+
+
+class MyLinkOut(LinkOut):
+    """A link in the overview of all own links: ``LinkOut`` plus the file it belongs to."""
+
+    file_id: uuid.UUID
+    filename: str

@@ -28,8 +28,8 @@
         {% if row.id == user.session_id %}<span class="badge text-bg-primary">this session</span>{% endif %}
       </td>
       <td>{{ row.ip or "-" }}</td>
-      <td>{{ row.created_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
-      <td>{{ row.last_used_at.strftime("%Y-%m-%d %H:%M") }} UTC</td>
+      <td>{{ row.created_at | utc_time }}</td>
+      <td>{{ row.last_used_at | utc_time }}</td>
       <td class="text-end">
         <form method="post" action="/account/sessions/{{ row.id }}/revoke">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

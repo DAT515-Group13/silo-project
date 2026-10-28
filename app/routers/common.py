@@ -16,6 +16,7 @@ from fastapi import Path as PathParam
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +38,22 @@ from app.storage.base import BlobStore
 APP_DIR = Path(__file__).resolve().parent.parent
 # Jinja2 autoescaping is on for .html templates.
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+
+
+def utc_time(value: datetime) -> Markup:
+    """Render a moment as ``<time>``: UTC text for the server, local time through ``forms.js``.
+
+    The text is the fallback when JavaScript is off. ``datetime`` carries the exact moment, so
+    the script only changes how it is shown. Use it as ``{{ value | utc_time }}``. The audit page
+    does not use it: its filters are in UTC, so its times stay UTC too.
+    """
+    stamp = value.astimezone(UTC)
+    text = stamp.strftime("%Y-%m-%d %H:%M") + " UTC"
+    # Markup.format escapes both arguments; only the fixed tag is trusted.
+    return Markup('<time datetime="{}" data-local>{}</time>').format(stamp.isoformat(), text)  # noqa: S704
+
+
+templates.env.filters["utc_time"] = utc_time
 
 # CSRF tokens of the login and register forms are not tied to a session.
 PRE_SESSION_BINDING = "pre-session"

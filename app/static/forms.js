@@ -30,3 +30,16 @@ window.addEventListener("pageshow", () => {
     delete button.dataset.label;
   }
 });
+
+// Times are sent as UTC inside <time datetime>. Show them in the browser's time zone; the UTC
+// text stays as the tooltip. Without JavaScript the page keeps showing UTC.
+for (const element of document.querySelectorAll("time[data-local]")) {
+  const moment = new Date(element.getAttribute("datetime"));
+  if (Number.isNaN(moment.getTime())) continue;
+  element.title = element.textContent;
+  // The Swedish locale prints "2026-10-28 14:30", the same shape as the UTC text.
+  element.textContent = moment.toLocaleString("sv-SE", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    hourCycle: "h23",
+  });
+}
