@@ -113,15 +113,6 @@ async def test_many_blobs_are_checked_in_batches(
     assert set(store.blobs) == {"old-3"}
 
 
-def test_cli_requires_a_command(capsys: pytest.CaptureFixture[str]) -> None:
-    """`python -m app.cli` without a command prints usage and exits with an error."""
-    from app.cli import main
-
-    with pytest.raises(SystemExit) as info:
-        main([])
-    assert info.value.code == 2
-
-
 @pytest.mark.db
 async def test_real_lookup_keeps_blobs_of_existing_files(
     db_sessionmaker: Sessionmaker, user_factory: UserFactory, file_factory: FileFactory

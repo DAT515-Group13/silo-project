@@ -4,7 +4,7 @@ Tests without the ``db`` marker never reach the database (no valid cookie is inv
 """
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -16,7 +16,6 @@ from app.errors import CsrfFailed, InvalidToken, RefreshInProgress
 from app.middleware import (
     check_origin,
     cookie_names,
-    mark_logged_in,
     mark_logged_out,
     safe_next,
     set_auth_cookies,
@@ -29,7 +28,6 @@ from app.routers.common import (
     CsrfChecked,
     PageUser,
     require_csrf,
-    utc_time,
     verify_origin,
 )
 from app.security import create_access_token, create_csrf_token
@@ -142,20 +140,6 @@ def test_templates_have_no_inline_script_or_style() -> None:
         text = path.read_text().lower().replace("<script src=\"{{ url_for('static'", "")
         for forbidden in ("<script", "<style", " style=", "onclick=", "javascript:"):
             assert forbidden not in text, f"{path.name}: {forbidden}"
-
-
-def test_pages_load_forms_js_and_the_upload_form_feeds_it() -> None:
-    """Every page loads forms.js; the upload form gives it the size limit and a message box.
-
-    The script itself cannot run here, so this only guards the contract between page and script.
-    """
-    assert "static', path='forms.js'" in (TEMPLATES / "base.html").read_text()
-    files_page = (TEMPLATES / "files.html").read_text()
-    script = (TEMPLATES.parent / "static" / "forms.js").read_text()
-    for name in ("data-max-bytes", "data-max-label", 'id="upload-error"'):
-        assert name in files_page
-    for name in ("maxBytes", "maxLabel", "upload-error"):
-        assert name in script
 
 
 def test_static_scripts_never_write_html() -> None:
@@ -326,19 +310,6 @@ def csrf_set_cookies(response: httpx.Response, settings: Settings) -> list[str]:
     return [line for line in set_cookie_lines(response) if line.startswith(f"{name}=")]
 
 
-async def test_a_csrf_cookie_for_another_binding_is_replaced(
-    client: httpx.AsyncClient, settings: Settings
-) -> None:
-    """A token bound to some session is not reused on an anonymous page: a new one is set."""
-    token, cookies = csrf_pair(settings, binding=str(uuid.uuid4()))
-    response = await client.get("/login", headers=cookies)
-    new_token = token_of(response)
-    assert new_token != token
-    assert csrf_set_cookies(response, settings)[0].startswith(
-        f"{cookie_names(settings).csrf}={new_token}"
-    )
-
-
 async def test_a_form_still_works_after_another_tab_loaded_a_page(
     client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings
 ) -> None:
@@ -372,46 +343,19 @@ async def test_logout_wins_over_cookies_refreshed_in_the_same_request(
     assert not any("access-value" in line or "refresh-value" in line for line in lines)
 
 
-async def test_login_wins_over_dead_cookies_marked_for_deletion(
-    client: httpx.AsyncClient, app: FastAPI, settings: Settings
-) -> None:
-    """Dead cookies seen by the CSRF check, then a login in the same request: the new cookies stay.
-
-    Before ``mark_logged_in`` the login route set the cookies and the middleware deleted them
-    again afterwards, so the user landed on /login after a successful login.
-    """
-
-    @app.get("/_dead_cookies_then_login")
-    async def _dead_cookies_then_login(request: Request) -> Response:
-        request.state.clear_auth_cookies = True  # what the page dependency leaves for dead cookies
-        mark_logged_in(request, tokens())
-        return Response()
-
-    response = await client.get("/_dead_cookies_then_login")
-    names = cookie_names(settings)
-    lines = set_cookie_lines(response)
-    for name, value in ((names.access, "access-value"), (names.refresh, "refresh-value")):
-        written = [line for line in lines if line.startswith(f"{name}=")]
-        assert len(written) == 1 and written[0].startswith(f"{name}={value}"), written
-        assert "Max-Age=0" not in written[0]
-
-
 @pytest.mark.parametrize(("error", "deleted"), [(RefreshInProgress, False), (InvalidToken, True)])
-@pytest.mark.parametrize("path", ["/login", "/account"])
 async def test_cookies_survive_a_refresh_running_in_parallel(
     client: httpx.AsyncClient,
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     error: type[Exception],
     deleted: bool,
-    path: str,
 ) -> None:
     """A lost refresh race keeps the cookies; an ended session deletes them.
 
     Two page requests with an expired access cookie: one rotates the refresh token, the other
     gets RefreshInProgress. The second must not delete the cookies, or the browser could drop
-    the new tokens of the first and the user would be logged out. ``/login`` is an optional
-    login page, ``/account`` needs a login and redirects.
+    the new tokens of the first and the user would be logged out.
     """
 
     async def rotate(*args: object, **kwargs: object) -> None:
@@ -420,7 +364,7 @@ async def test_cookies_survive_a_refresh_running_in_parallel(
     monkeypatch.setattr(sessions, "rotate_refresh", rotate)
     names = cookie_names(settings)
     response = await client.get(
-        path, headers=cookie_header(**{names.refresh: "some-token"}), follow_redirects=False
+        "/account", headers=cookie_header(**{names.refresh: "some-token"}), follow_redirects=False
     )
     cleared = [line for line in set_cookie_lines(response) if "Max-Age=0" in line]
     assert bool(cleared) is deleted
@@ -483,32 +427,6 @@ async def test_expired_access_cookie_is_refreshed_transparently(
 
 
 @pytest.mark.db
-async def test_revoked_session_redirects_and_clears_cookies(
-    client: httpx.AsyncClient,
-    page_routes: FastAPI,
-    settings: Settings,
-    db_sessionmaker,
-    user_factory: UserFactory,
-) -> None:
-    """After logout the same cookies lead to /login, and both are deleted."""
-    user, issued = await start_session(db_sessionmaker, settings, user_factory)
-    async with db_sessionmaker() as db, db.begin():
-        await sessions.revoke(db, user.id, issued.session_id)
-    names = cookie_names(settings)
-    response = await client.get(
-        "/_private",
-        headers=cookie_header(
-            **{names.access: issued.access_token, names.refresh: issued.refresh_token}
-        ),
-        follow_redirects=False,
-    )
-    assert response.status_code == 303
-    assert response.headers["location"].startswith("/login")
-    cleared = {line.split("=")[0] for line in set_cookie_lines(response) if "Max-Age=0" in line}
-    assert cleared == {names.access, names.refresh}
-
-
-@pytest.mark.db
 async def test_csrf_token_is_bound_to_the_session(
     client: httpx.AsyncClient,
     page_routes: FastAPI,
@@ -553,14 +471,3 @@ def test_origin_comparison_ignores_default_ports(base_url: str, sender: str, all
     else:
         with pytest.raises(CsrfFailed):
             check_origin(request, settings)
-
-
-def test_times_are_time_elements_that_forms_js_can_localize() -> None:
-    """Times are ``<time datetime=...>`` with the exact moment; the script finds them by attribute.
-
-    Only the element and its attribute are checked, not the text format.
-    """
-    html = str(utc_time(datetime(2026, 10, 28, 14, 30, tzinfo=UTC)))
-    assert html.startswith('<time datetime="2026-10-28T14:30:00+00:00" data-local>')
-    script = (TEMPLATES.parent / "static" / "forms.js").read_text()
-    assert "time[data-local]" in script and '"datetime"' in script

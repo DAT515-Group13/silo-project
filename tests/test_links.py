@@ -21,17 +21,21 @@ from app.main import RedactLinkTokens
 from app.models import AuditLog, Role, ShareLink, User, UserStatus
 from app.schemas.links import LinkCreateIn, LinkUpdateIn
 from app.security import hash_token
-from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory, sample
+from tests.conftest import (
+    PUBLIC_HEADERS,
+    ActAs,
+    BearerFor,
+    FileFactory,
+    Sessionmaker,
+    UserFactory,
+    assert_same_404,
+    make_link,
+    open_link,
+    sample,
+)
 from tests.fakes import InMemoryBlobStore, parse_download_url
 
 pytestmark = pytest.mark.anyio
-
-PUBLIC_HEADERS = {
-    "referrer-policy": "no-referrer",
-    "cache-control": "no-store",
-    "x-robots-tag": "noindex",
-}
-
 
 # --- No database needed --------------------------------------------------------------------------
 
@@ -47,14 +51,21 @@ def test_link_hours_must_be_positive() -> None:
         LinkUpdateIn(expires_in_hours=0)
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("POST", f"/api/v1/files/{uuid.uuid4()}/links"), ("PATCH", "/api/v1/links/1")],
+    ids=["create", "change"],
+)
 async def test_lifetime_above_the_maximum_is_422(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
+    client: httpx.AsyncClient, act_as: ActAs, settings: Settings, method: str, path: str
 ) -> None:
-    """More than PUBLIC_LINK_MAX_HOURS is refused before the database is touched."""
+    """More than PUBLIC_LINK_MAX_HOURS is refused, when creating and when changing a link.
+
+    The check comes before the database is touched.
+    """
     act_as(Role.user)
-    response = await client.post(
-        f"/api/v1/files/{uuid.uuid4()}/links",
-        json={"expires_in_hours": settings.public_link_max_hours + 1},
+    response = await client.request(
+        method, path, json={"expires_in_hours": settings.public_link_max_hours + 1}
     )
     assert response.status_code == 422
     assert response.json()["errors"][0]["field"] == "expires_in_hours"
@@ -94,32 +105,21 @@ def test_access_log_hides_the_link_token() -> None:
     assert "/files/abc" in other.getMessage()
 
 
+async def test_rate_limited_public_link_keeps_the_privacy_headers(
+    client: httpx.AsyncClient,
+) -> None:
+    """The 429 page of /s/{token} also keeps the token out of referrers and caches."""
+    for _ in range(30):
+        assert (await client.get("/s/short")).status_code == 404
+    response = await client.get("/s/short")
+    assert response.status_code == 429
+    for name, value in PUBLIC_HEADERS.items():
+        assert response.headers[name] == value
+
+
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 db = pytest.mark.db
-
-
-async def make_link(
-    client: httpx.AsyncClient, headers: dict, file_id: object, hours: int = 24
-) -> tuple[int, str]:
-    """Create a link through the API; returns its ID and the token from the URL."""
-    response = await client.post(
-        f"/api/v1/files/{file_id}/links", json={"expires_in_hours": hours}, headers=headers
-    )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert body["url"].startswith("http://testserver/s/")
-    return body["id"], body["url"].rsplit("/", 1)[-1]
-
-
-async def open_link(client: httpx.AsyncClient, token: str) -> httpx.Response:
-    return await client.get(f"/s/{token}", follow_redirects=False)
-
-
-def assert_same_404(response: httpx.Response) -> None:
-    assert response.status_code == 404
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
 
 
 @db
@@ -393,15 +393,3 @@ async def test_the_token_never_reaches_logs_or_audit(
     assert {"link.create", "link.download", "link.revoke"} <= {row.action for row in rows}
     for row in rows:
         assert token not in f"{row.target_id} {row.target_label} {row.details}"
-
-
-async def test_rate_limited_public_link_keeps_the_privacy_headers(
-    client: httpx.AsyncClient,
-) -> None:
-    """The 429 page of /s/{token} also keeps the token out of referrers and caches."""
-    for _ in range(30):
-        assert (await client.get("/s/short")).status_code == 404
-    response = await client.get("/s/short")
-    assert response.status_code == 429
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value

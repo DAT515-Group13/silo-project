@@ -1,8 +1,8 @@
 """Overview of all own links and changing the expiry of a link (D30).
 
-The first test needs no database. The ``db`` tests check the rules: only the owner sees and
-changes links, the lifetime counts from now and is audited, an expired link can be renewed within
-the limit of 10 active links, and a revoked link stays revoked.
+The ``db`` tests check the rules: only the owner sees and changes links, the lifetime counts
+from now and is audited, an expired link can be renewed within the limit of 10 active links,
+and a revoked link stays revoked. The maximum lifetime is tested in ``test_links.py``.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -11,33 +11,20 @@ import httpx
 import pytest
 from sqlalchemy import select, update
 
-from app.config import Settings
 from app.models import AuditLog, Role, ShareLink
 from tests.conftest import (
-    ActAs,
     BearerFor,
     FileFactory,
     PageLogin,
     Sessionmaker,
     UserFactory,
+    make_link,
+    open_link,
     post,
 )
-from tests.test_links import make_link, open_link
 
 pytestmark = pytest.mark.anyio
 db = pytest.mark.db
-
-
-async def test_expiry_above_the_maximum_is_422(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
-) -> None:
-    """More than PUBLIC_LINK_MAX_HOURS is refused before the database is touched."""
-    act_as(Role.user)
-    response = await client.patch(
-        "/api/v1/links/1", json={"expires_in_hours": settings.public_link_max_hours + 1}
-    )
-    assert response.status_code == 422
-    assert response.json()["errors"][0]["field"] == "expires_in_hours"
 
 
 async def expire(db_sessionmaker: Sessionmaker, link_id: int) -> None:

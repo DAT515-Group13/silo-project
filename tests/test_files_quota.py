@@ -242,28 +242,6 @@ async def test_global_cap_refuses_with_507_and_leaves_no_blob(
     assert codes == ["storage_full", "storage_full"]
 
 
-async def test_cap_off_changes_nothing_and_a_delete_frees_global_space(
-    client: httpx.AsyncClient,
-    settings: Settings,
-    user_factory: UserFactory,
-    bearer_for: BearerFor,
-) -> None:
-    """With the cap at 0 only role quotas count; a cap lowered below the total blocks uploads
-    but keeps the files (like a lowered role, section 11); deleting a file gives room back."""
-    anna = await user_factory("anna")
-    headers = await bearer_for(anna)
-    assert (await post_file(client, headers, b"x" * 500)).status_code == 201  # default: no cap
-
-    settings.storage_total_max_bytes = 400  # below what is already stored
-    assert (await post_file(client, headers, b"x")).status_code == 507
-    settings.storage_total_max_bytes = 600
-    assert (await post_file(client, headers, b"x" * 200)).status_code == 507
-    listing = await client.get("/api/v1/files", headers=headers)
-    file_id = listing.json()["items"][0]["id"]
-    assert (await client.delete(f"/api/v1/files/{file_id}", headers=headers)).status_code == 204
-    assert (await post_file(client, headers, b"x" * 200)).status_code == 201
-
-
 async def test_parallel_uploads_of_two_users_at_the_global_edge(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

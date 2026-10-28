@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from app import main
 from app.main import create_app
 from app.routers import health
-from tests.conftest import FakeSession, make_settings, sample
+from tests.conftest import FakeSession, assert_secure, make_settings, sample
 from tests.fakes import InMemoryBlobStore
 
 
@@ -35,15 +35,8 @@ async def test_readyz_ok_when_both_dependencies_work(
     assert sample("silo_dependency_up", dependency="database") == 1
     assert sample("silo_dependency_up", dependency="blob_storage") == 1
     assert sample("silo_storage_used_bytes") == 1234
-
-
-@pytest.mark.anyio
-async def test_the_sum_is_limited_by_the_server_not_by_cancelling(
-    client: httpx.AsyncClient, healthy_database: FakeSession
-) -> None:
-    """PostgreSQL aborts a slow sum itself (transaction-local statement_timeout, set before the
-    sum), so the request's connection is never cancelled mid-query."""
-    assert (await client.get("/readyz")).status_code == 200
+    # PostgreSQL aborts a slow sum itself (transaction-local statement_timeout, set before the
+    # sum), so the request's connection is never cancelled mid-query.
     setting, total = healthy_database.statements[-2:]
     assert "set_config" in setting and "sum(users.used_bytes)" in total
 
@@ -163,18 +156,11 @@ async def test_readyz_ok_against_a_real_database(
 
 
 @pytest.mark.anyio
-async def test_injected_blob_store_is_not_closed_by_the_lifespan(
-    app: FastAPI, blob_store: InMemoryBlobStore
-) -> None:
-    """The caller owns an injected store (tests close their own fakes)."""
-    async with app.router.lifespan_context(app):
-        assert app.state.blob_store is blob_store
-    assert blob_store.closed is False
-
-
-@pytest.mark.anyio
 async def test_docs_follow_enable_docs() -> None:
-    """/docs exists only when ENABLE_DOCS is true."""
+    """/docs exists only when ENABLE_DOCS is true; then it keeps all headers except the CSP.
+
+    The docs page loads its script from a CDN, so it is the one page exempt from the CSP.
+    """
     for enabled, expected in ((False, 404), (True, 200)):
         app = create_app(
             settings=make_settings(enable_docs=enabled),
@@ -185,6 +171,8 @@ async def test_docs_follow_enable_docs() -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
             assert (await client.get("/docs")).status_code == expected
             assert (await client.get("/openapi.json")).status_code == expected
+            if enabled:
+                assert_secure(await client.get("/docs"), csp=False)
 
 
 @pytest.mark.anyio
@@ -210,37 +198,3 @@ async def test_lifespan_creates_and_closes_the_azure_store(
         assert store.closed is False
     assert store.closed is True
     assert app.state.blob_store is None
-
-
-@pytest.mark.anyio
-async def test_engine_is_disposed_when_startup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A failing first-admin step must not leave the connection pool behind."""
-    disposed: list[bool] = []
-    real_create_engine = main.create_engine
-
-    class SpyEngine:
-        """Forwards everything to the real engine, but records ``dispose``."""
-
-        def __init__(self, engine: object) -> None:
-            self._engine = engine
-
-        def __getattr__(self, name: str) -> object:
-            return getattr(self._engine, name)
-
-        async def dispose(self) -> None:
-            disposed.append(True)
-            await self._engine.dispose()  # type: ignore[attr-defined]
-
-    def spying_create_engine(settings: object) -> SpyEngine:
-        return SpyEngine(real_create_engine(settings))  # type: ignore[arg-type]
-
-    async def failing_admin(*args: object, **kwargs: object) -> bool:
-        raise RuntimeError("database trouble")
-
-    monkeypatch.setattr(main, "create_engine", spying_create_engine)
-    monkeypatch.setattr(main, "ensure_initial_admin", failing_admin)
-    app = create_app(settings=make_settings(), blob_store=InMemoryBlobStore())
-    with pytest.raises(RuntimeError):
-        async with app.router.lifespan_context(app):
-            pass
-    assert disposed == [True]

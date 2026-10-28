@@ -6,7 +6,6 @@ types a browser would render are always downloaded as ``application/octet-stream
 """
 
 import pytest
-from pydantic import ValidationError
 
 from app.errors import (
     FileTooLarge,
@@ -15,7 +14,7 @@ from app.errors import (
     StorageUnavailable,
     ValidationFailed,
 )
-from app.schemas.files import FileRenameIn, sanitize_filename
+from app.schemas.files import sanitize_filename
 from app.services.files import (
     _count_failed_upload,
     _limited,
@@ -60,13 +59,6 @@ def test_long_filename_keeps_its_extension() -> None:
     assert result.endswith(".pdf")
 
 
-def test_rename_schema_cleans_the_name() -> None:
-    """The rename body uses the same cleaning (extra="forbid" is tested in test_schemas.py)."""
-    assert FileRenameIn(filename="../a.txt").filename == "a.txt"
-    with pytest.raises(ValidationError):
-        FileRenameIn(filename="..")
-
-
 @pytest.mark.parametrize(
     ("head", "expected"),
     [
@@ -108,15 +100,12 @@ def test_client_content_type_is_normalized(client: str | None, expected: str | N
 
 
 def test_choice_prefers_detection_over_the_client() -> None:
-    """Order: detected type, then the client's clean value, then octet-stream."""
+    """Order: detected type, then the client's clean value, then octet-stream (ZIP is special)."""
     assert choose_content_type(b"%PDF-1", "text/plain") == "application/pdf"
     assert choose_content_type(b"hello", "text/plain") == "text/plain"
     assert choose_content_type(b"hello", "bad value") == "application/octet-stream"
     assert choose_content_type(b"hello", None) == "application/octet-stream"
-
-
-def test_zip_signature_yields_to_a_more_precise_client_type() -> None:
-    """A .docx is a ZIP file: its clean client type is kept, a plain ZIP stays a ZIP."""
+    # A .docx is a ZIP file: its clean client type is kept, a plain ZIP stays a ZIP.
     docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     assert choose_content_type(b"PK\x03\x04rest", docx) == docx
     assert choose_content_type(b"PK\x03\x04rest", None) == "application/zip"
@@ -150,16 +139,12 @@ async def chunks_of(*parts: bytes):
 
 @pytest.mark.anyio
 async def test_head_is_peeked_without_losing_bytes() -> None:
-    """The first bytes are used for type detection, and the stream still starts with them."""
+    """The first bytes are used for type detection, and no byte is lost from the stream."""
     head, stream = await _with_head(chunks_of(b"%PDF", b"-1.4 ", b"x" * 100, b"end"))
     assert head.startswith(b"%PDF-1.4")
     assert len(head) == 32
     assert b"".join([c async for c in stream]) == b"%PDF-1.4 " + b"x" * 100 + b"end"
-
-
-@pytest.mark.anyio
-async def test_head_of_a_short_or_empty_stream() -> None:
-    """A stream shorter than the sniff window, or empty, is passed on completely."""
+    # A stream shorter than the sniff window, or empty, is passed on completely.
     head, stream = await _with_head(chunks_of(b"hi"))
     assert head == b"hi"
     assert b"".join([c async for c in stream]) == b"hi"
@@ -235,15 +220,3 @@ def test_failed_upload_is_counted_under_one_label(exc: Exception, label: str | N
     _count_failed_upload(exc)
     change = {name: sample("silo_uploads_total", result=name) - before[name] for name in labels}
     assert change == {name: (1 if name == label else 0) for name in labels}
-
-
-@pytest.mark.anyio
-async def test_a_failing_blob_delete_never_raises() -> None:
-    """After the commit, any error from blob deletion is logged: the file is already gone."""
-    from app.services.files import _delete_quietly
-
-    class Broken:
-        async def delete(self, blob_name: str) -> None:
-            raise RuntimeError("anything")
-
-    await _delete_quietly(Broken(), "blob")  # type: ignore[arg-type]

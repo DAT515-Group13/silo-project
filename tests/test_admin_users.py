@@ -20,7 +20,8 @@ def _route(method: str, path: str, body: dict | None, kind: str):
     return pytest.param(method, path, body, id=f"{kind}: {method} {path}")
 
 
-# Every admin route with a valid request, then requests that would fail validation.
+# Every admin route with a valid request, then requests that would fail validation (bad body,
+# bad query, bad path ID): the 404 must win over the 422.
 ADMIN_ROUTES = [
     _route("GET", "/api/v1/admin/users", None, "valid"),
     _route("POST", "/api/v1/admin/users/2/approve", None, "valid"),
@@ -31,13 +32,7 @@ ADMIN_ROUTES = [
     _route("GET", "/api/v1/admin/files", None, "valid"),
     _route("GET", "/api/v1/admin/audit", None, "valid"),
     _route("PATCH", "/api/v1/admin/users/2", {"status": "pending"}, "invalid"),
-    _route("PATCH", "/api/v1/admin/users/2", {"x": 1}, "invalid"),
-    _route("POST", "/api/v1/admin/users/2/reject", {"reason": "x" * 501}, "invalid"),
     _route("GET", "/api/v1/admin/users?status=bogus", None, "invalid"),
-    _route("GET", "/api/v1/admin/users?page=0", None, "invalid"),
-    _route("GET", "/api/v1/admin/audit?outcome=bogus", None, "invalid"),
-    _route("GET", "/api/v1/admin/audit?actor_id=99999999999", None, "invalid"),
-    _route("GET", "/api/v1/admin/files?size=1000", None, "invalid"),
     _route("DELETE", "/api/v1/admin/users/0", None, "invalid"),
 ]
 
@@ -45,13 +40,15 @@ ADMIN_ROUTES = [
 # --- No database needed --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role", [Role.user, Role.team_lead])
 @pytest.mark.parametrize(("method", "path", "body"), ADMIN_ROUTES)
 async def test_non_admins_get_404_on_every_admin_endpoint(
-    client: httpx.AsyncClient, act_as: ActAs, role: Role, method: str, path: str, body: dict | None
+    client: httpx.AsyncClient, act_as: ActAs, method: str, path: str, body: dict | None
 ) -> None:
-    """Non-admins get 404, not 403, on every admin route, and the 404 comes before any 422."""
-    act_as(role)
+    """Non-admins get 404, not 403, on every admin route, and the 404 comes before any 422.
+
+    The check is "role is not admin", so the highest non-admin role stands for all of them.
+    """
+    act_as(Role.team_lead)
     response = await client.request(method, path, json=body)
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"

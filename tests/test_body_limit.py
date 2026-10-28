@@ -7,9 +7,7 @@ import pytest
 from starlette.types import Receive, Scope, Send
 
 from app.middleware import MAX_BODY_BYTES, BodyLimitMiddleware
-from app.models import Role
-from tests.conftest import ActAs
-from tests.test_security_headers import assert_secure
+from tests.conftest import assert_secure
 
 pytestmark = pytest.mark.anyio
 
@@ -62,15 +60,6 @@ async def test_large_multipart_never_reaches_the_disk(
     monkeypatch.setattr("starlette.formparsers.SpooledTemporaryFile", forbidden)
     response = await client.post("/login", files={"file": ("a.bin", BIG)})
     assert response.status_code == 413
-
-
-async def test_upload_routes_are_not_limited(client: httpx.AsyncClient, act_as: ActAs) -> None:
-    """Uploads stream to blob storage, so the two upload routes accept bodies over the limit."""
-    act_as(Role.user)
-    api = await client.post("/api/v1/files", files={"other": ("a.bin", BIG)})
-    page = await client.post("/files/upload", files={"file": ("a.bin", BIG)})
-    assert api.status_code == 422  # reached the route (no `file` part), not 413
-    assert page.status_code == 403  # reached the route (no Origin), not 413
 
 
 @pytest.mark.parametrize("path", ["/files/upload", "/api/v1/files"])

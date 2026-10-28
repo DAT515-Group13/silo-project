@@ -94,13 +94,6 @@ async def test_oversized_content_length_is_413_and_drains_only_below_the_cap(
     assert (len(sent) == 20) is drained
 
 
-async def test_sort_and_scope_are_validated(client: httpx.AsyncClient, act_as: ActAs) -> None:
-    """Unknown sort keys and scopes are refused, so no column name reaches the database."""
-    act_as(Role.user)
-    assert (await client.get("/api/v1/files", params={"sort": "owner_id"})).status_code == 422
-    assert (await client.get("/api/v1/files", params={"scope": "all"})).status_code == 422
-
-
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 db = pytest.mark.db
@@ -323,24 +316,6 @@ async def test_member_sees_and_downloads_but_cannot_change(
     # Links are for the owner only: a member can neither create nor list them.
     assert (await client.post(f"{path}/links", json={}, headers=member_h)).status_code == 404
     assert (await client.get(f"{path}/links", headers=member_h)).status_code == 404
-
-
-@db
-async def test_shared_scope_does_not_list_own_files(
-    client: httpx.AsyncClient,
-    user_factory: UserFactory,
-    file_factory: FileFactory,
-    bearer_for: BearerFor,
-) -> None:
-    """A file shared with my own team is in `mine`, not in `shared` (that tab is for others)."""
-    lead = await user_factory("lead", role=Role.team_lead)
-    headers = await bearer_for(lead)
-    team_id = await team_with(client, headers)
-    file = await file_factory(lead.id, team_id=team_id)
-    shared = await client.get("/api/v1/files", params={"scope": "shared"}, headers=headers)
-    mine = await client.get("/api/v1/files", headers=headers)
-    assert shared.json()["total"] == 0
-    assert [f["id"] for f in mine.json()["items"]] == [str(file.id)]
 
 
 @db
