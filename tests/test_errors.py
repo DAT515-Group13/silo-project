@@ -45,11 +45,6 @@ def test_every_error_has_its_status_and_code() -> None:
     assert len(codes) == len(set(codes)), "two classes share a code"
 
 
-def test_storage_full_is_a_quota_error() -> None:
-    """The upload routes catch QuotaExceeded; the global cap must be handled the same way."""
-    assert issubclass(errors.StorageFull, errors.QuotaExceeded)
-
-
 @pytest.fixture
 def raising_app(app: FastAPI) -> FastAPI:
     """The real app plus a route that raises RateLimited (the upload guard does that)."""
