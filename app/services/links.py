@@ -12,8 +12,9 @@ The token and the URL are never written to the audit log or to any other log.
 import re
 import uuid
 from datetime import timedelta
+from typing import Literal
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, func, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -43,6 +44,23 @@ def _active() -> ColumnElement[bool]:
     return ShareLink.revoked_at.is_(None) & (ShareLink.expires_at > func.now())
 
 
+def _check_hours(settings: Settings, hours: int) -> None:
+    """Refuse a link lifetime above ``PUBLIC_LINK_MAX_HOURS`` (the schema checks ``>= 1``).
+
+    Raises:
+        ValidationFailed: ``hours`` is too large.
+    """
+    if hours > settings.public_link_max_hours:
+        raise ValidationFailed(
+            [
+                {
+                    "field": "expires_in_hours",
+                    "message": f"Must be at most {settings.public_link_max_hours} hours.",
+                }
+            ]
+        )
+
+
 async def create_link(
     session: AsyncSession,
     settings: Settings,
@@ -62,15 +80,7 @@ async def create_link(
 
     Side effects: one ``share_links`` row (hash only) and an audit entry ``link.create``.
     """
-    if hours > settings.public_link_max_hours:
-        raise ValidationFailed(
-            [
-                {
-                    "field": "expires_in_hours",
-                    "message": f"Must be at most {settings.public_link_max_hours} hours.",
-                }
-            ]
-        )
+    _check_hours(settings, hours)
     token = generate_refresh_token()
     async with session.begin():
         # Locking the file serializes parallel creates for it, so two requests cannot both
@@ -133,20 +143,43 @@ async def list_links(
         return list(result)
 
 
-async def list_my_links(
-    session: AsyncSession, user: CurrentUser, *, page: int, size: int
-) -> tuple[list[tuple[ShareLink, File]], int]:
-    """All links of the user's own files, newest first, with their file; one page and the total.
+LinkStatus = Literal["active", "expired", "revoked", "all"]
 
-    Includes expired and revoked links, like ``list_links``.
+
+def _status_filter(status: LinkStatus) -> ColumnElement[bool]:
+    """SQL condition for one status of a link; revoked wins over expired."""
+    if status == "active":
+        return _active()
+    if status == "revoked":
+        return ShareLink.revoked_at.is_not(None)
+    if status == "expired":
+        return ShareLink.revoked_at.is_(None) & (ShareLink.expires_at <= func.now())
+    return true()
+
+
+async def list_my_links(
+    session: AsyncSession,
+    user: CurrentUser,
+    *,
+    status: LinkStatus = "active",
+    file_id: uuid.UUID | None = None,
+    page: int,
+    size: int,
+) -> tuple[list[tuple[ShareLink, File]], int]:
+    """Links of the user's own files, newest first, with their file; one page and the total.
+
+    ``status`` filters by state (``all`` includes expired and revoked links); ``file_id`` limits
+    the list to one file. Only the user's own files are ever listed, also for an admin.
     """
     statement = (
         select(ShareLink, File)
         .join(File, File.id == ShareLink.file_id)
-        .where(File.owner_id == user.id)
+        .where(File.owner_id == user.id, _status_filter(status))
         .order_by(ShareLink.created_at.desc(), ShareLink.id.desc())
         .execution_options(populate_existing=True)
     )
+    if file_id is not None:
+        statement = statement.where(ShareLink.file_id == file_id)
     async with session.begin():
         rows, total = await fetch_page(session, statement, page=page, size=size)
     return [(row[0], row[1]) for row in rows], total
@@ -160,59 +193,72 @@ async def change_expiry(
     hours: int,
     ctx: AuditContext,
 ) -> ShareLink:
-    """Set a new expiry, ``hours`` from now, on an active link (file owner only).
+    """Set a new expiry, ``hours`` from now, on a link (file owner only).
 
-    Only an active link can change. An expired or revoked link stays as history, so the limit
-    of 10 active links per file cannot be passed this way: create a new link instead.
+    An expired link is renewed: the same URL works again, so it counts towards the limit of 10
+    active links again. A revoked link stays revoked (revoking is final).
 
     Raises:
-        ValidationFailed: ``hours`` is above ``PUBLIC_LINK_MAX_HOURS``, or the link is expired
-            or revoked.
-        NotFound: no such link, or the user is not the owner of its file.
+        ValidationFailed: ``hours`` is above ``PUBLIC_LINK_MAX_HOURS``.
+        NotFound: no such link, the link is revoked, or the user is not the owner of its file.
+        LinkLimit: renewing would make 11 active links on the file.
 
-    Side effect: audit entry ``link.expiry_change``.
+    Side effect: audit entry ``link.update`` with the old and the new expiry (never the token).
     """
-    if hours > settings.public_link_max_hours:
-        raise ValidationFailed(
-            [
-                {
-                    "field": "expires_in_hours",
-                    "message": f"Must be at most {settings.public_link_max_hours} hours.",
-                }
-            ]
-        )
+    _check_hours(settings, hours)
     async with session.begin():
-        row = (
-            await session.execute(
-                select(File)
-                .join(ShareLink, ShareLink.file_id == File.id)
-                .where(ShareLink.id == link_id)
-            )
-        ).scalar_one_or_none()
-        if row is None or not can_modify_file(user, row):
+        file_id = await session.scalar(select(ShareLink.file_id).where(ShareLink.id == link_id))
+        if file_id is None:
             raise NotFound
-        # The condition keeps the "active" check and the change in one statement.
+        # The same lock as create_link: the count and the change cannot interleave with another
+        # create or renewal on this file. Downloads of a link do not take it.
+        file = await session.scalar(
+            select(File)
+            .where(File.id == file_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if file is None or not can_modify_file(user, file):
+            raise NotFound
+        old = await session.scalar(
+            select(ShareLink)
+            .where(ShareLink.id == link_id)
+            .execution_options(populate_existing=True)
+        )
+        if old is None or old.revoked_at is not None:
+            raise NotFound
+        old_expires_at = old.expires_at
+        others = await session.scalar(
+            select(func.count())
+            .select_from(ShareLink)
+            .where(ShareLink.file_id == file_id, ShareLink.id != link_id, _active())
+        )
+        if (others or 0) >= MAX_ACTIVE_LINKS:
+            raise LinkLimit
+        # revoked_at is checked again, so a revoke that slips in cannot be undone by this change.
         link = (
             await session.execute(
                 update(ShareLink)
-                .where(ShareLink.id == link_id, _active())
+                .where(ShareLink.id == link_id, ShareLink.revoked_at.is_(None))
                 .values(expires_at=func.now() + timedelta(hours=hours))
                 .returning(ShareLink)
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if link is None:
-            raise ValidationFailed(
-                [{"field": "link", "message": "Only an active link can be changed."}]
-            )
+            raise NotFound
         await audit.record(
             session,
             ctx,
-            AuditAction.link_expiry_change,
+            AuditAction.link_update,
             target_type="link",
             target_id=link_id,
-            target_label=row.filename,
-            details={"file_id": str(row.id), "expires_at": link.expires_at.isoformat()},
+            target_label=file.filename,
+            details={
+                "file_id": str(file_id),
+                "old_expires_at": old_expires_at.isoformat(),
+                "new_expires_at": link.expires_at.isoformat(),
+            },
         )
         return link
 

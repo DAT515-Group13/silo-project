@@ -88,20 +88,27 @@
       </td>
       <td>{{ link.download_count }}</td>
       <td class="text-end">
-        {% if not link.revoked_at and link.expires_at > now %}
-        <form method="post" action="/links/{{ link.id }}/revoke">
+        <form method="post" action="/links/{{ link.id }}/expiry" class="d-inline-flex gap-1">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="next" value="/files/{{ file.id }}">
+          <input class="form-control form-control-sm w-auto" type="number" name="expires_in_hours"
+                 value="24" min="1" max="{{ max_link_hours }}" required
+                 aria-label="New lifetime in hours">
+          <button type="submit" class="btn btn-outline-primary btn-sm">Set expiry</button>
+        </form>
+        <form method="post" action="/links/{{ link.id }}/revoke" class="d-inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-outline-danger btn-sm">Revoke</button>
         </form>
-        {% endif %}
       </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
 {% else %}
-<p class="text-body-secondary">No public links yet.</p>
+<p class="text-body-secondary">No active public links.</p>
 {% endif %}
+<p><a href="/links?file={{ file.id }}&status=all">Show link history</a></p>
 <form method="post" action="/files/{{ file.id }}/links" class="row g-2 mb-4">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="col-sm-4">

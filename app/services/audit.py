@@ -34,7 +34,7 @@ class AuditAction(enum.StrEnum):
     file_unshare = "file.unshare"
     link_create = "link.create"
     link_revoke = "link.revoke"
-    link_expiry_change = "link.expiry_change"
+    link_update = "link.update"
     link_download = "link.download"
     team_create = "team.create"
     team_delete = "team.delete"

@@ -14,7 +14,7 @@ SPEC_ACTIONS = {
     "file.upload",
     "file.download", "file.rename", "file.delete", "file.share", "file.unshare",
     "link.create", "link.revoke",
-    "link.expiry_change", "link.download", "team.create", "team.delete",
+    "link.update", "link.download", "team.create", "team.delete",
     "team.member_add", "team.member_remove", "user.approve", "user.reject",
     "user.role_change", "user.deactivate", "user.activate", "user.sessions_revoke",
     "user.delete", "storage.orphan_cleanup",

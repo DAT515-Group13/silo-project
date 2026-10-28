@@ -19,7 +19,7 @@ from sqlalchemy import select, update
 from app.config import Settings
 from app.main import RedactLinkTokens
 from app.models import AuditLog, Role, ShareLink, User, UserStatus
-from app.schemas.links import LinkCreateIn
+from app.schemas.links import LinkCreateIn, LinkUpdateIn
 from app.security import hash_token
 from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory, sample
 from tests.fakes import InMemoryBlobStore, parse_download_url
@@ -37,10 +37,14 @@ PUBLIC_HEADERS = {
 
 
 def test_link_hours_must_be_positive() -> None:
-    """Link lifetime defaults to 24 hours and must be at least 1."""
+    """Creating defaults to 24 hours, changing has no default; both need at least 1 hour."""
     assert LinkCreateIn().expires_in_hours == 24
     with pytest.raises(ValidationError):
         LinkCreateIn(expires_in_hours=0)
+    with pytest.raises(ValidationError):
+        LinkUpdateIn()  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        LinkUpdateIn(expires_in_hours=0)
 
 
 async def test_lifetime_above_the_maximum_is_422(

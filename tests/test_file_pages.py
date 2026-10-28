@@ -318,5 +318,6 @@ async def test_who_revokes_a_link_and_where_they_land(
         revoked_at = await session.scalar(select(ShareLink.revoked_at))
     assert (revoked_at is not None) is (status == 303)
     if actor == "owner":
-        page = await client.get(f"/files/{file.id}", headers=owner_login[0])
-        assert "revoked" in page.text
+        # The file page lists active links only; the history is on /links.
+        page = await client.get(f"/links?file={file.id}&status=revoked", headers=owner_login[0])
+        assert ">revoked</span>" in page.text

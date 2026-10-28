@@ -21,7 +21,7 @@ from app.routers.common import (
     link_url,
 )
 from app.schemas.common import Page
-from app.schemas.links import LinkCreatedOut, LinkCreateIn, LinkExpiryIn, LinkOut, MyLinkOut
+from app.schemas.links import LinkCreatedOut, LinkCreateIn, LinkOut, LinkUpdateIn, MyLinkOut
 from app.services import links
 
 router = APIRouter(prefix="/api/v1", tags=["links"])
@@ -79,11 +79,18 @@ async def list_my_links(
     request: Request,
     user: ApiUser,
     session: DbSession,
+    status: links.LinkStatus = "active",
+    file_id: uuid.UUID | None = None,
     page: PageNumber = 1,
     size: PageSize = 20,
 ) -> Page[MyLinkOut]:
-    """All links of my files, newest first, paginated; no tokens or URLs."""
-    rows, total = await links.list_my_links(session, user, page=page, size=size)
+    """Links of my files, newest first, paginated; no tokens or URLs.
+
+    `?status=active|expired|revoked|all` (default `active`) and `?file_id=` narrow the list.
+    """
+    rows, total = await links.list_my_links(
+        session, user, status=status, file_id=file_id, page=page, size=size
+    )
     items = [
         MyLinkOut(
             id=link.id,
@@ -104,16 +111,16 @@ async def list_my_links(
 async def change_link_expiry(
     request: Request,
     link_id: IntId,
-    body: LinkExpiryIn,
+    body: LinkUpdateIn,
     user: ApiUser,
     ctx: AuditCtx,
     session: DbSession,
     settings: SettingsDep,
 ) -> LinkOut:
-    """Set a new expiry (hours from now) on an active link (owner only).
+    """Set a new expiry (hours from now) on a link (owner only); an expired link is renewed.
 
-    Errors: 404 for no access, 422 for a lifetime above `PUBLIC_LINK_MAX_HOURS` or for a link
-    that is expired or revoked.
+    Errors: 404 for no access or a revoked link, 409 `link_limit` when renewing would make 11
+    active links, 422 for a lifetime above `PUBLIC_LINK_MAX_HOURS`.
     """
     link = await links.change_expiry(session, settings, user, link_id, body.expires_in_hours, ctx)
     return LinkOut(

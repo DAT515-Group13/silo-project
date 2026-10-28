@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}My links{% endblock %}
 {% block content %}
+{#- The current view, so revoke, renew and paging keep the filters. -#}
+{% set here = "/links?status=" ~ status ~ ("&file=" ~ file_id if file_id else "") %}
 <h1 class="h3 mb-3">My public links</h1>
 {% if notice %}<div class="alert alert-success">{{ notice }}</div>{% endif %}
 {% if errors %}
@@ -8,7 +10,18 @@
   <ul class="mb-0">{% for message in errors %}<li>{{ message }}</li>{% endfor %}</ul>
 </div>
 {% endif %}
-<p class="text-body-secondary">{{ total }} link(s). The URL of a link is shown only when it is created.</p>
+<ul class="nav nav-pills mb-3">
+  {% for name in statuses %}
+  <li class="nav-item">
+    <a class="nav-link {% if name == status %}active{% endif %}"
+       href="?status={{ name }}{% if file_id %}&file={{ file_id }}{% endif %}">{{ name | capitalize }}</a>
+  </li>
+  {% endfor %}
+</ul>
+<p class="text-body-secondary">
+  {{ total }} link(s){% if file_id %} of one file (<a href="?status={{ status }}">show all files</a>){% endif %}.
+  The URL of a link is shown only when it is created.
+</p>
 
 {% if rows %}
 <table class="table align-middle">
@@ -26,17 +39,22 @@
       </td>
       <td>{{ link.download_count }}</td>
       <td class="text-end">
-        {% if not link.revoked_at and link.expires_at > now %}
+        {% if not link.revoked_at %}
+        {% set expired = link.expires_at <= now %}
         <form method="post" action="/links/{{ link.id }}/expiry" class="d-inline-flex gap-1">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="next" value="{{ here }}&updated=1">
           <input class="form-control form-control-sm w-auto" type="number" name="expires_in_hours"
                  value="24" min="1" max="{{ max_link_hours }}" required
                  aria-label="New lifetime in hours">
-          <button type="submit" class="btn btn-outline-primary btn-sm">Set expiry</button>
+          <button type="submit" class="btn btn-outline-primary btn-sm">{{ "Renew" if expired else "Set expiry" }}</button>
         </form>
+        {% if expired %}
+        <div class="small text-body-secondary">Renewing makes the same URL work again: anyone who still has it can download.</div>
+        {% endif %}
         <form method="post" action="/links/{{ link.id }}/revoke" class="d-inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="next" value="/links">
+          <input type="hidden" name="next" value="{{ here }}">
           <button type="submit" class="btn btn-outline-danger btn-sm">Revoke</button>
         </form>
         {% endif %}
@@ -46,15 +64,15 @@
   </tbody>
 </table>
 {% else %}
-<p class="text-body-secondary">You have no public links yet. Create one on the page of a file.</p>
+<p class="text-body-secondary">No {% if status != "all" %}{{ status }} {% endif %}links. Create one on the page of a file.</p>
 {% endif %}
 
 {% if pages > 1 %}
 <nav aria-label="Link pages">
   <ul class="pagination">
-    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page - 1 }}">Previous</a></li>{% endif %}
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="{{ here }}&page={{ page - 1 }}">Previous</a></li>{% endif %}
     <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ pages }}</span></li>
-    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page + 1 }}">Next</a></li>{% endif %}
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="{{ here }}&page={{ page + 1 }}">Next</a></li>{% endif %}
   </ul>
 </nav>
 {% endif %}

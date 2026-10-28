@@ -15,7 +15,7 @@ to blob storage.
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, get_args
 
 from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import RedirectResponse
@@ -54,7 +54,7 @@ from app.routers.common import (
 )
 from app.routers.multipart import MultipartReader, drain_refused_upload
 from app.schemas.files import NO_FILE_MESSAGE, FileRenameIn
-from app.schemas.links import LinkCreateIn, LinkExpiryIn
+from app.schemas.links import LinkCreateIn, LinkUpdateIn
 from app.services import files, links, teams, users
 
 router = APIRouter(include_in_schema=False)
@@ -245,7 +245,13 @@ async def _file_page(
     share_choices: list = []
     file_links: list = []
     if is_owner:
-        file_links = await links.list_links(session, user, file_id)
+        now = datetime.now(UTC)
+        # Only active links here; the history is on /links?file=<id>&status=all.
+        file_links = [
+            link
+            for link in await links.list_links(session, user, file_id)
+            if link.revoked_at is None and link.expires_at > now
+        ]
         shared_with = await files.list_file_teams(session, user, file_id)
         already = {team.id for team in shared_with}
         # Only teams the owner belongs to can be chosen (section 11).
@@ -459,13 +465,17 @@ async def _links_page(
     settings: Settings,
     user: CurrentUser,
     *,
+    status: links.LinkStatus = "active",
+    file_id: uuid.UUID | None = None,
     page: int = 1,
     notice: str | None = None,
     errors: list[str] | None = None,
     status_code: int = 200,
 ) -> Response:
-    """Render ``links.html``: every link of the user's files, one page."""
-    rows, total = await links.list_my_links(session, user, page=page, size=LINKS_PER_PAGE)
+    """Render ``links.html``: links of the user's files, one status and one page."""
+    rows, total = await links.list_my_links(
+        session, user, status=status, file_id=file_id, page=page, size=LINKS_PER_PAGE
+    )
     return render_page(
         request,
         settings,
@@ -475,6 +485,9 @@ async def _links_page(
             "rows": rows,
             "now": datetime.now(UTC),
             "max_link_hours": settings.public_link_max_hours,
+            "status": status,
+            "statuses": get_args(links.LinkStatus),
+            "file_id": file_id,
             "page": page,
             "pages": max(1, -(-total // LINKS_PER_PAGE)),
             "total": total,
@@ -492,12 +505,16 @@ async def links_page(
     user: PageUser,
     session: DbSession,
     settings: SettingsDep,
+    status: links.LinkStatus = "active",
+    file: uuid.UUID | None = None,
     page: PageNumber = 1,
     updated: bool = False,
 ) -> Response:
-    """All public links of the user's files, with a form to change the expiry of active ones."""
+    """Links of the user's files by status, with a form to change the expiry of each."""
     notice = "Expiry changed." if updated else None
-    return await _links_page(request, session, settings, user, page=page, notice=notice)
+    return await _links_page(
+        request, session, settings, user, status=status, file_id=file, page=page, notice=notice
+    )
 
 
 @router.post("/links/{link_id}/expiry", dependencies=[CsrfChecked])
@@ -510,10 +527,14 @@ async def change_expiry_submit(
     session: DbSession,
     settings: SettingsDep,
     expires_in_hours: Annotated[str, Form()] = "",
+    next_url: Annotated[str, Form(alias="next")] = "",
 ) -> Response:
-    """Change the expiry of an active link; a bad value shows the overview with a message."""
+    """Change the expiry of a link; a bad value shows the overview with a message.
+
+    ``next`` lets the file page return to itself; the default is the overview.
+    """
     try:
-        form = LinkExpiryIn.model_validate({"expires_in_hours": expires_in_hours})
+        form = LinkUpdateIn.model_validate({"expires_in_hours": expires_in_hours})
         await links.change_expiry(session, settings, user, link_id, form.expires_in_hours, ctx)
     except ValidationError as exc:
         return await _links_page(
@@ -523,4 +544,8 @@ async def change_expiry_submit(
         return await _links_page(
             request, session, settings, user, errors=_messages(exc), status_code=422
         )
-    return see_other("/links?updated=1")
+    except LinkLimit as exc:
+        return await _links_page(
+            request, session, settings, user, errors=[exc.detail], status_code=409
+        )
+    return see_other(safe_next(next_url, "/links?updated=1"))

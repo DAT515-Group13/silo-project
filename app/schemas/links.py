@@ -39,7 +39,7 @@ class LinkOut(BaseModel):
     created_at: datetime
 
 
-class LinkExpiryIn(InputModel):
+class LinkUpdateIn(InputModel):
     """Body of ``PATCH /links/{id}``: the new lifetime, counted from now.
 
     The upper bound is ``PUBLIC_LINK_MAX_HOURS``, checked by the service.

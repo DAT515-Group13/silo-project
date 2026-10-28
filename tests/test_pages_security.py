@@ -88,7 +88,7 @@ async def test_page_errors_are_html_and_api_errors_are_json(client: httpx.AsyncC
     assert api.json() == {"detail": "Not Found", "code": "not_found"}
 
 
-@pytest.mark.parametrize("path", ["/_private", "/account", "/teams", "/files"])
+@pytest.mark.parametrize("path", ["/_private", "/account", "/teams", "/files", "/links"])
 async def test_unauthenticated_page_redirects_to_login_with_next(
     client: httpx.AsyncClient, page_routes: FastAPI, path: str
 ) -> None:
