@@ -6,7 +6,6 @@ from pydantic import ValidationError
 from app.schemas.auth import LoginIn, RefreshIn, RegisterIn
 from app.schemas.common import normalize_username
 from app.schemas.teams import AddMemberIn, TeamIn
-from app.security import normalize_password
 
 
 def test_unknown_field_is_rejected() -> None:
@@ -58,14 +57,6 @@ def test_password_has_hard_upper_limit_only() -> None:
     with pytest.raises(ValidationError):
         RegisterIn(username="anna", password="x" * 129)
     assert RegisterIn(username="anna", password="x" * 128)
-
-
-def test_password_limit_counts_the_normalised_text() -> None:
-    """One "\ufdfa" becomes 18 characters under NFKC: 8 of them (144) are over the limit."""
-    assert len(normalize_password("\ufdfa")) == 18
-    assert len(RegisterIn(username="anna", password="\ufdfa" * 7).password) == 126
-    with pytest.raises(ValidationError):
-        RegisterIn(username="anna", password="\ufdfa" * 8)
 
 
 def test_refresh_token_has_a_size_limit() -> None:

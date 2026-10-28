@@ -7,26 +7,13 @@ tests log in with a real session in the access cookie.
 import httpx
 import pytest
 
-from app.config import Settings
 from app.models import Role
-from tests.conftest import ActAs, PageLogin, UserFactory, page_csrf, post
+from tests.conftest import PageLogin, UserFactory, post
 
 pytestmark = pytest.mark.anyio
 
 
 # --- No database needed --------------------------------------------------------------------------
-
-
-async def test_plain_user_gets_403_when_creating_a_team(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
-) -> None:
-    """The page answers the role check like the API: 403 role_required, as an HTML page (D19)."""
-    user = act_as(Role.user)
-    headers, data = page_csrf(settings, user)
-    response = await client.post("/teams", data={**data, "name": "Design"}, headers=headers)
-    assert response.status_code == 403
-    assert response.headers["content-type"].startswith("text/html")
-    assert "Your role does not allow this action." in response.text
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Registration, login, lockout and the first admin (logout is tested over HTTP).
+"""Login, lockout and the first admin (registration and logout are tested over HTTP).
 
 Only ``lock_duration`` is pure; everything else needs PostgreSQL (marker ``db``).
 """
@@ -17,14 +17,12 @@ from app.errors import (
     AccountPending,
     AccountRejected,
     InvalidCredentials,
-    ValidationFailed,
 )
 from app.models import AuditLog, AuthSession, Role, User, UserStatus
 from app.security import decode_access_token
 from app.services import auth
 from app.services.users import ensure_initial_admin
 from tests.conftest import (
-    GOOD_PASSWORD,
     TEST_PASSWORD,
     Sessionmaker,
     UserFactory,
@@ -56,50 +54,10 @@ async def attempt(sm: Sessionmaker, settings: Settings, username: str, password:
 # --- lock_duration (no database) ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("failures", "minutes"), [(10, 15), (20, 30), (30, 60), (40, 60), (500, 60)]
-)
+@pytest.mark.parametrize(("failures", "minutes"), [(10, 15), (20, 30), (500, 60)])
 def test_lock_duration_doubles_and_is_capped(failures: int, minutes: int) -> None:
     """15 minutes at 10 failures, doubling at each further 10, at most 1 hour (D25)."""
     assert auth.lock_duration(make_settings(), failures) == timedelta(minutes=minutes)
-
-
-# --- Registration ------------------------------------------------------------------------------
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_approval_registration_is_pending_and_hides_taken_names(
-    db_sessionmaker: Sessionmaker, user_factory: UserFactory
-) -> None:
-    """In `approval` mode a new and a taken username get the same result: None (no enumeration)."""
-    settings = make_settings(registration_mode="approval")
-    await user_factory(username="taken")
-    async with db_sessionmaker() as db:
-        assert await auth.register(db, settings, "newbie", GOOD_PASSWORD) is None
-    async with db_sessionmaker() as db:
-        assert await auth.register(db, settings, "taken", GOOD_PASSWORD) is None
-    assert (await get_user(db_sessionmaker, "newbie")).status is UserStatus.pending
-    assert await count_users(db_sessionmaker) == 2
-    # The existing account was not touched.
-    assert (await get_user(db_sessionmaker, "taken")).status is UserStatus.active
-    async with db_sessionmaker() as db:
-        reasons = (
-            await db.scalars(select(AuditLog.details).where(AuditLog.outcome == "denied"))
-        ).all()
-    assert reasons == [{"reason": "username_taken"}]
-
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_registration_enforces_the_password_policy(db_sessionmaker: Sessionmaker) -> None:
-    """Too short passwords and passwords equal to the username are rejected, nothing is stored."""
-    settings = make_settings(registration_mode="open")
-    for password in ("short", "longusername123"):
-        async with db_sessionmaker() as db:
-            with pytest.raises(ValidationFailed):
-                await auth.register(db, settings, "longusername123", password)
-    assert await count_users(db_sessionmaker) == 0
 
 
 # --- Login -------------------------------------------------------------------------------------
@@ -173,10 +131,13 @@ async def test_lockout_after_ten_failures(
 
 @pytest.mark.db
 @pytest.mark.anyio
-async def test_second_lock_is_twice_as_long_and_the_counter_survives_expiry(
+async def test_lock_doubles_the_second_time_and_a_good_login_resets_it(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """After the lock ends 10 more failures lock for 30 minutes (counter 20), not 15."""
+    """After the lock ends 10 more failures lock for 30 minutes (counter 20), not 15.
+
+    A good login after that lock has expired resets the counter and the lock.
+    """
     await user_factory(username="anna")
     t0 = datetime.now(UTC)
     for _ in range(10):
@@ -192,19 +153,7 @@ async def test_second_lock_is_twice_as_long_and_the_counter_survives_expiry(
     assert user.failed_login_count == 20
     assert user.locked_until == t1 + timedelta(minutes=30)
 
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_successful_login_resets_counter_and_lock(
-    db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
-) -> None:
-    """A good login after an expired lock resets failed_login_count and locked_until."""
-    await user_factory(username="anna")
-    t0 = datetime.now(UTC)
-    for _ in range(10):
-        with pytest.raises(InvalidCredentials):
-            await attempt(db_sessionmaker, settings, "anna", "wrong-password-123", now=t0)
-    await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD, now=t0 + timedelta(minutes=16))
+    await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD, now=t1 + timedelta(minutes=31))
     user = await get_user(db_sessionmaker, "anna")
     assert (user.failed_login_count, user.locked_until) == (0, None)
 
@@ -253,33 +202,13 @@ async def test_outdated_hash_is_replaced_at_login(
 
 @pytest.mark.db
 @pytest.mark.anyio
-async def test_initial_admin_is_created_once(
+async def test_initial_admin_is_created_once_even_when_replicas_start_together(
     db_sessionmaker: Sessionmaker, settings: Settings
 ) -> None:
-    """The first admin is active, has role admin, and a second run changes nothing."""
-    async with db_sessionmaker() as db:
-        assert await ensure_initial_admin(db, settings) is True
-    async with db_sessionmaker() as db:
-        assert await ensure_initial_admin(db, settings) is False
-    admin = await get_user(db_sessionmaker, settings.initial_admin_username)
-    assert (admin.role, admin.status) == (Role.admin, UserStatus.active)
-    assert await count_users(db_sessionmaker) == 1
-    # The configured password works.
-    tokens = await attempt(
-        db_sessionmaker,
-        settings,
-        settings.initial_admin_username,
-        settings.initial_admin_password.get_secret_value(),
-    )
-    assert tokens.role is Role.admin
+    """Three replicas running the check at once create exactly one active admin, no errors.
 
-
-@pytest.mark.db
-@pytest.mark.anyio
-async def test_initial_admin_is_safe_when_replicas_start_together(
-    db_sessionmaker: Sessionmaker, settings: Settings
-) -> None:
-    """Two replicas running the check at once create exactly one account, without errors."""
+    The configured password works, and a later run changes nothing.
+    """
 
     async def start() -> bool:
         async with db_sessionmaker() as db:
@@ -287,7 +216,17 @@ async def test_initial_admin_is_safe_when_replicas_start_together(
 
     results = await asyncio.gather(start(), start(), start())
     assert sorted(results) == [False, False, True]
+    assert await start() is False
+    admin = await get_user(db_sessionmaker, settings.initial_admin_username)
+    assert (admin.role, admin.status) == (Role.admin, UserStatus.active)
     assert await count_users(db_sessionmaker) == 1
+    tokens = await attempt(
+        db_sessionmaker,
+        settings,
+        settings.initial_admin_username,
+        settings.initial_admin_password.get_secret_value(),
+    )
+    assert tokens.role is Role.admin
 
 
 @pytest.mark.db

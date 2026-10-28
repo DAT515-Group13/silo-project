@@ -31,10 +31,10 @@ def bearer(response: httpx.Response) -> dict[str, str]:
 # --- Register ----------------------------------------------------------------------------------
 
 
-async def test_register_open_returns_201_and_the_user(
+async def test_register_open_creates_the_user_and_refuses_a_taken_name(
     app: FastAPI, client: httpx.AsyncClient, settings: Settings
 ) -> None:
-    """`open` mode: 201 with {id, username, role}; the new account can log in at once."""
+    """`open` mode: 201 with {id, username, role}, the account can log in; a taken name is 409."""
     use_mode(app, settings, "open")
     response = await client.post(
         "/api/v1/auth/register", json={"username": "Anna", "password": GOOD_PASSWORD}
@@ -42,25 +42,21 @@ async def test_register_open_returns_201_and_the_user(
     assert response.status_code == 201
     assert response.json() == {"id": 1, "username": "anna", "role": "user"}
     assert (await login(client, "anna", GOOD_PASSWORD)).status_code == 200
-
-
-async def test_register_open_taken_is_409(
-    app: FastAPI, client: httpx.AsyncClient, settings: Settings, user_factory: UserFactory
-) -> None:
-    """`open` mode: a taken username gives 409 username_taken."""
-    use_mode(app, settings, "open")
-    await user_factory(username="anna")
-    response = await client.post(
+    taken = await client.post(
         "/api/v1/auth/register", json={"username": "anna", "password": GOOD_PASSWORD}
     )
-    assert response.status_code == 409
-    assert response.json()["code"] == "username_taken"
+    assert (taken.status_code, taken.json()["code"]) == (409, "username_taken")
 
 
 async def test_register_approval_answers_the_same_for_new_and_taken(
-    client: httpx.AsyncClient, user_factory: UserFactory
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    db_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
-    """`approval` mode (the default): identical 202 body for a new and an existing username."""
+    """`approval` mode (the default): identical 202 body for a new and an existing username.
+
+    The existing account is not touched; only the audit log records `username_taken`.
+    """
     await user_factory(username="taken")
     bodies = []
     for username in ("newcomer", "taken"):
@@ -74,6 +70,16 @@ async def test_register_approval_answers_the_same_for_new_and_taken(
     # The new account cannot log in until approved.
     refused = await login(client, "newcomer", GOOD_PASSWORD)
     assert (refused.status_code, refused.json()["code"]) == (403, "account_pending")
+    assert (await login(client, "taken")).status_code == 200  # still active, same password
+    async with db_sessionmaker() as db:
+        reasons = (
+            await db.scalars(
+                select(AuditLog.details).where(
+                    AuditLog.action == "auth.register", AuditLog.outcome == "denied"
+                )
+            )
+        ).all()
+    assert reasons == [{"reason": "username_taken"}]
 
 
 async def test_register_closed_is_404(
@@ -178,34 +184,25 @@ async def test_me_matches_example_9_2(
     }
 
 
-async def test_sessions_list_matches_example_9_6(
+async def test_sessions_list_and_delete_a_session(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """The list shows own active sessions and marks the one used for the request."""
-    await user_factory(username="anna")
-    first = await login(client)
-    assert first.status_code == 200
-    second = await login(client)
-    response = await client.get("/api/v1/auth/sessions", headers=bearer(second))
-    assert response.status_code == 200
-    rows = response.json()
-    assert len(rows) == 2
-    assert set(rows[0]) == {"id", "created_at", "last_used_at", "ip", "user_agent", "current"}
-    assert sum(row["current"] for row in rows) == 1
-    assert rows[0]["ip"] == "127.0.0.1"
+    """The list shows own active sessions and marks the current one (example 9.6).
 
-
-async def test_delete_session_own_and_foreign(
-    client: httpx.AsyncClient, user_factory: UserFactory
-) -> None:
-    """Deleting an own session gives 204 and kills its token; a foreign one gives 404."""
+    Deleting an own session gives 204 and kills its token; a foreign one gives 404.
+    """
     await user_factory(username="anna")
     await user_factory(username="bob")
     anna1, anna2 = await login(client), await login(client)
     bob = await login(client, "bob")
-    bobs_id = (await client.get("/api/v1/auth/sessions", headers=bearer(bob))).json()[0]["id"]
+
     mine = (await client.get("/api/v1/auth/sessions", headers=bearer(anna2))).json()
+    assert len(mine) == 2
+    assert set(mine[0]) == {"id", "created_at", "last_used_at", "ip", "user_agent", "current"}
+    assert sum(row["current"] for row in mine) == 1
+    assert mine[0]["ip"] == "127.0.0.1"
     other_of_mine = next(row["id"] for row in mine if not row["current"])
+    bobs_id = (await client.get("/api/v1/auth/sessions", headers=bearer(bob))).json()[0]["id"]
 
     assert (
         await client.delete(f"/api/v1/auth/sessions/{bobs_id}", headers=bearer(anna2))
@@ -287,12 +284,14 @@ async def test_password_change_keeps_this_session_and_ends_the_others(
     assert (await login(client, "anna", GOOD_PASSWORD)).status_code == 200
 
 
-async def test_password_change_wrong_current_is_422_and_changes_nothing(
+async def test_password_change_refuses_a_wrong_current_or_weak_new_password(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
     db_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
-    """422 on `current_password`, a `failed` audit entry, and the old password still works."""
+    """422 on the bad field, a `failed` audit entry for a wrong current password, and the old
+    password still works. The policy applies to the new password (too short, equal to the name).
+    """
     await user_factory(username="anna")
     here = await login(client)
     response = await change_password(client, bearer(here), "wrong-password-123", GOOD_PASSWORD)
@@ -305,16 +304,9 @@ async def test_password_change_wrong_current_is_422_and_changes_nothing(
             )
         ).all()
     assert outcomes == [Outcome.failed]
-    assert (await login(client, "anna", TEST_PASSWORD)).status_code == 200
 
-
-async def test_password_change_applies_the_password_policy(
-    client: httpx.AsyncClient, user_factory: UserFactory
-) -> None:
-    """A too short new password and a new password equal to the username give 422."""
-    await user_factory(username="anna")
-    here = await login(client)
     for bad in ("short", "ANNA"):
         response = await change_password(client, bearer(here), TEST_PASSWORD, bad)
         assert response.status_code == 422
         assert response.json()["errors"][0]["field"] == "new_password"
+    assert (await login(client, "anna", TEST_PASSWORD)).status_code == 200

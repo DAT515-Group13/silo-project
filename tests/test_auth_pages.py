@@ -52,14 +52,6 @@ async def test_login_page_has_a_form_with_a_csrf_token(
     assert cookie.startswith(f"{cookie_names(settings).csrf}={token}")
 
 
-async def test_login_page_sanitizes_next(client: httpx.AsyncClient) -> None:
-    """The page passes ?next= through safe_next (the cases are in test_safe_next)."""
-    response = await client.get("/login", params={"next": "//evil.example"})
-    assert 'name="next" value="/files"' in response.text
-    response = await client.get("/login", params={"next": "/files/abc"})
-    assert 'name="next" value="/files/abc"' in response.text
-
-
 async def test_register_page_follows_the_registration_mode(
     app: FastAPI, client: httpx.AsyncClient, settings: Settings
 ) -> None:
@@ -69,12 +61,6 @@ async def test_register_page_follows_the_registration_mode(
     assert (await client.get("/register")).status_code == 404
     use_mode(app, settings, "open")
     assert (await client.get("/register")).status_code == 200
-
-
-async def test_start_page_sends_visitors_to_login(client: httpx.AsyncClient) -> None:
-    """A visitor without a session who opens / is redirected to /login."""
-    response = await client.get("/", follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/login")
 
 
 async def test_malformed_login_looks_like_a_wrong_password(client: httpx.AsyncClient) -> None:

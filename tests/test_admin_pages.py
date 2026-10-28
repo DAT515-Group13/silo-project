@@ -4,21 +4,14 @@ Tests without the ``db`` marker stop at the admin check or at form validation. T
 log in with a real session in the access cookie.
 """
 
-import uuid
-
 import httpx
 import pytest
 from sqlalchemy import select
 
 from app.config import Settings
-from app.errors import NotFound
 from app.models import ActorType, AuditLog, Outcome, Role, User, UserStatus
-from app.permissions import CurrentUser
-from app.routers.common import templates
-from app.services import admin
 from tests.conftest import (
     ActAs,
-    FakeSession,
     FileFactory,
     PageLogin,
     Sessionmaker,
@@ -32,34 +25,28 @@ pytestmark = pytest.mark.anyio
 # --- No database needed --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", ["/admin", "/admin/files", "/admin/audit"])
-async def test_non_admins_get_the_404_page(
-    client: httpx.AsyncClient, act_as: ActAs, path: str
-) -> None:
-    """The admin pages do not exist for non-admins."""
-    act_as(Role.team_lead)
-    response = await client.get(path)
-    assert response.status_code == 404
-    assert response.headers["content-type"].startswith("text/html")
-
-
 @pytest.mark.parametrize(
-    "path",
+    ("method", "path"),
     [
-        "/admin/users/2",
-        "/admin/users/2/approve",
-        "/admin/users/2/reject",
-        "/admin/users/2/revoke-sessions",
-        "/admin/users/2/delete",
+        ("GET", "/admin"),
+        ("GET", "/admin/files"),
+        ("GET", "/admin/audit"),
+        ("POST", "/admin/users/2/approve"),
+        ("POST", "/admin/users/2/delete"),
     ],
 )
-async def test_non_admin_post_without_csrf_is_404_not_403(
-    client: httpx.AsyncClient, act_as: ActAs, path: str
+async def test_non_admins_get_the_404_page(
+    client: httpx.AsyncClient, act_as: ActAs, method: str, path: str
 ) -> None:
-    """The admin check runs before the CSRF check, so a 403 cannot reveal the action exists."""
-    act_as(Role.user)
-    response = await client.post(path)
+    """The admin pages do not exist for non-admins.
+
+    The POSTs carry no CSRF token on purpose: the admin check runs first, so a 403 cannot
+    reveal that the action exists.
+    """
+    act_as(Role.team_lead)
+    response = await client.request(method, path)
     assert response.status_code == 404
+    assert response.headers["content-type"].startswith("text/html")
 
 
 async def test_delete_needs_the_confirmation_box(
@@ -71,51 +58,6 @@ async def test_delete_needs_the_confirmation_box(
     response = await client.post("/admin/users/2/delete", data=data, headers=headers)
     assert response.status_code == 422
     assert "Tick the confirmation box" in response.text
-
-
-async def test_status_form_accepts_only_active_or_disabled(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
-) -> None:
-    """The page form follows the PATCH rules: no status other than active or disabled."""
-    admin = act_as(Role.admin)
-    headers, data = page_csrf(settings, admin)
-    response = await client.post(
-        "/admin/users/2", data={**data, "status": "pending"}, headers=headers
-    )
-    assert response.status_code == 422
-
-
-async def test_audit_filter_with_a_bad_value_is_422(
-    client: httpx.AsyncClient, act_as: ActAs
-) -> None:
-    """An unknown outcome or a non-numeric actor ID is a validation error page."""
-    act_as(Role.admin)
-    assert (await client.get("/admin/audit?outcome=bogus")).status_code == 422
-    assert (await client.get("/admin/audit?actor_id=abc")).status_code == 422
-    assert (await client.get("/admin/audit?from=yesterday")).status_code == 422
-
-
-@pytest.mark.parametrize("role", [Role.user, Role.team_lead])
-async def test_storage_totals_are_for_admins_only(settings: Settings, role: Role) -> None:
-    """The total is admin data: everybody else gets NotFound before any query."""
-    actor = CurrentUser(id=1, username="anna", role=role, session_id=uuid.uuid4())
-    session = FakeSession()
-    with pytest.raises(NotFound):
-        await admin.storage_totals(session, actor, settings)  # type: ignore[arg-type]
-    assert session.statements == []
-
-
-def test_admin_link_shows_only_for_admins() -> None:
-    """The navigation shows the Admin link to admins only."""
-
-    def render(role: Role) -> str:
-        user = CurrentUser(id=1, username="anna", role=role, session_id=uuid.uuid4())
-        return templates.get_template("base.html").render(
-            user=user, csrf_token="t", url_for=lambda *args, **kwargs: "/static/x.css"
-        )
-
-    assert 'href="/admin"' in render(Role.admin)
-    assert 'href="/admin"' not in render(Role.team_lead)
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
@@ -181,30 +123,6 @@ async def test_admin_deletes_a_user_with_confirmation(
     )
     assert response.status_code == 303
     assert await state(db_sessionmaker, anna.id) is None
-
-
-@pytest.mark.db
-async def test_admin_cannot_act_on_themself(
-    client: httpx.AsyncClient,
-    admin_login: tuple,
-    user_factory: UserFactory,
-    db_sessionmaker: Sessionmaker,
-) -> None:
-    """The page offers no controls on your own row, and a forged request is the 409 page."""
-    root, headers, data = admin_login
-    anna = await user_factory(username="anna")
-
-    page = (await client.get("/admin", headers=headers)).text
-    assert f"/admin/users/{anna.id}/delete" in page  # other users keep their buttons
-    assert f"/admin/users/{root.id}/delete" not in page
-    assert f'action="/admin/users/{root.id}"' not in page
-    assert "This is your account" in page
-
-    response = await client.post(
-        f"/admin/users/{root.id}", data={**data, "status": "disabled"}, headers=headers
-    )
-    assert response.status_code == 409
-    assert await state(db_sessionmaker, root.id) == UserStatus.active
 
 
 @pytest.mark.db

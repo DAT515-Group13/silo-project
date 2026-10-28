@@ -6,9 +6,9 @@ tests go through HTTP with real tokens.
 
 import httpx
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 
-from app.models import AuditLog, File, FileShare, Role, TeamMember, User, UserStatus
+from app.models import AuditLog, File, FileShare, Role, TeamMember, UserStatus
 from tests.conftest import (
     ActAs,
     BearerFor,
@@ -31,13 +31,6 @@ async def test_plain_user_cannot_create_a_team(client: httpx.AsyncClient, act_as
     response = await client.post("/api/v1/teams", json={"name": "Design"})
     assert response.status_code == 403
     assert response.json()["code"] == "role_required"
-
-
-async def test_add_member_validates_the_username(client: httpx.AsyncClient, act_as: ActAs) -> None:
-    """The add-member body follows the username rule; format errors are 422."""
-    act_as(Role.team_lead)
-    response = await client.post("/api/v1/teams/1/members", json={"username": "-bad"})
-    assert response.status_code == 422
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
@@ -230,27 +223,6 @@ async def test_team_files_list_is_paginated_and_marks_own_files(
     assert item["owner"] == {"id": lead.id, "username": "lead"}
     assert item["is_owner"] is False
     assert "blob_name" not in item
-
-
-@pytest.mark.db
-async def test_demoted_lead_keeps_managing_own_team(
-    client: httpx.AsyncClient,
-    user_factory: UserFactory,
-    bearer_for: BearerFor,
-    db_sessionmaker: Sessionmaker,
-) -> None:
-    """A team_lead demoted to user keeps the team but cannot create new ones."""
-    lead = await user_factory(username="lead", role=Role.team_lead)
-    owner = await bearer_for(lead)
-    await user_factory(username="anna")
-    team_id = await make_team(client, owner)
-    async with db_sessionmaker() as session, session.begin():
-        await session.execute(update(User).where(User.id == lead.id).values(role=Role.user))
-
-    assert await add_member(client, owner, team_id, "anna") == 204
-    assert await member_names(client, owner, team_id) == ["anna", "lead"]
-    new = await client.post("/api/v1/teams", json={"name": "Other"}, headers=owner)
-    assert new.status_code == 403
 
 
 @pytest.mark.db

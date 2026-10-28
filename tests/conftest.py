@@ -36,7 +36,7 @@ from sqlalchemy.pool import NullPool
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.main import create_app
-from app.middleware import cookie_names
+from app.middleware import SECURITY_HEADERS, cookie_names
 from app.models import Base, File, FileShare, Role, User, UserStatus
 from app.permissions import CurrentUser
 from app.routers.common import get_current_api_user, get_optional_page_user
@@ -484,3 +484,46 @@ async def post(
     """POST a page form as the user of ``page_login``: cookies, Origin and CSRF field included."""
     headers, form = login
     return await client.post(path, data={**form, **fields}, headers=headers, follow_redirects=False)
+
+
+# --- Helpers for public links and security headers -----------------------------------------------
+
+PUBLIC_HEADERS = {
+    "referrer-policy": "no-referrer",
+    "cache-control": "no-store",
+    "x-robots-tag": "noindex",
+}
+
+
+async def make_link(
+    client: httpx.AsyncClient, headers: dict, file_id: object, hours: int = 24
+) -> tuple[int, str]:
+    """Create a link through the API; returns its ID and the token from the URL."""
+    response = await client.post(
+        f"/api/v1/files/{file_id}/links", json={"expires_in_hours": hours}, headers=headers
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["url"].startswith("http://testserver/s/")
+    return body["id"], body["url"].rsplit("/", 1)[-1]
+
+
+async def open_link(client: httpx.AsyncClient, token: str) -> httpx.Response:
+    """Open a public link without following the redirect."""
+    return await client.get(f"/s/{token}", follow_redirects=False)
+
+
+def assert_same_404(response: httpx.Response) -> None:
+    """The one 404 every failing public link gives, with the privacy headers."""
+    assert response.status_code == 404
+    for name, value in PUBLIC_HEADERS.items():
+        assert response.headers[name] == value
+
+
+def assert_secure(response: httpx.Response, *, csp: bool = True) -> None:
+    """The response carries every security header (the CSP only if ``csp``)."""
+    for name, value in SECURITY_HEADERS.items():
+        if name == "Content-Security-Policy" and not csp:
+            assert name.lower() not in response.headers
+        else:
+            assert response.headers[name.lower()] == value, name

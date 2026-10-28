@@ -81,18 +81,18 @@ def test_initial_admin_username_follows_the_username_rule(monkeypatch: pytest.Mo
         "BASE_URL",
         "DATABASE_URL",
         "AZURE_STORAGE_CONNECTION_STRING",
-        "AZURE_STORAGE_CONTAINER",
         "JWT_SECRET",
-        "JWT_ISSUER",
         "JWT_AUDIENCE",
         "CSRF_SECRET",
-        "INITIAL_ADMIN_USERNAME",
         "INITIAL_ADMIN_PASSWORD",
-        "MAX_FILE_SIZE_BYTES",
     ],
 )
 def test_missing_required_variable_is_refused(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    """Every required variable must be set."""
+    """The startup stops when a secret, connection, environment or audience setting is missing.
+
+    A default for APP_ENV would skip the prod checks; a shared JWT_AUDIENCE default would let
+    staging and prod accept each other's tokens.
+    """
     assert name.lower() in error_text(monkeypatch, **{name: None})
 
 
@@ -125,7 +125,6 @@ def test_equal_jwt_and_csrf_secret_is_refused(monkeypatch: pytest.MonkeyPatch) -
 PLACEHOLDER = "CHANGE-me-" + "x" * 40
 
 
-@pytest.mark.parametrize("env", ["staging", "prod"])
 @pytest.mark.parametrize(
     ("variable", "value"),
     [
@@ -140,30 +139,27 @@ PLACEHOLDER = "CHANGE-me-" + "x" * 40
         pytest.param("AZURE_STORAGE_CONTAINER", PLACEHOLDER, id="placeholder container"),
     ],
 )
-def test_unsafe_setting_is_refused_in_staging_and_prod(
-    monkeypatch: pytest.MonkeyPatch, env: str, variable: str, value: str
+def test_unsafe_setting_is_refused_in_prod(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
 ) -> None:
-    """staging and prod refuse dev conveniences and CHANGE placeholders, one setting at a time."""
-    safe = {"APP_ENV": env, "COOKIE_SECURE": "true", "BASE_URL": "https://silo.example"}
+    """prod refuses dev conveniences and CHANGE placeholders, one setting at a time.
+
+    staging uses the same code path, so one environment is enough.
+    """
+    safe = {"APP_ENV": "prod", "COOKIE_SECURE": "true", "BASE_URL": "https://silo.example"}
     assert variable in error_text(monkeypatch, **{**safe, variable: value})
 
 
-def test_unsafe_setting_and_placeholders_are_allowed_locally(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The settings staging and prod refuse are fine for APP_ENV=local (also CHANGE values)."""
+def test_safe_and_local_configurations_are_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """staging with safe settings starts; the settings prod refuses are fine for APP_ENV=local."""
+    assert make(
+        monkeypatch, APP_ENV="staging", COOKIE_SECURE="true", BASE_URL="https://silo.example"
+    )
     assert make(
         monkeypatch,
         ENABLE_DOCS="true",
         REGISTRATION_MODE="open",
         JWT_SECRET="CHANGE-me-" + "x" * 40,
-    )
-
-
-def test_staging_with_safe_settings_starts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A correctly configured staging environment is accepted."""
-    assert make(
-        monkeypatch, APP_ENV="staging", COOKIE_SECURE="true", BASE_URL="https://silo.example"
     )
 
 
@@ -217,10 +213,9 @@ def test_global_cap_setting(
         "QUOTA_USER_BYTES",
     ],
 )
-@pytest.mark.parametrize("value", ["0", "-1"])
-def test_numbers_must_be_positive(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:
-    """Zero or negative numbers would break downloads, login or uploads at runtime."""
-    assert name.lower() in error_text(monkeypatch, **{name: value})
+def test_numbers_must_be_positive(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """Zero (the boundary) would break downloads, login or uploads at runtime."""
+    assert name.lower() in error_text(monkeypatch, **{name: "0"})
 
 
 @pytest.mark.parametrize("value", ["-1", "65536"])

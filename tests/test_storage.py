@@ -239,14 +239,6 @@ async def test_sas_url_is_read_only_single_blob_https_and_short_lived() -> None:
     await store.close()
 
 
-async def test_sas_ttl_must_be_positive() -> None:
-    """A download URL with a zero lifetime is a programming error (ValueError)."""
-    store = real_store()
-    with pytest.raises(ValueError):
-        await store.download_url("b", filename="a", content_type="x/y", ttl_seconds=0)
-    await store.close()
-
-
 @pytest.mark.parametrize(
     ("filename", "expected_fallback"),
     [

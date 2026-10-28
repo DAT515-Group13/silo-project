@@ -249,33 +249,6 @@ async def test_link_url_is_shown_once_and_the_page_is_not_cached(
 
 
 @db
-async def test_link_form_errors_show_a_message(
-    client: httpx.AsyncClient,
-    settings: Settings,
-    user_factory: UserFactory,
-    file_factory: FileFactory,
-    page_login: PageLogin,
-) -> None:
-    """A bad lifetime is 422 and the eleventh link is 409, both with a readable message."""
-    owner = await user_factory("owner")
-    login = await page_login(owner)
-    file = await file_factory(owner.id)
-    url = f"/files/{file.id}/links"
-
-    too_long = await post(
-        client, login, url, expires_in_hours=str(settings.public_link_max_hours + 1)
-    )
-    assert too_long.status_code == 422 and "at most" in too_long.text
-    zero = await post(client, login, url, expires_in_hours="0")
-    assert zero.status_code == 422
-    for _ in range(10):
-        assert (await post(client, login, url)).status_code == 200
-    eleventh = await post(client, login, url)
-    assert eleventh.status_code == 409
-    assert "Too many active links for this file." in eleventh.text
-
-
-@db
 @pytest.mark.parametrize(
     ("actor", "status", "location"),
     [

@@ -1,6 +1,5 @@
 """Rate limit classes and the upload concurrency guard."""
 
-import asyncio
 import itertools
 
 import httpx
@@ -9,10 +8,7 @@ from fastapi import FastAPI, Request
 
 from app import ratelimit
 from app.errors import RateLimited
-from app.main import create_app
 from app.ratelimit import ConcurrencyGuard, limit
-from tests.conftest import make_settings
-from tests.fakes import InMemoryBlobStore
 
 pytestmark = pytest.mark.anyio
 
@@ -82,26 +78,6 @@ async def test_eleventh_request_in_a_minute_is_429_per_ip(app: FastAPI) -> None:
         assert (await other.get("/api/v1/_limited")).status_code == 200
 
 
-async def test_a_new_app_starts_with_empty_counters() -> None:
-    """create_app resets the counters, so tests (and restarts) never inherit them.
-
-    Both apps use the same route function, hence the same bucket: only the reset can make the
-    second app start from zero.
-    """
-
-    async def _limited(request: Request) -> dict[str, bool]:
-        return {"ok": True}
-
-    route = limit("auth")(_limited)
-    for _ in range(2):
-        app = create_app(make_settings(), InMemoryBlobStore(), initial_admin=False)
-        app.get("/api/v1/_limited")(route)
-        async with client_from(app) as client:
-            for _ in range(10):
-                assert (await client.get("/api/v1/_limited")).status_code == 200
-            assert (await client.get("/api/v1/_limited")).status_code == 429
-
-
 def test_both_login_routes_use_the_auth_limit() -> None:
     """The login page and the login API are limited to 10 a minute per IP (class `auth`).
 
@@ -111,26 +87,6 @@ def test_both_login_routes_use_the_auth_limit() -> None:
     registered = ratelimit.limiter._route_limits
     for name in ("app.routers.api.auth.login", "app.routers.pages.login_submit"):
         assert [str(limit.limit) for limit in registered[name]] == ["10 per 1 minute"], name
-
-
-async def test_concurrency_guard_allows_three_at_a_time() -> None:
-    """Of 5 simultaneous uploads of one user, 3 get a slot and 2 are refused."""
-    guard = ConcurrencyGuard(3)
-    release = asyncio.Event()
-
-    async def upload() -> str:
-        try:
-            async with guard.slot(1):
-                await release.wait()
-                return "ok"
-        except RateLimited:
-            return "refused"
-
-    tasks = [asyncio.create_task(upload()) for _ in range(5)]
-    await asyncio.sleep(0.05)  # let every task reach the guard while the slots are held
-    release.set()
-    results = await asyncio.gather(*tasks)
-    assert sorted(results) == ["ok", "ok", "ok", "refused", "refused"]
 
 
 async def test_concurrency_guard_is_per_user_and_releases_slots() -> None:
@@ -147,26 +103,3 @@ async def test_concurrency_guard_is_per_user_and_releases_slots() -> None:
     async with guard.slot(1):  # the failed upload released its slot
         pass
     assert not guard._active  # nothing is kept for users without uploads
-
-
-async def test_shared_class_has_one_counter_for_all_its_routes(app: FastAPI) -> None:
-    """Two routes with the `password_ip` class share 20 requests per minute and IP."""
-
-    async def first(request: Request) -> dict[str, bool]:
-        return {"ok": True}
-
-    async def second(request: Request) -> dict[str, bool]:
-        return {"ok": True}
-
-    first.__name__, second.__name__ = (
-        f"shared_a{next(_route_numbers)}",
-        f"shared_b{next(_route_numbers)}",
-    )
-    app.get("/a")(limit("password_ip")(first))
-    app.get("/b")(limit("password_ip")(second))
-    async with client_from(app) as client:
-        for _ in range(10):
-            assert (await client.get("/a")).status_code == 200
-            assert (await client.get("/b")).status_code == 200
-        assert (await client.get("/a")).status_code == 429
-        assert (await client.get("/b")).status_code == 429

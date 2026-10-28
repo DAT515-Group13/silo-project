@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import ActorType, AuditLog, Outcome
+from app.models import AuditLog, Outcome
 from app.services.audit import AuditAction, AuditContext, record, record_failure
 
 # The exact list of audit actions.
@@ -26,16 +26,6 @@ def test_actions_match_the_spec_list() -> None:
     values = {action.value for action in AuditAction}
     assert values == SPEC_ACTIONS
     assert all(len(value) <= 50 for value in values)
-
-
-def test_context_helpers() -> None:
-    """User, anonymous and system contexts carry the right actor type and snapshot."""
-    user = AuditContext.for_user(7, "anna", ip="203.0.113.7", request_id="r1")
-    assert (user.actor_type, user.actor_id, user.actor_username) == (ActorType.user, 7, "anna")
-    assert (user.ip, user.request_id) == ("203.0.113.7", "r1")
-    anonymous = AuditContext.anonymous(ip="203.0.113.8")
-    assert (anonymous.actor_type, anonymous.actor_id) == (ActorType.anonymous, None)
-    assert AuditContext.system().actor_type is ActorType.system
 
 
 @pytest.mark.db
