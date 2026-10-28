@@ -152,4 +152,8 @@ jobs:
           running="$(kubectl -n "$TARGET" get deployment silo -o jsonpath='{.spec.template.spec.containers[0].image}')"
           echo "running: $running"
           [ "$running" = "$IMAGE" ] || { echo "FAIL: expected $IMAGE" >&2; exit 1; }
-      
+      # End-to-end check through Traefik, PostgreSQL and Azure. Not on prod: it creates
+      # (and deletes) a test user, which we keep out of real user data and the prod audit log.
+      - name: Smoke test
+        if: env.TARGET != 'prod'
+        run: scripts/smoke-test.sh "$TARGET"
