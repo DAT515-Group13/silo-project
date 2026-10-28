@@ -25,6 +25,7 @@ from app.security import generate_refresh_token, hash_token
 from app.services import audit
 from app.services.audit import AuditAction, AuditContext
 from app.services.files import download_content_type
+from app.services.pagination import fetch_page
 from app.storage.base import BlobStore
 
 # At most this many links of one file may be valid at the same time (section 8.1).
@@ -130,6 +131,90 @@ async def list_links(
             .execution_options(populate_existing=True)
         )
         return list(result)
+
+
+async def list_my_links(
+    session: AsyncSession, user: CurrentUser, *, page: int, size: int
+) -> tuple[list[tuple[ShareLink, File]], int]:
+    """All links of the user's own files, newest first, with their file; one page and the total.
+
+    Includes expired and revoked links, like ``list_links``.
+    """
+    statement = (
+        select(ShareLink, File)
+        .join(File, File.id == ShareLink.file_id)
+        .where(File.owner_id == user.id)
+        .order_by(ShareLink.created_at.desc(), ShareLink.id.desc())
+        .execution_options(populate_existing=True)
+    )
+    async with session.begin():
+        rows, total = await fetch_page(session, statement, page=page, size=size)
+    return [(row[0], row[1]) for row in rows], total
+
+
+async def change_expiry(
+    session: AsyncSession,
+    settings: Settings,
+    user: CurrentUser,
+    link_id: int,
+    hours: int,
+    ctx: AuditContext,
+) -> ShareLink:
+    """Set a new expiry, ``hours`` from now, on an active link (file owner only).
+
+    Only an active link can change. An expired or revoked link stays as history, so the limit
+    of 10 active links per file cannot be passed this way: create a new link instead.
+
+    Raises:
+        ValidationFailed: ``hours`` is above ``PUBLIC_LINK_MAX_HOURS``, or the link is expired
+            or revoked.
+        NotFound: no such link, or the user is not the owner of its file.
+
+    Side effect: audit entry ``link.expiry_change``.
+    """
+    if hours > settings.public_link_max_hours:
+        raise ValidationFailed(
+            [
+                {
+                    "field": "expires_in_hours",
+                    "message": f"Must be at most {settings.public_link_max_hours} hours.",
+                }
+            ]
+        )
+    async with session.begin():
+        row = (
+            await session.execute(
+                select(File)
+                .join(ShareLink, ShareLink.file_id == File.id)
+                .where(ShareLink.id == link_id)
+            )
+        ).scalar_one_or_none()
+        if row is None or not can_modify_file(user, row):
+            raise NotFound
+        # The condition keeps the "active" check and the change in one statement.
+        link = (
+            await session.execute(
+                update(ShareLink)
+                .where(ShareLink.id == link_id, _active())
+                .values(expires_at=func.now() + timedelta(hours=hours))
+                .returning(ShareLink)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if link is None:
+            raise ValidationFailed(
+                [{"field": "link", "message": "Only an active link can be changed."}]
+            )
+        await audit.record(
+            session,
+            ctx,
+            AuditAction.link_expiry_change,
+            target_type="link",
+            target_id=link_id,
+            target_label=row.filename,
+            details={"file_id": str(row.id), "expires_at": link.expires_at.isoformat()},
+        )
+        return link
 
 
 async def revoke_link(
