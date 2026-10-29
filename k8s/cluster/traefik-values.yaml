@@ -10,3 +10,10 @@ ports:
 ingressClass:
   enabled: true
   isDefaultClass: true
+metrics:
+  prometheus:
+    addRoutersLabels: true     # one series per Ingress, i.e. per environment
+    service:
+      enabled: true
+    serviceMonitor:
+      enabled: true
