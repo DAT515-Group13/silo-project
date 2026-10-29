@@ -22,6 +22,7 @@ configMapGenerator:
       - COOKIE_SECURE=false
       - ENABLE_DOCS=true
       - FORWARDED_ALLOW_IPS=10.244.0.0/16
+      - METRICS_PORT=9000
 patches:
   # Reached through Traefik at https://dev.152.94.171.92.nip.io:30443
   - target:

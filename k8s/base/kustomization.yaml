@@ -7,3 +7,4 @@ resources:
   - ingress.yaml
   - networkpolicy.yaml
   - cleanup-cronjob.yaml
+  - podmonitor.yaml

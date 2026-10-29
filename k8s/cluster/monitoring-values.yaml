@@ -1,0 +1,59 @@
+prometheus:
+  prometheusSpec:
+    retention: 3d
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+      limits: { memory: 1Gi }
+
+grafana:
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      url: http://loki.monitoring.svc:3100
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts: [grafana.152.94.171.92.nip.io]
+    tls:
+      - hosts: [grafana.152.94.171.92.nip.io]
+  # First start runs ~800 DB migrations, which takes 15-25 min on these disks
+  livenessProbe:
+    initialDelaySeconds: 1200
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClassName: local-path
+  deploymentStrategy:
+    type: Recreate
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: community
+          folder: Silo
+          type: file
+          options:
+            path: /var/lib/grafana/dashboards/community
+  dashboards:
+    community:
+      traefik:
+        gnetId: 17347
+        revision: 9
+        datasource:
+          - { name: DS_PROMETHEUS, value: Prometheus }
+      logs:
+        gnetId: 13639
+        revision: 2
+        datasource:
+          - { name: DS_LOKI, value: Loki }
+
+# Not reachable on Talos (bound to localhost on the control plane)
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeEtcd: { enabled: false }
+kubeProxy: { enabled: false }
+
+alertmanager:
+  enabled: false
