@@ -14,7 +14,7 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: [silo, silo-migrate, postgres-backup]
+                values: [silo, silo-migrate, postgres-backup, silo-cleanup]
       ports:
         - port: 5432
           protocol: TCP
