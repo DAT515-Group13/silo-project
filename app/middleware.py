@@ -1,7 +1,6 @@
 """Cookies, Origin checks, and the middleware stack (metrics, security headers, body limit).
 
-The page surface authenticates with cookies, the API with Bearer tokens; the two never mix. The
-request ID and trusted host middleware are planned hardening steps.
+The page surface authenticates with cookies, the API with Bearer tokens; the two never mix.
 """
 
 import time
@@ -190,7 +189,7 @@ CACHEABLE_PREFIX = "/static/"
 
 
 class SecurityHeadersMiddleware:
-    """Add the response headers of spec section 12 to every response.
+    """Add the response security headers to every response.
 
     Outermost middleware, so error pages and the 413 of ``BodyLimitMiddleware`` get them too.
     A header a route set itself (for example the ``no-store`` of ``/s/{token}``) is kept.
@@ -289,7 +288,7 @@ class BodyLimitMiddleware:
         # A declared size is checked first, so an honest oversized client is refused unread.
         declared = Headers(scope=scope).get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
-            # The API keeps its JSON error shape (section 9.5); pages get plain text.
+            # The API keeps its JSON error shape; pages get plain text.
             if scope["path"].startswith("/api/"):
                 body = {"detail": "Request body too large.", "code": "payload_too_large"}
                 await JSONResponse(body, status_code=413)(scope, receive, send)

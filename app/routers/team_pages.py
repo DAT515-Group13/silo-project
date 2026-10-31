@@ -89,7 +89,7 @@ async def create_team_submit(
     name: Annotated[str, Form()] = "",
 ) -> Response:
     """Create a team and open its page; problems show the list again with a message."""
-    # Checked first, so a plain user gets the 403 without any database work (D19).
+    # Checked first, so a plain user gets the 403 without any database work.
     if not can_create_team(user):
         raise RoleRequired
     try:

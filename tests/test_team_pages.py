@@ -25,7 +25,7 @@ async def test_lead_creates_a_team_and_sees_its_page(
 ) -> None:
     """Creating a team redirects to its page, which lists the owner as a member.
 
-    A taken name re-renders the list with the message and status 409 (D18).
+    A taken name re-renders the list with the message and status 409.
     """
     lead = await page_login(await user_factory(username="lead", role=Role.team_lead))
     created = await post(client, lead, "/teams", name="Design")

@@ -114,7 +114,7 @@ async def test_useless_cookies_are_deleted_on_the_redirect(
 async def test_bearer_header_is_ignored_on_pages(
     client: httpx.AsyncClient, settings: Settings
 ) -> None:
-    """Pages accept cookies only (section 7): a token in the Authorization header is not read.
+    """Pages accept cookies only: a token in the Authorization header is not read.
 
     If it were read, the lookup would reach the (absent) database and fail with a 500 instead of
     this redirect.

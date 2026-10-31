@@ -1,4 +1,4 @@
-"""No password, token or connection string reaches the logs (architecture.md sections 4, 16).
+"""No password, token or connection string reaches the logs.
 
 These requests all fail before the database, so they run everywhere. The link token and the
 audit log are covered by the ``db`` test in ``test_links.py``.

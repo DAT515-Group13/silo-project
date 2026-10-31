@@ -36,7 +36,7 @@ async def require_admin_api_user(user: ApiUser) -> None:
     """Answer non-admins with 404 before any body or query validation runs.
 
     The services check the role as well. Without this, a non-admin sending an invalid body or
-    filter would get a 422, which shows that the admin endpoint exists (section 6).
+    filter would get a 422, which shows that the admin endpoint exists.
     """
     if not is_admin(user):
         raise NotFound
@@ -166,7 +166,7 @@ async def delete_user(
 ) -> None:
     """Delete the user and everything they own, then their blobs.
 
-    Errors: 409 `last_admin`. A blob that cannot be deleted is left for orphan cleanup (D24).
+    Errors: 409 `last_admin`. A blob that cannot be deleted is left for orphan cleanup.
     """
     await users.delete_user(session, store, user, user_id, ctx)
 

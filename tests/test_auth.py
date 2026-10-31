@@ -56,7 +56,7 @@ async def attempt(sm: Sessionmaker, settings: Settings, username: str, password:
 
 @pytest.mark.parametrize(("failures", "minutes"), [(10, 15), (20, 30), (500, 60)])
 def test_lock_duration_doubles_and_is_capped(failures: int, minutes: int) -> None:
-    """15 minutes at 10 failures, doubling at each further 10, at most 1 hour (D25)."""
+    """15 minutes at 10 failures, doubling at each further 10, at most 1 hour."""
     assert auth.lock_duration(make_settings(), failures) == timedelta(minutes=minutes)
 
 

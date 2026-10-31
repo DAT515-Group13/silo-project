@@ -96,10 +96,10 @@ async def test_register_closed_is_404(
 # --- Login and refresh -------------------------------------------------------------------------
 
 
-async def test_login_matches_example_9_1(
+async def test_login_returns_tokens_and_user(
     client: httpx.AsyncClient, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """Login returns the token pair, lifetimes and the user (example 9.1)."""
+    """Login returns the token pair, lifetimes and the user."""
     await user_factory(username="anna")
     response = await login(client)
     assert response.status_code == 200
@@ -140,7 +140,7 @@ async def test_failed_logins_have_one_shape(
 async def test_login_username_is_case_insensitive_and_lenient(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """Login lowercases the username; a name that could never be valid is simply a 401 (Q20)."""
+    """Login lowercases the username; a name that could never be valid is simply a 401."""
     await user_factory(username="anna")
     assert (await login(client, "ANNA")).status_code == 200
     assert (await login(client, "not a valid name!")).status_code == 401
@@ -168,10 +168,10 @@ async def test_refresh_rotates_and_the_old_token_is_refused(
 # --- Account -----------------------------------------------------------------------------------
 
 
-async def test_me_matches_example_9_2(
+async def test_me_returns_user_usage_and_quota(
     client: httpx.AsyncClient, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """GET /me returns the user with usage and the quota of their role (example 9.2)."""
+    """GET /me returns the user with usage and the quota of their role."""
     await user_factory(username="anna", used_bytes=1048576)
     response = await client.get("/api/v1/me", headers=bearer(await login(client)))
     assert response.status_code == 200
@@ -187,7 +187,7 @@ async def test_me_matches_example_9_2(
 async def test_sessions_list_and_delete_a_session(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """The list shows own active sessions and marks the current one (example 9.6).
+    """The list shows own active sessions and marks the current one.
 
     Deleting an own session gives 204 and kills its token; a foreign one gives 404.
     """

@@ -254,7 +254,7 @@ async def _file_page(
         ]
         shared_with = await files.list_file_teams(session, user, file_id)
         already = {team.id for team in shared_with}
-        # Only teams the owner belongs to can be chosen (section 11).
+        # Only teams the owner belongs to can be chosen.
         share_choices = [t for t in await teams.list_my_teams(session, user) if t.id not in already]
     return render_page(
         request,

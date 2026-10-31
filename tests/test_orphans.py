@@ -1,4 +1,4 @@
-"""Orphan cleanup (architecture.md sections 10 and 16): only unreferenced blobs older than 24 h.
+"""Orphan cleanup: only unreferenced blobs older than 24 h.
 
 The service runs against a stand-in session whose database lookup is replaced, so the rules are
 tested without PostgreSQL; one ``db`` test checks the real lookup.
@@ -66,7 +66,7 @@ async def test_only_old_unreferenced_blobs_are_deleted(referenced: set[str]) -> 
     result = await cleanup_orphans(session, store, now=NOW)  # type: ignore[arg-type]
     assert (result.scanned, result.deleted) == (2, 1)
     assert set(store.blobs) == {"old-used", "new-orphan"}
-    # One audit entry, actor system, with the counts in the details (section 10).
+    # One audit entry, actor system, with the counts in the details.
     (entry,) = session.added
     assert entry.action == "storage.orphan_cleanup"
     assert (entry.actor_type, entry.outcome) == (ActorType.system, Outcome.success)

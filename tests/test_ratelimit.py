@@ -35,7 +35,7 @@ def client_from(app: FastAPI, ip: str = "203.0.113.5") -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url="http://t")
 
 
-def test_classes_match_the_spec() -> None:
+def test_limit_classes() -> None:
     """The limits and what they are keyed on."""
     limits = {name: rate for name, (rate, _) in ratelimit.LIMIT_CLASSES.items()}
     assert limits == {

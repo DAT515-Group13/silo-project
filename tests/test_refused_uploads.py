@@ -77,7 +77,7 @@ async def test_refused_upload_still_reads_the_whole_body(
     status: int,
     code: str,
 ) -> None:
-    """A refused upload is answered after the rest of the body was read (no proxy 502, D27).
+    """A refused upload is answered after the rest of the body was read (no proxy 502).
 
     "service full" stands for the global cap: ``StorageFull`` is a ``QuotaExceeded``, so the
     route drains the body and answers 507 without any route change.
@@ -87,7 +87,7 @@ async def test_refused_upload_still_reads_the_whole_body(
     sent = 0
 
     async def full(*args: object, **kwargs: object) -> None:
-        raise StorageFull  # refused before reading the file, like step 2 of the upload
+        raise StorageFull  # refused before reading the file, like the quota check before the upload
 
     if case == "service full":
         monkeypatch.setattr(files, "upload", full)

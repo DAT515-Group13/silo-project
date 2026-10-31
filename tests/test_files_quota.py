@@ -1,4 +1,4 @@
-"""Upload and quota behaviour end to end (architecture.md section 10).
+"""Upload and quota behaviour end to end.
 
 All tests need PostgreSQL (marker ``db``): they go through HTTP with real tokens and check the
 database, the audit log and the in-memory blob store together. The key promises: the quota is
@@ -83,7 +83,7 @@ async def test_exact_quota_fits_and_one_byte_more_does_not(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """The remaining quota is a hard limit; a refused upload leaves no blob (section 16)."""
+    """The remaining quota is a hard limit; a refused upload leaves no blob."""
     settings.quota_user_bytes = 100
     user = await user_factory("anna")
     headers = await bearer_for(user)
@@ -141,7 +141,7 @@ async def test_parallel_uploads_at_the_edge_never_exceed_the_quota(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Two uploads that fit alone but not together: exactly one wins (section 16).
+    """Two uploads that fit alone but not together: exactly one wins.
 
     Both requests are made to see the same stale "0 bytes used" status, so the early check
     cannot stop the second one and only the atomic UPDATE decides.
@@ -172,7 +172,7 @@ async def test_unavailable_storage_is_503_and_changes_nothing(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """If blob storage fails, the upload is 503 and no row or usage remains (section 11)."""
+    """If blob storage fails, the upload is 503 and no row or usage remains."""
     user = await user_factory("anna")
     headers = await bearer_for(user)
     blob_store.healthy = False
@@ -191,7 +191,7 @@ async def test_failed_database_step_deletes_the_blob(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Anything failing after the blob was stored removes the blob (upload step 5)."""
+    """Anything failing after the blob was stored removes the blob."""
     user = await user_factory("anna")
     headers = await bearer_for(user)
 
@@ -251,9 +251,9 @@ async def test_parallel_uploads_of_two_users_at_the_global_edge(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Two users whose files fit alone but not together: exactly one wins (section 16).
+    """Two users whose files fit alone but not together: exactly one wins.
 
-    Both see the same stale "everything is free" hint, so only the locked step 4 decides.
+    Both see the same stale "everything is free" hint, so only the locked quota check decides.
     """
     settings.storage_total_max_bytes = 100
     anna = await user_factory("anna")

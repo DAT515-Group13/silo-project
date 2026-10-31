@@ -1,7 +1,7 @@
-"""Orphan cleanup: delete blobs that no ``files`` row refers to (architecture.md section 10).
+"""Orphan cleanup: delete blobs that no ``files`` row refers to.
 
 Orphans come from failures between storing a blob and committing its row, and from blob deletes
-that failed after a file was deleted (D24). Only blobs older than ``MIN_AGE`` are considered, so
+that failed after a file was deleted. Only blobs older than ``MIN_AGE`` are considered, so
 a blob whose upload transaction is still running is never deleted.
 """
 

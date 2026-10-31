@@ -214,7 +214,7 @@ async def test_limited_stops_at_the_first_limit_passed(
     ],
 )
 def test_failed_upload_is_counted_under_one_label(exc: Exception, label: str | None) -> None:
-    """A refused upload adds 1 to exactly one ``silo_uploads_total`` label (section 8.3)."""
+    """A refused upload adds 1 to exactly one ``silo_uploads_total`` label."""
     labels = ["too_large", "quota_exceeded", "storage_full", "storage_error"]
     before = {name: sample("silo_uploads_total", result=name) for name in labels}
     _count_failed_upload(exc)

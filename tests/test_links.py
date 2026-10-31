@@ -1,8 +1,8 @@
 """Public links: creation rules, revocation and the anonymous ``/s/{token}`` endpoint.
 
 Tests without the ``db`` marker stop before the database (validation, malformed tokens, log
-redaction). The ``db`` tests go through HTTP with real tokens and check the promises of
-architecture.md sections 5, 8.3 and 11: only a hash is stored, every failing link gives the same
+redaction). The ``db`` tests go through HTTP with real tokens and check the promises:
+only a hash is stored, every failing link gives the same
 404, and the token never reaches the audit log or the logs.
 """
 
@@ -203,7 +203,7 @@ async def test_every_failing_link_gives_the_same_404(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Unknown, expired, revoked and owner-disabled links are indistinguishable (section 8.3)."""
+    """Unknown, expired, revoked and owner-disabled links are indistinguishable."""
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
@@ -226,7 +226,7 @@ async def test_every_failing_link_gives_the_same_404(
         bodies.add(response.text)
     assert len(bodies) == 1
 
-    # Disabling the owner stops the link; reactivating makes it work again (section 11).
+    # Disabling the owner stops the link; reactivating makes it work again.
     async with db_sessionmaker() as session, session.begin():
         await session.execute(
             update(User).where(User.id == owner.id).values(status=UserStatus.disabled)
@@ -373,7 +373,7 @@ async def test_the_token_never_reaches_logs_or_audit(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Section 4: link tokens are never logged or stored anywhere but as a hash."""
+    """Link tokens are never logged or stored anywhere but as a hash."""
     caplog.set_level(logging.DEBUG)
     owner = await user_factory("owner")
     file = await file_factory(owner.id)

@@ -1,8 +1,7 @@
 """App factory, lifespan and exception handlers.
 
 Run with: ``uvicorn app.main:create_app --factory``. The lifespan owns the database engine and
-the BlobStore. Errors are rendered as JSON under ``/api/`` and as HTML pages elsewhere. The
-request ID and trusted host middleware are planned hardening steps.
+the BlobStore. Errors are rendered as JSON under ``/api/`` and as HTML pages elsewhere.
 """
 
 import logging
@@ -67,7 +66,6 @@ def configure_logging() -> None:
     logger, where nothing is attached in production and pytest's ``caplog`` listens in tests.
     The handler is added once, however many apps a process creates (the tests create many).
     """
-    # Added once, however many apps a process creates.
     access_logger = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, RedactLinkTokens) for f in access_logger.filters):
         access_logger.addFilter(RedactLinkTokens())

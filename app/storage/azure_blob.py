@@ -102,7 +102,7 @@ class AzureBlobStore:
     async def upload_stream(
         self, blob_name: str, chunks: AsyncIterator[bytes], *, content_type: str
     ) -> int:
-        """Stage the chunks as blocks and commit them after the last one (upload step 2)."""
+        """Stage the chunks as blocks and commit them after the last one."""
         blob = self._container.get_blob_client(blob_name)
         block_ids: list[str] = []
         pending: list[bytes] = []

@@ -118,7 +118,7 @@ async def test_approve_only_pending_accounts(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """pending -> active, audited; approving again is 409 invalid_user_state (D18)."""
+    """pending -> active, audited; approving again is 409 invalid_user_state."""
     newbie = await user_factory(username="newbie", status=UserStatus.pending)
     headers = await bearer_for(root)
 
@@ -305,7 +305,7 @@ async def test_delete_user_succeeds_when_storage_fails(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """A blob that cannot be deleted becomes an orphan (D24); the user is deleted anyway."""
+    """A blob that cannot be deleted becomes an orphan; the user is deleted anyway."""
     anna = await user_factory(username="anna")
     await file_factory(anna.id)
     blob_store.healthy = False

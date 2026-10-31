@@ -1,7 +1,7 @@
-"""File API: listing, metadata, rename, download and delete (architecture.md sections 6, 8, 10).
+"""File API: listing, metadata, rename, download and delete.
 
 Tests without the ``db`` marker stop before the database (token and body checks). The ``db``
-tests go through HTTP with real tokens and check the permission matrix of section 6: no access
+tests go through HTTP with real tokens and check the permission matrix: no access
 is always 404, never 403.
 """
 
@@ -64,10 +64,10 @@ async def test_oversized_content_length_is_413_and_drains_only_below_the_cap(
     extra: int,
     drained: bool,
 ) -> None:
-    """Upload step 1: a Content-Length over the limit is refused before any blob work.
+    """A Content-Length over the limit is refused before any blob work.
 
     A body that is still small enough is read to the end before the 413 is sent, otherwise the
-    proxy can turn the 413 into a 502 (plan D27). The denied-upload audit entry cannot be written
+    proxy can turn the 413 into a 502. The denied-upload audit entry cannot be written
     without a database; that is only logged.
     """
     act_as(Role.user)
@@ -151,7 +151,7 @@ async def test_delete_still_succeeds_when_the_blob_cannot_be_deleted(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """The row is gone, the blob becomes an orphan for cleanup: still 204 (section 10)."""
+    """The row is gone, the blob becomes an orphan for cleanup: still 204."""
     owner = await user_factory("owner")
     file = await file_factory(owner.id, size_bytes=10)
     blob_store.put(file.blob_name, b"0123456789")
@@ -258,7 +258,7 @@ async def test_metadata_works_while_storage_is_down(
     bearer_for: BearerFor,
     blob_store: InMemoryBlobStore,
 ) -> None:
-    """Only upload, download and blob deletion need storage; metadata keeps working (section 11)."""
+    """Only upload, download and blob deletion need storage; metadata keeps working."""
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
@@ -292,7 +292,7 @@ async def test_member_sees_and_downloads_but_cannot_change(
     file_factory: FileFactory,
     bearer_for: BearerFor,
 ) -> None:
-    """A team member can view and download a shared file, not rename or delete it (section 6)."""
+    """A team member can view and download a shared file, not rename or delete it."""
     lead = await user_factory("lead", role=Role.team_lead)
     member = await user_factory("member")
     file = await file_factory(lead.id)

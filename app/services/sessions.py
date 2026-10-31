@@ -44,7 +44,7 @@ class RevokeReason(enum.StrEnum):
 
 @dataclass(frozen=True)
 class IssuedTokens:
-    """A new token pair and the facts the response needs (example 9.1)."""
+    """A new token pair and the facts the response needs."""
 
     access_token: str
     refresh_token: str
@@ -118,14 +118,14 @@ async def create_session(
     """Create a session with its first refresh token and enforce the limit of 10 sessions.
 
     Runs in the caller's transaction (the login service). If the user now has more than 10
-    active sessions, the least recently used ones are revoked as ``session_limit`` (login step 6).
+    active sessions, the least recently used ones are revoked as ``session_limit``.
     """
     now = now or datetime.now(UTC)
 
-    # Step 1: lock the user row, so two parallel logins cannot both pass the session limit.
+    # Lock the user row, so two parallel logins cannot both pass the session limit.
     await session.scalar(select(User.id).where(User.id == user.id).with_for_update())
 
-    # Step 2: the session and its first refresh token.
+    # The session and its first refresh token.
     auth_session = AuthSession(
         id=uuid.uuid4(),
         user_id=user.id,
@@ -141,7 +141,7 @@ async def create_session(
     session.add(refresh)
     await session.flush()
 
-    # Step 3: more than 10 active sessions -> revoke the least recently used (ties: oldest).
+    # More than 10 active sessions -> revoke the least recently used (ties: oldest).
     # An actively used old device keeps its session; the new session is never the victim.
     active = await session.scalars(
         select(AuthSession.id)
@@ -188,7 +188,7 @@ async def rotate_refresh(
     now = now or datetime.now(UTC)
 
     async with session.begin():
-        # Step 1: look the token up by its hash and lock the row. A parallel request with the
+        # Look the token up by its hash and lock the row. A parallel request with the
         # same token waits here and then sees `used_at` set, which gives the 409 below.
         token = await session.scalar(
             select(RefreshToken)
@@ -196,7 +196,7 @@ async def rotate_refresh(
             .with_for_update()
         )
 
-        # Step 2: unknown, expired, or its session revoked or expired -> same 401 for all.
+        # Unknown, expired, or its session revoked or expired -> same 401 for all.
         if token is None or token.expires_at <= now:
             raise InvalidToken
         row = (
@@ -212,7 +212,7 @@ async def rotate_refresh(
             raise InvalidToken
         ctx = AuditContext.for_user(user.id, user.username, ip=ip, request_id=request_id)
 
-        # Step 3: the token was already used.
+        # The token was already used.
         if token.used_at is not None:
             if now - token.used_at <= REFRESH_REUSE_GRACE:
                 # Two requests with the same token raced: not an attack, so nothing is revoked.
@@ -230,7 +230,7 @@ async def rotate_refresh(
             )
             # Do not raise here: leaving the block commits the revocation and the audit entry.
         else:
-            # Step 4: rotate. A user who was disabled meanwhile gets no new tokens.
+            # Rotate. A user who was disabled meanwhile gets no new tokens.
             if user.status != UserStatus.active:
                 raise InvalidToken
             successor, plain = _new_refresh_token(settings, auth_session, now)

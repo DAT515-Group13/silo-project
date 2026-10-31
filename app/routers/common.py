@@ -1,8 +1,7 @@
 """Dependencies and helpers shared by all routers.
 
-B's routers import everything they need from here, so they never reach into A's modules.
-Two authentication surfaces exist and never mix: ``ApiUser`` (Bearer header, for
-``/api/v1``) and ``PageUser`` (cookies, for the HTML pages).
+The routers import everything they need from here. Two authentication surfaces exist and never
+mix: ``ApiUser`` (Bearer header, for ``/api/v1``) and ``PageUser`` (cookies, for the HTML pages).
 """
 
 import hmac
@@ -90,9 +89,9 @@ async def authenticate_access_token(
         InvalidToken: for every failure, always the same, so a client cannot tell a bad
             signature from a revoked session or a disabled account.
 
-    Side effect: updates ``auth_sessions.last_used_at`` at most once a minute (step 6).
+    Side effect: updates ``auth_sessions.last_used_at`` at most once a minute.
     """
-    # Step 2: signature, algorithm, claims and expiry. Current secret first, then the previous
+    # Signature, algorithm, claims and expiry. Current secret first, then the previous
     # one during rotation.
     secrets = [settings.jwt_secret.get_secret_value()]
     if settings.jwt_secret_previous is not None:
@@ -104,7 +103,7 @@ async def authenticate_access_token(
     # The transaction is closed before the route runs: services open their own with
     # `session.begin()`, which fails if one is already open on this request's session.
     async with session.begin():
-        # Step 3: one JOIN loads the user (`sub`) and the session (`sid`). The user condition
+        # One JOIN loads the user (`sub`) and the session (`sid`). The user condition
         # on both sides also rejects a token whose `sid` belongs to someone else.
         row = (
             await session.execute(
@@ -117,7 +116,7 @@ async def authenticate_access_token(
             raise InvalidToken
         user, auth_session = row
 
-        # Step 4: the session is the revocation switch (logout works immediately); the user
+        # The session is the revocation switch (logout works immediately); the user
         # status is read now, so disabling an account also takes effect immediately.
         now = datetime.now(UTC)
         if auth_session.revoked_at is not None or auth_session.expires_at <= now:
@@ -125,7 +124,7 @@ async def authenticate_access_token(
         if user.status != UserStatus.active:
             raise InvalidToken
 
-        # Step 6: record activity, at most once a minute.
+        # Record activity, at most once a minute.
         await sessions.touch(session, auth_session.id, now=now)
 
     # The role comes from the database row, never from the token.
@@ -140,13 +139,13 @@ async def get_current_api_user(
     session: Annotated[AsyncSession, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> CurrentUser:
-    """Authenticate an API request: Bearer token only, cookies are never looked at (step 1).
+    """Authenticate an API request: Bearer token only, cookies are never looked at.
 
     Raises:
         InvalidToken: see ``authenticate_access_token``; the handler adds
             ``WWW-Authenticate: Bearer``.
 
-    Object-level authorization (step 5) is up to the route's service.
+    Object-level authorization is up to the route's service.
     """
     user = await authenticate_access_token(session, settings, token)
     # The per-user rate limits (ratelimit.py) key on this value.
@@ -164,7 +163,7 @@ async def get_optional_page_user(
 ) -> CurrentUser | None:
     """Return the logged-in user of a page request, or None if nobody is logged in.
 
-    Reads the access cookie (step 1 of the token checks, for pages). If it is missing or no longer
+    Reads the access cookie. If it is missing or no longer
     valid but a refresh cookie exists, the session is refreshed transparently: the rotated
     tokens are left on ``request.state`` and ``AuthCookieMiddleware`` puts them in the response.
     Cookies that lead nowhere are scheduled for deletion.
@@ -389,7 +388,7 @@ def validation_messages(error: ValidationError) -> list[str]:
 
 
 def file_out(item: FileItem, viewer_id: int) -> FileOut:
-    """Build the file metadata of example 9.3; never includes the blob name."""
+    """Build the file metadata; never includes the blob name."""
     file = item.file
     return FileOut(
         id=file.id,

@@ -163,7 +163,7 @@ def database_url() -> Iterator[str]:
     url = _server_url()
     _require_test_database(url)
     asyncio.run(_prepare_database(url))
-    # The Alembic environment reads DATABASE_URL (D13).
+    # The Alembic environment reads DATABASE_URL.
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = url
     try:

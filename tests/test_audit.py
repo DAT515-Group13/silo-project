@@ -8,7 +8,7 @@ from app.models import AuditLog, Outcome
 from app.services.audit import AuditAction, AuditContext, record, record_failure
 
 # The exact list of audit actions.
-SPEC_ACTIONS = {
+EXPECTED_ACTIONS = {
     "auth.register", "auth.login", "auth.logout", "auth.logout_all", "auth.refresh",
     "auth.refresh_reuse", "auth.lockout", "auth.session_revoke", "auth.password_change",
     "file.upload",
@@ -21,10 +21,10 @@ SPEC_ACTIONS = {
 }  # fmt: skip
 
 
-def test_actions_match_the_spec_list() -> None:
+def test_actions_match_the_expected_list() -> None:
     """AuditAction has exactly the actions, and each fits the column (50)."""
     values = {action.value for action in AuditAction}
-    assert values == SPEC_ACTIONS
+    assert values == EXPECTED_ACTIONS
     assert all(len(value) <= 50 for value in values)
 
 

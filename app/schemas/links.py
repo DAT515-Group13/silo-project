@@ -22,7 +22,7 @@ class LinkCreateIn(InputModel):
 
 
 class LinkCreatedOut(BaseModel):
-    """Response of link creation. The URL is returned only here (example 9.4)."""
+    """Response of link creation. The URL is returned only here."""
 
     id: int
     url: str

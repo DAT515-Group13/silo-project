@@ -75,7 +75,7 @@ def quota_case(settings: Settings) -> Case:
 
 
 async def get_quota_status(session: AsyncSession, settings: Settings, user_id: int) -> QuotaStatus:
-    """Read the user's usage and quota in its own read-only transaction (upload step 2).
+    """Read the user's usage and quota in its own read-only transaction.
 
     Only a hint for streaming: the binding check is ``reserve_quota``.
 
@@ -92,7 +92,7 @@ async def get_quota_status(session: AsyncSession, settings: Settings, user_id: i
 
 
 async def reserve_quota(session: AsyncSession, settings: Settings, user_id: int, size: int) -> int:
-    """Add ``size`` bytes to the user's usage if they fit into the quota (upload step 4).
+    """Add ``size`` bytes to the user's usage if they fit into the quota.
 
     Runs inside the caller's ``session.begin()`` block, together with the insert of the
     ``files`` row and the audit entry, and never commits.
@@ -132,7 +132,7 @@ async def total_used_bytes(session: AsyncSession) -> int:
 
 
 async def get_global_remaining(session: AsyncSession, settings: Settings) -> int | None:
-    """Return the bytes left under ``STORAGE_TOTAL_MAX_BYTES`` (upload step 2), or None if off.
+    """Return the bytes left under ``STORAGE_TOTAL_MAX_BYTES``, or None if off.
 
     Read in its own transaction and only a hint for streaming: the binding check is
     ``reserve_global``. Never negative.
@@ -146,7 +146,7 @@ async def get_global_remaining(session: AsyncSession, settings: Settings) -> int
 
 
 async def reserve_global(session: AsyncSession, settings: Settings, size: int) -> None:
-    """Check that ``size`` more bytes fit under ``STORAGE_TOTAL_MAX_BYTES`` (upload step 4).
+    """Check that ``size`` more bytes fit under ``STORAGE_TOTAL_MAX_BYTES``.
 
     Runs inside the caller's ``session.begin()`` block, before ``reserve_quota``, and does
     nothing when the cap is off.
@@ -299,7 +299,7 @@ async def approve_user(
 
     Raises:
         NotFound: the actor is not an admin, or the user does not exist.
-        InvalidUserState: the user is not ``pending`` (D18).
+        InvalidUserState: the user is not ``pending``.
 
     Side effects: sets ``approved_by`` and ``approved_at``, writes ``user.approve``.
     """
@@ -336,10 +336,10 @@ async def reject_user(
 
     Raises:
         NotFound: the actor is not an admin, or the user does not exist.
-        InvalidUserState: the user is not ``pending`` (D18).
+        InvalidUserState: the user is not ``pending``.
 
-    Side effects: revokes all sessions (a pending account has none, but the spec asks for it
-    on every rejection), writes ``user.reject`` with ``details.reason``.
+    Side effects: revokes all sessions (a pending account has none; done anyway, so a
+    rejected account can never keep a session), writes ``user.reject`` with ``details.reason``.
     """
     _require_admin(actor)
     async with session.begin():
@@ -471,7 +471,7 @@ async def delete_user(
     Same order as ``files.delete_file``: first one transaction deletes the user row (whose
     foreign keys cascade to sessions, files, owned teams, memberships and links) and writes the
     audit entry, then the blobs are deleted. A blob that cannot be deleted is logged and left
-    for orphan cleanup (D24); the user is gone either way. Audit rows stay.
+    for orphan cleanup; the user is gone either way. Audit rows stay.
 
     Raises:
         NotFound: the actor is not an admin, or the user does not exist.

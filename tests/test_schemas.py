@@ -45,7 +45,7 @@ def test_valid_username_is_accepted(username: str) -> None:
 
 
 def test_login_username_is_only_normalized() -> None:
-    """Login never fails on username format, so it cannot reveal which names are valid (Q20)."""
+    """Login never fails on username format, so it cannot reveal which names are valid."""
     assert LoginIn(username=" Not A Valid Name! ", password="x").username == "not a valid name!"
     with pytest.raises(ValidationError):
         LoginIn(username="a" * 33, password="x")

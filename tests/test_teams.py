@@ -26,7 +26,7 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_plain_user_cannot_create_a_team(client: httpx.AsyncClient, act_as: ActAs) -> None:
-    """Only team_lead and admin create teams; a user gets 403 role_required (D19)."""
+    """Only team_lead and admin create teams; a user gets 403 role_required."""
     act_as(Role.user)
     response = await client.post("/api/v1/teams", json={"name": "Design"})
     assert response.status_code == 403
@@ -165,7 +165,7 @@ async def test_owner_cannot_leave_but_members_can(
     leave = await client.delete(f"/api/v1/teams/{team_id}/members/{anna.id}", headers=member)
     assert leave.status_code == 204
     assert await member_names(client, owner, team_id) == ["lead"]
-    # Gone means gone: the former member now gets 404, and a second removal is 404 (Q22).
+    # Gone means gone: the former member now gets 404, and a second removal is 404.
     assert (await client.get(f"/api/v1/teams/{team_id}", headers=member)).status_code == 404
     again = await client.delete(f"/api/v1/teams/{team_id}/members/{anna.id}", headers=owner)
     assert again.status_code == 404
@@ -204,7 +204,7 @@ async def test_team_files_list_is_paginated_and_marks_own_files(
     bearer_for: BearerFor,
     file_factory: FileFactory,
 ) -> None:
-    """Members see shared files with owner and is_owner, in pages (example 9.3)."""
+    """Members see shared files with owner and is_owner, in pages."""
     lead = await user_factory(username="lead", role=Role.team_lead)
     owner = await bearer_for(lead)
     anna = await user_factory(username="anna")

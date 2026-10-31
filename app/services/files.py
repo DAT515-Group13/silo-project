@@ -115,7 +115,7 @@ def normalize_content_type(client_value: str | None) -> str | None:
 
 
 def choose_content_type(head: bytes, client_value: str | None) -> str:
-    """Upload step 3: detected type, else the client's clean value, else octet-stream.
+    """Pick the content type: detected type, else the client's clean value, else octet-stream.
 
     For signatures shared by many formats (ZIP) the client's clean value is preferred, unless
     it is a type a browser would render: a ZIP file is never stored as ``text/html``.
@@ -175,7 +175,7 @@ async def _limited(
 ) -> AsyncIterator[bytes]:
     """Pass chunks on while counting; stop as soon as a limit is passed.
 
-    Raising here aborts the blob upload before anything is committed (upload step 2). The order
+    Raising here aborts the blob upload before anything is committed. The order
     is: file size limit, the user's own quota, then the service's total cap (``None`` = no cap),
     so a user over their own quota is told that, not that the service is full.
     """
@@ -254,8 +254,8 @@ async def upload(
 ) -> FileItem:
     """Store an uploaded file: size hint, quota check, stream to blob storage, then database.
 
-    The comments mark the five steps of the upload flow. ``declared_size`` is the request's
-    Content-Length: only a hint, used to refuse obviously oversized uploads before reading them.
+    ``declared_size`` is the request's Content-Length: only a hint, used to refuse obviously
+    oversized uploads before reading them.
 
     Raises:
         ValidationFailed: the file name is empty after cleaning.
@@ -276,12 +276,13 @@ async def upload(
     blob_name = uuid.uuid4().hex  # random, never derived from user input
     blob_stored = False
     try:
-        # Step 1: Content-Length is a hint only, but a huge value is refused without reading.
+        # Content-Length is a hint only, but a huge value is refused without reading.
         max_size = settings.max_file_size_bytes
         if declared_size is not None and declared_size > max_size + MULTIPART_MARGIN_BYTES:
             raise FileTooLarge
 
-        # Step 2: how much room is left. A stale value is fine; step 4 is the binding check.
+        # How much room is left. A stale value is fine; the atomic quota UPDATE below is the
+        # binding check.
         status = await users.get_quota_status(session, settings, user.id)
         if not status.can_upload:
             raise QuotaExceeded
@@ -289,7 +290,7 @@ async def upload(
         if global_remaining is not None and global_remaining <= 0:
             raise StorageFull
 
-        # Step 3: detect the type from the first bytes; stream the rest to blob storage.
+        # Detect the type from the first bytes; stream the rest to blob storage.
         head, stream = await _with_head(chunks)
         content_type = choose_content_type(head, client_type)
         size = await store.upload_stream(
@@ -304,7 +305,7 @@ async def upload(
         )
         blob_stored = True
 
-        # Step 4: one short transaction. The atomic quota UPDATE is the real check: a parallel
+        # One short transaction. The atomic quota UPDATE is the real check: a parallel
         # upload may have used the space meanwhile.
         async with session.begin():
             await users.reserve_global(session, settings, size)
@@ -333,7 +334,7 @@ async def upload(
         return FileItem(file=file, owner_username=user.username)
     except BaseException as exc:
         _count_failed_upload(exc)
-        # Step 5: anything after the blob was stored removes it again; used_bytes did not change
+        # Anything after the blob was stored removes it again; used_bytes did not change
         # because the transaction above rolled back. BaseException also covers a cancelled
         # request, and the shield lets the cleanup finish even then.
         with anyio.CancelScope(shield=True):

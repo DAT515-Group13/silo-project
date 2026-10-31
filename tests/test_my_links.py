@@ -1,4 +1,4 @@
-"""Overview of all own links and changing the expiry of a link (D30).
+"""Overview of all own links and changing the expiry of a link.
 
 The ``db`` tests check the rules: only the owner sees and changes links, the lifetime counts
 from now and is audited, an expired link can be renewed within the limit of 10 active links,

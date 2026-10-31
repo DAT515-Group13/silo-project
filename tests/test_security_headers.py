@@ -1,4 +1,4 @@
-"""Security response headers (architecture.md section 12)."""
+"""Security response headers."""
 
 import httpx
 import pytest

@@ -1,11 +1,11 @@
-"""Teams, memberships and the sharing helpers for B.
+"""Teams, memberships and the sharing helpers.
 
 Every public service function owns its transaction and writes its audit entry. The three helpers
-at the end (``is_team_member``, ``is_shared_with_user``, ``shared_file_ids_for_user``) are
+at the start (``is_team_member``, ``is_shared_with_user``, ``shared_file_ids_for_user``) are
 building blocks for the file services and run in the caller's transaction.
 
 Missing access is always ``NotFound``, so a non-member cannot tell whether a team
-exists. Only team creation by a plain ``user`` is ``RoleRequired`` (D19).
+exists. Only team creation by a plain ``user`` is ``RoleRequired``.
 """
 
 import uuid
@@ -50,13 +50,13 @@ class TeamDetail:
 
 @dataclass(frozen=True)
 class FileItem:
-    """A file row with its owner's username, for file listings (example 9.3)."""
+    """A file row with its owner's username, for file listings."""
 
     file: File
     owner_username: str
 
 
-# --- Helpers for the file services (B) -----------------------------------------------------------
+# --- Helpers for the file services -----------------------------------------------------------
 
 
 async def is_team_member(session: AsyncSession, team_id: int, user_id: int) -> bool:
@@ -122,8 +122,8 @@ async def create_team(
     ``name`` is already trimmed and 1-100 characters long (schema ``TeamName``).
 
     Raises:
-        RoleRequired: the user is neither ``team_lead`` nor ``admin`` (D19).
-        TeamNameTaken: the user already owns a team with this name (D18).
+        RoleRequired: the user is neither ``team_lead`` nor ``admin``.
+        TeamNameTaken: the user already owns a team with this name.
 
     Side effects: inserts the team and the membership, writes ``team.create``.
     """
@@ -297,7 +297,7 @@ async def remove_member(
 
     Raises:
         NotFound: the team does not exist, the caller may not remove this user, or the user is
-            not a member (Q22).
+            not a member.
         OwnerCannotLeave: the owner tried to remove themself.
 
     Side effects: deletes the membership and the shares, writes ``team.member_remove``.

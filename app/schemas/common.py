@@ -48,7 +48,7 @@ Username = Annotated[str, AfterValidator(normalize_username)]
 
 # Login only normalizes and caps the length. A string that cannot be a valid username must
 # behave like any unknown username (401 plus dummy hash), not produce a different error class
-# (open question Q20).
+# .
 LoginUsername = Annotated[
     str, AfterValidator(_normalize_login_username), Field(min_length=1, max_length=32)
 ]

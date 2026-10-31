@@ -113,9 +113,8 @@ def check_password_policy(
     """Check the rules for a new password.
 
     The password is normalised first (NFKC). It must be between ``min_length`` and
-    ``PASSWORD_MAX_LENGTH`` characters and must not equal the username (case-insensitive). A
-    common-passwords list is a planned hardening step. ``field`` names the input in the errors
-    (``new_password`` for a password change).
+    ``PASSWORD_MAX_LENGTH`` characters and must not equal the username (case-insensitive).
+    ``field`` names the input in the errors (``new_password`` for a password change).
 
     Raises:
         ValidationFailed: with one ``{"field": field, ...}`` entry per broken rule.
@@ -200,14 +199,14 @@ def decode_access_token(
     Raises:
         InvalidToken: for every failure, without details (one answer for all causes).
     """
-    # Step 2a: order the secrets so the one named by `kid` is tried first.
+    # Order the secrets so the one named by `kid` is tried first.
     try:
         kid = jwt.get_unverified_header(token).get("kid")
     except jwt.PyJWTError as exc:
         raise InvalidToken from exc
     ordered = sorted(secrets, key=lambda candidate: key_id(candidate) != kid)
 
-    # Step 2b: verify with each secret in turn.
+    # Verify with each secret in turn.
     payload: dict | None = None
     for secret in ordered:
         try:
@@ -228,7 +227,7 @@ def decode_access_token(
     if payload is None:
         raise InvalidToken
 
-    # Step 2c: refresh tokens and other JWTs must not work as access tokens.
+    # Refresh tokens and other JWTs must not work as access tokens.
     if payload.get("typ") != "access":
         raise InvalidToken
     try:

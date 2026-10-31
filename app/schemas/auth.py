@@ -58,7 +58,7 @@ class UserBriefOut(BaseModel):
 
 
 class TokenPairOut(BaseModel):
-    """Response of login and refresh (example 9.1)."""
+    """Response of login and refresh."""
 
     access_token: str
     refresh_token: str
@@ -69,7 +69,7 @@ class TokenPairOut(BaseModel):
 
 
 class MeOut(BaseModel):
-    """Response of ``GET /me`` (example 9.2)."""
+    """Response of ``GET /me``."""
 
     id: int
     username: str
@@ -79,7 +79,7 @@ class MeOut(BaseModel):
 
 
 class SessionOut(BaseModel):
-    """One active session of the current user (example 9.6)."""
+    """One active session of the current user."""
 
     id: uuid.UUID
     created_at: datetime

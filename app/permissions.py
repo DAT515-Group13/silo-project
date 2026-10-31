@@ -3,7 +3,7 @@
 Nothing in this module reads or writes the database: services load the facts (the file or team
 row, membership, shares) and pass them in. Callers turn ``False`` into ``NotFound`` (404, never
 403), so object IDs cannot be probed. The one exception is ``can_create_team``: it
-is about the caller's role, not about an object, and maps to ``RoleRequired`` (403, D19).
+is about the caller's role, not about an object, and maps to ``RoleRequired`` (403).
 """
 
 import uuid
@@ -92,7 +92,7 @@ def can_create_team(user: CurrentUser) -> bool:
 
     Only creation depends on the role. A team lead demoted to ``user`` keeps managing the teams
     they own, because every other team rule looks at ownership, not at the role.
-    The caller answers ``False`` with ``RoleRequired`` (403, D19), not with 404.
+    The caller answers ``False`` with ``RoleRequired`` (403), not with 404.
     """
     return user.role in (Role.team_lead, Role.admin)
 
