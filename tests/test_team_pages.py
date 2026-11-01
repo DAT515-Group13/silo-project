@@ -1,7 +1,6 @@
 """Team pages and form actions.
 
-Tests without the ``db`` marker stop before the database (login, CSRF, role check). The ``db``
-tests log in with a real session in the access cookie.
+The tests log in with a real session in the access cookie.
 """
 
 import httpx
@@ -11,12 +10,6 @@ from app.models import Role
 from tests.conftest import PageLogin, UserFactory, post
 
 pytestmark = pytest.mark.anyio
-
-
-# --- No database needed --------------------------------------------------------------------------
-
-
-# --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 
 @pytest.mark.db

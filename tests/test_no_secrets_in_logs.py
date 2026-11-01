@@ -25,32 +25,41 @@ async def test_failed_requests_do_not_log_credentials(
     caplog.set_level(logging.DEBUG)
     forged = token_for(settings, 1, uuid.uuid4(), secret="x" * 40)
 
-    await client.post(
-        "/api/v1/auth/login", json={"username": "x" * 80, "password": SECRET_PASSWORD}
-    )
-    await client.post("/api/v1/auth/register", json={"username": "x", "password": SECRET_PASSWORD})
-    await client.post("/api/v1/auth/refresh", json={"refresh_token": "r" * 200})
-    await client.get("/api/v1/me", headers=bearer(forged))
-    await client.get("/api/v1/me", headers={"Authorization": f"Bearer {SECRET_PASSWORD}"})
+    responses = [
+        await client.post(
+            "/api/v1/auth/login", json={"username": "x" * 80, "password": SECRET_PASSWORD}
+        ),
+        await client.post(
+            "/api/v1/auth/register", json={"username": "x", "password": SECRET_PASSWORD}
+        ),
+        await client.post("/api/v1/auth/refresh", json={"refresh_token": "r" * 200}),
+        await client.get("/api/v1/me", headers=bearer(forged)),
+        await client.get("/api/v1/me", headers={"Authorization": f"Bearer {SECRET_PASSWORD}"}),
+    ]
     page = await client.get("/login")
-    await client.post(
-        "/login",
-        data={
-            "csrf_token": token_of(page),
-            "username": "x" * 80,
-            "password": SECRET_PASSWORD,
-        },
-        headers=ORIGIN,
+    responses.append(
+        await client.post(
+            "/login",
+            data={
+                "csrf_token": token_of(page),
+                "username": "x" * 80,
+                "password": SECRET_PASSWORD,
+            },
+            headers=ORIGIN,
+        )
     )
 
+    # Every request really failed (a crash would be a 500 and would not prove anything).
+    assert page.status_code == 200
+    assert [r.status_code for r in responses] == [422, 422, 422, 401, 401, 401]
+    assert caplog.records  # something was captured, so the checks below can fail
     assert SECRET_PASSWORD not in caplog.text
     assert forged not in caplog.text
     assert "r" * 200 not in caplog.text
 
 
-async def test_settings_never_print_secrets(caplog: pytest.LogCaptureFixture) -> None:
+def test_settings_never_print_secrets() -> None:
     """repr() and str() of the settings hide every secret (a stray log of the object is safe)."""
-    caplog.set_level(logging.DEBUG)
     settings: Settings = make_settings()
     text = f"{settings!r} {settings}"
     for secret in (

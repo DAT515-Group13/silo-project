@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.schemas.auth import LoginIn, RefreshIn, RegisterIn
 from app.schemas.common import normalize_username
+from app.schemas.links import LinkCreateIn, LinkUpdateIn
 from app.schemas.teams import AddMemberIn, TeamIn
 
 
@@ -73,3 +74,14 @@ def test_team_name_is_trimmed_and_length_limited() -> None:
     for bad in ("", "   ", "a" * 101):
         with pytest.raises(ValidationError):
             TeamIn(name=bad)
+
+
+def test_link_hours_must_be_positive() -> None:
+    """Creating defaults to 24 hours, changing has no default; both need at least 1 hour."""
+    assert LinkCreateIn().expires_in_hours == 24
+    with pytest.raises(ValidationError):
+        LinkCreateIn(expires_in_hours=0)
+    with pytest.raises(ValidationError):
+        LinkUpdateIn()  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        LinkUpdateIn(expires_in_hours=0)

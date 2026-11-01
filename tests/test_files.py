@@ -1,100 +1,30 @@
 """File API: listing, metadata, rename, download and delete.
 
-Tests without the ``db`` marker stop before the database (token and body checks). The ``db``
-tests go through HTTP with real tokens and check the permission matrix: no access
-is always 404, never 403.
+The tests go through HTTP with real tokens and check the permission matrix: no access
+is always 404, never 403. Uploads are in ``test_uploads.py``.
 """
-
-from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 from sqlalchemy import select
 
 from app.config import Settings
-from app.models import AuditLog, File, Role, User
+from app.models import AuditLog, File, Role
 from tests.conftest import (
-    ActAs,
     BearerFor,
     FileFactory,
     Sessionmaker,
     UserFactory,
-    add_member,
+    audit_actions,
     make_team,
     sample,
+    team_with,
+    used_bytes,
 )
 from tests.fakes import InMemoryBlobStore, parse_download_url
 
 pytestmark = pytest.mark.anyio
 
-
-# --- No database needed --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "request_args",
-    [
-        {"json": {"file": "x"}},  # not multipart
-        {"files": {"other": ("a.txt", b"x")}},  # the part is not named `file`
-        {"files": {"file": ("", b"", "application/octet-stream")}},  # no file chosen
-    ],
-)
-async def test_upload_with_a_bad_body_is_422(
-    client: httpx.AsyncClient, act_as: ActAs, request_args: dict
-) -> None:
-    """A JSON body, a wrongly named part or an empty file name is a 422, not a crash."""
-    act_as(Role.user)
-    response = await client.post("/api/v1/files", **request_args)
-    assert response.status_code == 422
-    assert response.json()["code"] == "validation_error"
-
-
-@pytest.mark.parametrize(
-    ("extra", "drained"),
-    [
-        (1024 * 1024, True),  # over the limit, under the drain cap (+ 5 MiB): the rest is read
-        (10**9, False),  # announced far over the cap: draining could not finish, so it is skipped
-    ],
-)
-async def test_oversized_content_length_is_413_and_drains_only_below_the_cap(
-    client: httpx.AsyncClient,
-    act_as: ActAs,
-    settings: Settings,
-    blob_store: InMemoryBlobStore,
-    extra: int,
-    drained: bool,
-) -> None:
-    """A Content-Length over the limit is refused before any blob work.
-
-    A body that is still small enough is read to the end before the 413 is sent, otherwise the
-    proxy can turn the 413 into a 502. The denied-upload audit entry cannot be written
-    without a database; that is only logged.
-    """
-    act_as(Role.user)
-    sent: list[int] = []
-    head = b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
-
-    async def body() -> AsyncIterator[bytes]:
-        yield head
-        for i in range(20):
-            sent.append(i)
-            yield b"x" * 1000
-        yield b"\r\n--b--\r\n"
-
-    response = await client.post(
-        "/api/v1/files",
-        content=body(),
-        headers={
-            "content-type": "multipart/form-data; boundary=b",
-            "content-length": str(settings.max_file_size_bytes + extra),
-        },
-    )
-    assert (response.status_code, response.json()["code"]) == (413, "file_too_large")
-    assert blob_store.blobs == {}
-    assert (len(sent) == 20) is drained
-
-
-# --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 db = pytest.mark.db
 
@@ -112,7 +42,7 @@ async def test_permission_matrix_for_a_file(
 
     The admin's delete gives the bytes back to the owner (not the admin) and removes the blob.
     """
-    owner = await user_factory("owner")
+    owner = await user_factory("owner", role=Role.team_lead)
     stranger = await user_factory("stranger")
     admin = await user_factory("boss", role=Role.admin)
     file = await file_factory(owner.id, size_bytes=10)
@@ -120,6 +50,7 @@ async def test_permission_matrix_for_a_file(
     path = f"/api/v1/files/{file.id}"
 
     owner_h = await bearer_for(owner)
+    team_id = await make_team(client, owner_h)  # a real team: the 404 below is about ownership
     assert (await client.get(path, headers=owner_h)).status_code == 200
     assert (await client.get(f"{path}/download", headers=owner_h)).status_code == 302
 
@@ -131,15 +62,13 @@ async def test_permission_matrix_for_a_file(
         assert renamed.status_code == 404
         # Sharing is for the owner only: an admin can neither list nor change the shares.
         assert (await client.get(f"{path}/teams", headers=headers)).status_code == 404
-        assert (await client.put(f"{path}/teams/1", headers=headers)).status_code == 404
+        assert (await client.put(f"{path}/teams/{team_id}", headers=headers)).status_code == 404
 
     assert (await client.delete(path, headers=await bearer_for(stranger))).status_code == 404
     assert (await client.delete(path, headers=await bearer_for(admin))).status_code == 204
-    async with db_sessionmaker() as session:
-        assert await session.scalar(select(User.used_bytes).where(User.id == owner.id)) == 0
-        actions = (await session.scalars(select(AuditLog.action))).all()
+    assert await used_bytes(db_sessionmaker, owner.id) == 0
     assert blob_store.blobs == {}
-    assert "file.delete" in actions
+    assert "file.delete" in await audit_actions(db_sessionmaker)
 
 
 @db
@@ -160,7 +89,7 @@ async def test_delete_still_succeeds_when_the_blob_cannot_be_deleted(
     assert response.status_code == 204
     async with db_sessionmaker() as session:
         assert await session.scalar(select(File).where(File.id == file.id)) is None
-        assert await session.scalar(select(User.used_bytes).where(User.id == owner.id)) == 0
+    assert await used_bytes(db_sessionmaker, owner.id) == 0
     assert file.blob_name in blob_store.blobs  # the orphan that cleanup will remove
 
 
@@ -189,8 +118,7 @@ async def test_download_redirects_to_a_read_only_url(
     assert parts["content_type"] == "application/octet-stream"
     assert parts["sp"] == "r"
     assert parts["ttl"] == str(settings.sas_url_ttl_seconds)
-    async with db_sessionmaker() as session:
-        actions = (await session.scalars(select(AuditLog.action))).all()
+    actions = await audit_actions(db_sessionmaker)
     assert actions == ["file.download"]
 
 
@@ -275,14 +203,6 @@ async def test_metadata_works_while_storage_is_down(
 
 
 # --- Sharing with teams (needs PostgreSQL) -------------------------------------------------------
-
-
-async def team_with(client: httpx.AsyncClient, lead_headers: dict, *usernames: str) -> int:
-    """The lead creates a team and adds the given usernames; returns the team ID."""
-    team_id = await make_team(client, lead_headers)
-    for username in usernames:
-        assert await add_member(client, lead_headers, team_id, username) == 204
-    return team_id
 
 
 @db

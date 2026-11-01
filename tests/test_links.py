@@ -2,8 +2,10 @@
 
 Tests without the ``db`` marker stop before the database (validation, malformed tokens, log
 redaction). The ``db`` tests go through HTTP with real tokens and check the promises:
-only a hash is stored, every failing link gives the same
-404, and the token never reaches the audit log or the logs.
+only a hash is stored, every failing link gives the same 404, and the token never reaches the
+audit log or the logs. The overview of all own links and changing a link's expiry are at the end
+(only the owner sees and changes links, the lifetime counts from now and is audited, an expired
+link can be renewed within the limit of 10 active links, a revoked link stays revoked).
 """
 
 import asyncio
@@ -13,13 +15,11 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from pydantic import ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from app.config import Settings
 from app.main import RedactLinkTokens
-from app.models import AuditLog, Role, ShareLink, User, UserStatus
-from app.schemas.links import LinkCreateIn, LinkUpdateIn
+from app.models import AuditLog, Role, ShareLink
 from app.security import hash_token
 from tests.conftest import (
     PUBLIC_HEADERS,
@@ -29,6 +29,7 @@ from tests.conftest import (
     Sessionmaker,
     UserFactory,
     assert_same_404,
+    expire_link,
     make_link,
     open_link,
     sample,
@@ -38,17 +39,6 @@ from tests.fakes import InMemoryBlobStore, parse_download_url
 pytestmark = pytest.mark.anyio
 
 # --- No database needed --------------------------------------------------------------------------
-
-
-def test_link_hours_must_be_positive() -> None:
-    """Creating defaults to 24 hours, changing has no default; both need at least 1 hour."""
-    assert LinkCreateIn().expires_in_hours == 24
-    with pytest.raises(ValidationError):
-        LinkCreateIn(expires_in_hours=0)
-    with pytest.raises(ValidationError):
-        LinkUpdateIn()  # type: ignore[call-arg]
-    with pytest.raises(ValidationError):
-        LinkUpdateIn(expires_in_hours=0)
 
 
 @pytest.mark.parametrize(
@@ -203,20 +193,14 @@ async def test_every_failing_link_gives_the_same_404(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Unknown, expired, revoked and owner-disabled links are indistinguishable."""
+    """Unknown, expired and revoked links are indistinguishable (disabled owner: admin tests)."""
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
-    _, expired = await make_link(client, headers, file.id)
+    expired_id, expired = await make_link(client, headers, file.id)
     revoked_id, revoked = await make_link(client, headers, file.id)
-    _, disabled = await make_link(client, headers, file.id)
 
-    async with db_sessionmaker() as session, session.begin():
-        await session.execute(
-            update(ShareLink)
-            .where(ShareLink.token_hash == hash_token(expired))
-            .values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
-        )
+    await expire_link(db_sessionmaker, expired_id)
     assert (await client.delete(f"/api/v1/links/{revoked_id}", headers=headers)).status_code == 204
 
     bodies = set()
@@ -225,18 +209,6 @@ async def test_every_failing_link_gives_the_same_404(
         assert_same_404(response)
         bodies.add(response.text)
     assert len(bodies) == 1
-
-    # Disabling the owner stops the link; reactivating makes it work again.
-    async with db_sessionmaker() as session, session.begin():
-        await session.execute(
-            update(User).where(User.id == owner.id).values(status=UserStatus.disabled)
-        )
-    assert_same_404(await open_link(client, disabled))
-    async with db_sessionmaker() as session, session.begin():
-        await session.execute(
-            update(User).where(User.id == owner.id).values(status=UserStatus.active)
-        )
-    assert (await open_link(client, disabled)).status_code == 302
 
 
 @db
@@ -247,7 +219,7 @@ async def test_deleting_the_file_kills_its_links(
     bearer_for: BearerFor,
 ) -> None:
     """Links are removed with their file (cascade), so the token stops working."""
-    owner = await user_factory("owner", used_bytes=10)  # the delete gives these bytes back
+    owner = await user_factory("owner")
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
     _, token = await make_link(client, headers, file.id)
@@ -268,18 +240,13 @@ async def test_at_most_ten_active_links_per_file(
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
-    tokens = [(await make_link(client, headers, file.id))[1] for _ in range(10)]
+    link_ids = [(await make_link(client, headers, file.id))[0] for _ in range(10)]
 
     refused = await client.post(f"/api/v1/files/{file.id}/links", json={}, headers=headers)
     assert refused.status_code == 409
     assert refused.json()["code"] == "link_limit"
 
-    async with db_sessionmaker() as session, session.begin():
-        await session.execute(
-            update(ShareLink)
-            .where(ShareLink.token_hash == hash_token(tokens[0]))
-            .values(expires_at=datetime.now(UTC) - timedelta(hours=1))
-        )
+    await expire_link(db_sessionmaker, link_ids[0])
     await make_link(client, headers, file.id)  # fits again
 
 
@@ -393,3 +360,128 @@ async def test_the_token_never_reaches_logs_or_audit(
     assert {"link.create", "link.download", "link.revoke"} <= {row.action for row in rows}
     for row in rows:
         assert token not in f"{row.target_id} {row.target_label} {row.details}"
+
+
+# --- Overview of own links and changing the expiry ----------------------------
+
+
+@db
+async def test_overview_lists_only_own_links_and_filters_by_status_and_file(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Own links only, active by default; the status and file filters narrow the list."""
+    owner = await user_factory("owner")
+    other = await user_factory("other")
+    owner_h, other_h = await bearer_for(owner), await bearer_for(other)
+    first, second = await file_factory(owner.id), await file_factory(owner.id)
+    foreign = await file_factory(other.id)
+    revoked_id, token = await make_link(client, owner_h, first.id)
+    expired_id, _ = await make_link(client, owner_h, first.id)
+    active_id, _ = await make_link(client, owner_h, second.id)
+    await make_link(client, other_h, foreign.id)
+    await client.delete(f"/api/v1/links/{revoked_id}", headers=owner_h)
+    await expire_link(db_sessionmaker, expired_id)
+
+    async def ids(query: str) -> list[int]:
+        response = await client.get(f"/api/v1/links{query}", headers=owner_h)
+        assert response.status_code == 200
+        assert token not in response.text and "url" not in response.text
+        return [item["id"] for item in response.json()["items"]]
+
+    assert await ids("") == [active_id]
+    assert await ids("?status=expired") == [expired_id]
+    assert await ids("?status=revoked") == [revoked_id]
+    assert await ids("?status=all") == [active_id, expired_id, revoked_id]
+    assert await ids(f"?status=all&file_id={first.id}") == [expired_id, revoked_id]
+    assert await ids("?status=all&page=2&size=2") == [revoked_id]
+    body = (await client.get("/api/v1/links", headers=owner_h)).json()["items"][0]
+    assert body["file_id"] == str(second.id) and body["filename"] == second.filename
+
+
+@db
+async def test_change_expiry_counts_from_now_and_audits_old_and_new(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Shorter or longer, from now; the audit entry has the old and the new time."""
+    owner = await user_factory("owner")
+    headers = await bearer_for(owner)
+    link_id, _ = await make_link(client, headers, (await file_factory(owner.id)).id, hours=24)
+    for hours in (2, 100):
+        response = await client.patch(
+            f"/api/v1/links/{link_id}", json={"expires_in_hours": hours}, headers=headers
+        )
+        assert response.status_code == 200
+        expected = datetime.now(UTC) + timedelta(hours=hours)
+        assert abs(datetime.fromisoformat(response.json()["expires_at"]) - expected) < timedelta(
+            minutes=1
+        )
+    async with db_sessionmaker() as session:
+        entries = (
+            await session.scalars(select(AuditLog).where(AuditLog.action == "link.update"))
+        ).all()
+    assert len(entries) == 2
+    assert {"old_expires_at", "new_expires_at"} <= set(entries[0].details)
+
+
+@db
+async def test_only_the_owner_changes_a_link_and_a_revoked_link_stays_revoked(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Stranger, admin, unknown ID and a revoked link all get 404; revoking stays final."""
+    owner = await user_factory("owner")
+    stranger = await user_factory("stranger")
+    admin = await user_factory("boss", role=Role.admin)
+    owner_h, stranger_h, admin_h = [await bearer_for(u) for u in (owner, stranger, admin)]
+    file = await file_factory(owner.id)
+    link_id, _ = await make_link(client, owner_h, file.id)
+    body = {"expires_in_hours": 5}
+
+    for headers in (stranger_h, admin_h):
+        response = await client.patch(f"/api/v1/links/{link_id}", json=body, headers=headers)
+        assert response.status_code == 404
+    unknown = await client.patch("/api/v1/links/999999", json=body, headers=owner_h)
+    assert unknown.status_code == 404
+
+    await client.delete(f"/api/v1/links/{link_id}", headers=owner_h)
+    revoked = await client.patch(f"/api/v1/links/{link_id}", json=body, headers=owner_h)
+    assert revoked.status_code == 404
+    async with db_sessionmaker() as session:
+        assert await session.scalar(select(ShareLink.revoked_at)) is not None
+
+
+@db
+async def test_renewal_respects_the_limit_and_makes_the_same_url_work_again(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """With 10 active links the renewal is 409; after one revoke it succeeds and the URL works."""
+    owner = await user_factory("owner")
+    headers = await bearer_for(owner)
+    file = await file_factory(owner.id)
+    expired_id, token = await make_link(client, headers, file.id)
+    await expire_link(db_sessionmaker, expired_id)
+    active = [(await make_link(client, headers, file.id))[0] for _ in range(10)]
+    url, body = f"/api/v1/links/{expired_id}", {"expires_in_hours": 1}
+
+    refused = await client.patch(url, json=body, headers=headers)
+    assert refused.status_code == 409 and refused.json()["code"] == "link_limit"
+    assert (await open_link(client, token)).status_code == 404
+
+    await client.delete(f"/api/v1/links/{active[0]}", headers=headers)
+    assert (await client.patch(url, json=body, headers=headers)).status_code == 200
+    assert (await open_link(client, token)).status_code == 302

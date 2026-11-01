@@ -1,11 +1,7 @@
 """Domain errors and how the exception handlers render them."""
 
-import httpx
-import pytest
-from fastapi import FastAPI
-
 from app import errors
-from app.errors import RateLimited, SiloError
+from app.errors import SiloError
 
 # Status code and error code of every domain error.
 EXPECTED = {
@@ -43,28 +39,3 @@ def test_every_error_has_its_status_and_code() -> None:
     assert {c: (c.status_code, c.code) for c in domain} == EXPECTED
     codes = [c.code for c in domain]
     assert len(codes) == len(set(codes)), "two classes share a code"
-
-
-@pytest.fixture
-def raising_app(app: FastAPI) -> FastAPI:
-    """The real app plus a route that raises RateLimited (the upload guard does that)."""
-
-    @app.get("/api/v1/_raise/rate")
-    async def _raise() -> None:
-        raise RateLimited(retry_after=7)
-
-    return app
-
-
-@pytest.mark.anyio
-async def test_rate_limited_sets_retry_after(
-    client: httpx.AsyncClient, raising_app: FastAPI
-) -> None:
-    """429 rate_limited carries Retry-After.
-
-    Other error bodies are checked by the real endpoints (for example 413 file_too_large in
-    test_files.py, 422 errors in test_links.py, WWW-Authenticate in test_auth_dependency.py).
-    """
-    response = await client.get("/api/v1/_raise/rate")
-    assert response.status_code == 429
-    assert response.headers["retry-after"] == "7"

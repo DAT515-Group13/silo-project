@@ -16,7 +16,9 @@ from tests.conftest import (
     Sessionmaker,
     UserFactory,
     add_member,
+    audit_actions,
     make_team,
+    team_with,
 )
 
 pytestmark = pytest.mark.anyio
@@ -52,7 +54,7 @@ async def test_lead_creates_a_team_and_becomes_owner_and_member(
 ) -> None:
     """The creator owns the team and is its first member; team.create is audited.
 
-    Names are unique per owner (409 team_name_taken); another owner may reuse one (s. 11).
+    Names are unique per owner (409 team_name_taken); another owner may reuse one.
     """
     lead = await user_factory(username="lead", role=Role.team_lead)
     other = await bearer_for(await user_factory(username="other", role=Role.team_lead))
@@ -64,8 +66,7 @@ async def test_lead_creates_a_team_and_becomes_owner_and_member(
         (team_id, "Design", lead.id)
     ]
     assert await member_names(client, headers, team_id) == ["lead"]
-    async with db_sessionmaker() as session, session.begin():
-        actions = (await session.scalars(select(AuditLog.action))).all()
+    actions = await audit_actions(db_sessionmaker)
     assert "team.create" in actions
 
     again = await client.post("/api/v1/teams", json={"name": "Design"}, headers=headers)
@@ -125,14 +126,13 @@ async def test_add_member_always_answers_204(
 async def test_only_the_owner_adds_members(
     client: httpx.AsyncClient, user_factory: UserFactory, bearer_for: BearerFor
 ) -> None:
-    """A member, and even an admin, cannot add members to someone else's team (s. 8.1)."""
+    """A member, and even an admin, cannot add members to someone else's team."""
     owner = await bearer_for(await user_factory(username="lead", role=Role.team_lead))
     member_user = await user_factory(username="anna")
     member = await bearer_for(member_user)
     admin = await bearer_for(await user_factory(username="root", role=Role.admin))
     await user_factory(username="bob")
-    team_id = await make_team(client, owner)
-    await add_member(client, owner, team_id, "anna")
+    team_id = await team_with(client, owner, "anna")
 
     assert await add_member(client, member, team_id, "bob") == 404
     assert await add_member(client, admin, team_id, "bob") == 404
@@ -150,9 +150,7 @@ async def test_owner_cannot_leave_but_members_can(
     anna = await user_factory(username="anna")
     bob = await user_factory(username="bob")
     member = await bearer_for(anna)
-    team_id = await make_team(client, owner)
-    await add_member(client, owner, team_id, "anna")
-    await add_member(client, owner, team_id, "bob")
+    team_id = await team_with(client, owner, "anna", "bob")
 
     bob_path = f"/api/v1/teams/{team_id}/members/{bob.id}"
     assert (await client.delete(bob_path, headers=member)).status_code == 404
@@ -183,8 +181,7 @@ async def test_leaving_removes_only_the_leavers_shares(
     lead = await user_factory(username="lead", role=Role.team_lead)
     owner = await bearer_for(lead)
     anna = await user_factory(username="anna")
-    team_id = await make_team(client, owner)
-    await add_member(client, owner, team_id, "anna")
+    team_id = await team_with(client, owner, "anna")
     await file_factory(anna.id, team_id)
     leads_file = (await file_factory(lead.id, team_id)).id
 
@@ -208,8 +205,7 @@ async def test_team_files_list_is_paginated_and_marks_own_files(
     lead = await user_factory(username="lead", role=Role.team_lead)
     owner = await bearer_for(lead)
     anna = await user_factory(username="anna")
-    team_id = await make_team(client, owner)
-    await add_member(client, owner, team_id, "anna")
+    team_id = await team_with(client, owner, "anna")
     for _ in range(3):
         await file_factory(lead.id, team_id)
     await file_factory(lead.id)  # not shared
@@ -240,8 +236,7 @@ async def test_owner_and_admin_delete_a_team_but_members_cannot(
     owner = await bearer_for(lead)
     member = await bearer_for(await user_factory(username="anna"))
     admin = await bearer_for(await user_factory(username="root", role=Role.admin))
-    team_id = await make_team(client, owner)
-    await add_member(client, owner, team_id, "anna")
+    team_id = await team_with(client, owner, "anna")
     await file_factory(lead.id, team_id)
 
     assert (await client.delete(f"/api/v1/teams/{team_id}", headers=member)).status_code == 404

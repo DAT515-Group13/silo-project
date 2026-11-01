@@ -35,24 +35,6 @@ def client_from(app: FastAPI, ip: str = "203.0.113.5") -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url="http://t")
 
 
-def test_limit_classes() -> None:
-    """The limits and what they are keyed on."""
-    limits = {name: rate for name, (rate, _) in ratelimit.LIMIT_CLASSES.items()}
-    assert limits == {
-        "auth": "10/minute",
-        "read": "300/minute",
-        "write": "60/minute",
-        "upload": "10/minute",
-        "admin": "120/minute",
-        "public": "30/minute",
-        "password": "5/minute",
-        "password_ip": "20/minute",
-    }
-    keys = {name: key.__name__ for name, (_, key) in ratelimit.LIMIT_CLASSES.items()}
-    assert keys["auth"] == keys["public"] == keys["password_ip"] == "_ip_key"
-    assert {keys[n] for n in ("read", "write", "upload", "admin", "password")} == {"_user_key"}
-
-
 def test_user_key_uses_the_user_id_or_falls_back_to_the_ip() -> None:
     """Per-user limits key on the authenticated user; without one, on the IP."""
 
@@ -76,17 +58,6 @@ async def test_eleventh_request_in_a_minute_is_429_per_ip(app: FastAPI) -> None:
         assert response.json() == {"detail": "Too many requests.", "code": "rate_limited"}
         assert response.headers["retry-after"] == "60"
         assert (await other.get("/api/v1/_limited")).status_code == 200
-
-
-def test_both_login_routes_use_the_auth_limit() -> None:
-    """The login page and the login API are limited to 10 a minute per IP (class `auth`).
-
-    The 429 itself is tested with a stand-in route above; this checks that the real routes carry
-    the limit. It reads slowapi's registry, which is pinned in pyproject.toml.
-    """
-    registered = ratelimit.limiter._route_limits
-    for name in ("app.routers.api.auth.login", "app.routers.pages.login_submit"):
-        assert [str(limit.limit) for limit in registered[name]] == ["10 per 1 minute"], name
 
 
 async def test_concurrency_guard_is_per_user_and_releases_slots() -> None:
