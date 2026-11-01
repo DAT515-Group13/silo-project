@@ -1,11 +1,13 @@
-"""Cookies, Origin checks, and the middleware stack (metrics, security headers, body limit).
+"""Cookies, Origin checks, and the middleware stack (request ID, metrics, headers, body limit).
 
 The page surface authenticates with cookies, the API with Bearer tokens; the two never mix.
 """
 
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from fastapi import HTTPException, Request, Response
 from starlette.datastructures import Headers, MutableHeaders
@@ -224,6 +226,44 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+# The ID of the request being handled, for log lines ("-" outside a request). A ContextVar is
+# per task, so concurrent requests never see each other's ID.
+REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+class RequestIdMiddleware:
+    """Give every request a new random ID, for logs, audit entries and the response.
+
+    The ID is stored in ``request.state.request_id`` (read by the audit context) and in
+    ``REQUEST_ID`` (read by the log format), and sent back as ``X-Request-ID``, so an operator
+    can match a user's report to log lines and audit rows. An incoming ``X-Request-ID`` is
+    ignored: a client could otherwise put anything into our logs. Outermost middleware, so error
+    pages and 413s carry the header too; the last-resort 500 adds it itself.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Set the ID for HTTP requests; other scopes (lifespan) pass through."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request_id = uuid4().hex  # 32 characters, fits audit_log.request_id (String(36))
+        scope.setdefault("state", {})["request_id"] = request_id
+
+        async def send_with_id(message: Message) -> None:
+            """Add the ID header to the response start."""
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Request-ID"] = request_id
+            await send(message)
+
+        # Not reset afterwards: Starlette's last-resort 500 handler runs outside this middleware
+        # and must still log the ID. The next request on the same connection sets its own.
+        REQUEST_ID.set(request_id)
+        await self.app(scope, receive, send_with_id)
+
+
 # Any other method becomes "OTHER": the method comes from the client, so without this list a
 # client could create endless label values (and memory use in Prometheus).
 KNOWN_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
@@ -234,8 +274,8 @@ class MetricsMiddleware:
 
     The label is the template (``/s/{token}``), never the real path: a public link path is a
     secret. Starlette's router stores the matched route in ``scope["route"]``; no route means
-    ``unmatched``; an unknown HTTP method is ``OTHER``. Outermost middleware, so 413s and error
-    pages are counted too.
+    ``unmatched``; an unknown HTTP method is ``OTHER``. Only ``RequestIdMiddleware`` wraps it, so
+    413s and error pages are counted too.
     """
 
     def __init__(self, app: ASGIApp) -> None:

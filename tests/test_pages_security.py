@@ -3,6 +3,8 @@
 Tests without the ``db`` marker never reach the database (no valid cookie is involved).
 """
 
+import logging
+import re
 import uuid
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from fastapi import FastAPI, Request, Response
 
 from app.config import Settings
 from app.errors import CsrfFailed, InvalidToken, RefreshInProgress
+from app.main import LOG_FORMAT
 from app.middleware import (
     check_origin,
     cookie_names,
@@ -24,6 +27,7 @@ from app.models import Role
 from app.routers import admin_pages, file_pages, pages, team_pages
 from app.routers.common import (
     PRE_SESSION_BINDING,
+    AuditCtx,
     CsrfChecked,
     PageUser,
     require_csrf,
@@ -86,11 +90,49 @@ def set_cookie_lines(response: httpx.Response) -> list[str]:
 async def test_every_response_has_the_headers_and_is_not_cached(
     client: httpx.AsyncClient, path: str
 ) -> None:
-    """Pages, API answers, errors and probes all carry the headers and Cache-Control: no-store."""
-    response = await client.get(path)
+    """Pages, API answers, errors and probes all carry the headers and Cache-Control: no-store.
+
+    Each also gets a new ``X-Request-ID`` (32 hex characters); one sent by the client is ignored.
+    """
+    response = await client.get(path, headers={"X-Request-ID": "chosen-by-client"})
     assert_secure(response)
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    request_id = response.headers["x-request-id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", request_id)
+    assert (await client.get(path)).headers["x-request-id"] != request_id
+
+
+async def test_request_id_reaches_the_audit_context(
+    client: httpx.AsyncClient, app: FastAPI, act_as: ActAs
+) -> None:
+    """The audit row of a request gets the ID of its response header."""
+
+    @app.get("/_audit_id")
+    async def _audit_id(ctx: AuditCtx) -> dict[str, str | None]:
+        return {"request_id": ctx.request_id}
+
+    act_as(Role.user)
+    response = await client.get("/_audit_id")
+    assert response.json() == {"request_id": response.headers["x-request-id"]}
+
+
+@pytest.mark.parametrize("path", ["/_boom", "/api/v1/_boom"])
+async def test_a_crash_is_logged_with_the_request_id_of_its_500(
+    client: httpx.AsyncClient, app: FastAPI, caplog: pytest.LogCaptureFixture, path: str
+) -> None:
+    """The last-resort 500 (page and API) carries the ID, and so does the logged stack trace."""
+
+    async def boom() -> None:
+        raise RuntimeError("boom")
+
+    app.add_api_route(path, boom)
+    with caplog.at_level(logging.ERROR, logger="silo"):
+        response = await client.get(path)
+    assert response.status_code == 500
+    request_id = response.headers["x-request-id"]
+    record = next(r for r in caplog.records if r.getMessage() == "Unhandled error")
+    assert f"[{request_id}]" in logging.Formatter(LOG_FORMAT).format(record)
 
 
 async def test_static_files_stay_cacheable_but_get_the_other_headers(
