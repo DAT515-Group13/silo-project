@@ -1,12 +1,12 @@
 """Storage quotas: per role and the service's total cap.
 
 The tests without the ``db`` marker check the pure parts. The ``db`` tests check the atomic
-quota update against PostgreSQL, including two parallel reservations at the quota edge. The
-total cap over HTTP (and its parallel edge) is tested in ``test_files_quota.py``.
+quota update against PostgreSQL. Uploads at the quota edge and at the total cap, also in
+parallel, are tested over HTTP in ``test_uploads.py``.
 """
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.errors import QuotaExceeded
@@ -17,7 +17,7 @@ from app.services.users import (
     reserve_global,
     reserve_quota,
 )
-from tests.conftest import FakeSession, UserFactory, make_settings
+from tests.conftest import FakeSession, UserFactory, make_settings, used_bytes
 
 pytestmark = pytest.mark.anyio
 
@@ -33,7 +33,7 @@ SETTINGS = make_settings(quota_user_bytes=1000, quota_team_lead_bytes=5000, quot
     [(0, 1000, 1000, True), (999, 1000, 1, True), (1000, 1000, 0, False), (3000, 1000, 0, False)],
 )
 def test_quota_status_remaining(used: int, quota: int, remaining: int, can_upload: bool) -> None:
-    """Remaining space is never negative; a role lowered below usage blocks uploads (s. 11)."""
+    """Remaining space is never negative; a role lowered below usage blocks uploads."""
     status = QuotaStatus(used_bytes=used, quota_bytes=quota)
     assert status.remaining == remaining
     assert status.can_upload is can_upload
@@ -58,13 +58,8 @@ async def test_global_remaining_is_never_negative(used: int, remaining: int) -> 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 
-async def used_bytes(db_sessionmaker: async_sessionmaker[AsyncSession], user_id: int) -> int:
-    async with db_sessionmaker() as session, session.begin():
-        return await session.scalar(select(User.used_bytes).where(User.id == user_id))
-
-
 async def reserve(db_sessionmaker: async_sessionmaker[AsyncSession], user_id: int, size: int):
-    """Reserve in a transaction of its own and commit, like the upload service will."""
+    """Reserve in a transaction of its own and commit, like the upload service does."""
     async with db_sessionmaker() as session, session.begin():
         return await reserve_quota(session, SETTINGS, user_id, size)
 

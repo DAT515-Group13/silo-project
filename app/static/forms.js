@@ -1,5 +1,6 @@
-// Two conveniences for forms. Neither is a check: the server still verifies everything, and the
-// forms work with JavaScript turned off. Text is set with textContent only.
+// Three conveniences: a file size hint, a double-submit guard and local times. None is a check:
+// the server still verifies everything, and the pages work with JavaScript turned off. Text is
+// set with textContent only.
 // A disabled button is not sent with the form: do not give a submit button a name or value.
 
 document.addEventListener("submit", (event) => {

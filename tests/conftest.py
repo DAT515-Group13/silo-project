@@ -13,7 +13,7 @@ import os
 import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from prometheus_client import REGISTRY
-from sqlalchemy import text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -37,7 +37,7 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.main import create_app
 from app.middleware import SECURITY_HEADERS, cookie_names
-from app.models import Base, File, FileShare, Role, User, UserStatus
+from app.models import AuditLog, Base, File, FileShare, Role, ShareLink, User, UserStatus
 from app.permissions import CurrentUser
 from app.routers.common import get_current_api_user, get_optional_page_user
 from app.security import create_access_token, create_csrf_token, hash_password
@@ -163,7 +163,7 @@ def database_url() -> Iterator[str]:
     url = _server_url()
     _require_test_database(url)
     asyncio.run(_prepare_database(url))
-    # The Alembic environment reads DATABASE_URL (D13).
+    # The Alembic environment reads DATABASE_URL.
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = url
     try:
@@ -180,6 +180,7 @@ def database_url() -> Iterator[str]:
 
 
 async def _truncate(url: str) -> None:
+    """Empty every table and reset the ID sequences, so the next test starts from scratch."""
     engine = create_async_engine(url, poolclass=NullPool)
     async with engine.begin() as connection:
         await connection.execute(text(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY CASCADE"))
@@ -378,13 +379,23 @@ def act_as(app: FastAPI) -> ActAs:
 BearerFor = Callable[[User], Awaitable[dict[str, str]]]
 
 
+async def issue_session(
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    user: User,
+    now: datetime | None = None,
+) -> sessions.IssuedTokens:
+    """Create a session in its own transaction, like the login service does."""
+    async with db_sessionmaker() as session, session.begin():
+        return await sessions.create_session(session, settings, user, now=now)
+
+
 @pytest.fixture
 def bearer_for(db_sessionmaker: async_sessionmaker[AsyncSession], settings: Settings) -> BearerFor:
     """``headers = await bearer_for(user)``: a real session and its Authorization header."""
 
     async def create(user: User) -> dict[str, str]:
-        async with db_sessionmaker() as session, session.begin():
-            tokens = await sessions.create_session(session, settings, user)
+        tokens = await issue_session(db_sessionmaker, settings, user)
         return {"Authorization": f"Bearer {tokens.access_token}"}
 
     return create
@@ -408,8 +419,7 @@ def page_login(db_sessionmaker: Sessionmaker, settings: Settings) -> PageLogin:
     """``headers, form = await page_login(user)``: access cookie, CSRF cookie and form field."""
 
     async def login(user: User) -> tuple[dict[str, str], dict[str, str]]:
-        async with db_sessionmaker() as session, session.begin():
-            tokens = await sessions.create_session(session, settings, user)
+        tokens = await issue_session(db_sessionmaker, settings, user)
         names = cookie_names(settings)
         csrf = create_csrf_token(settings.csrf_secret.get_secret_value(), str(tokens.session_id))
         headers = {
@@ -447,6 +457,14 @@ async def add_member(client: httpx.AsyncClient, headers: dict, team_id: int, use
         f"/api/v1/teams/{team_id}/members", json={"username": username}, headers=headers
     )
     return response.status_code
+
+
+async def team_with(client: httpx.AsyncClient, lead_headers: dict, *usernames: str) -> int:
+    """The lead creates a team and adds the given usernames; returns the team ID."""
+    team_id = await make_team(client, lead_headers)
+    for username in usernames:
+        assert await add_member(client, lead_headers, team_id, username) == 204
+    return team_id
 
 
 # --- Small helpers shared by several test files --------------------------------------------------
@@ -506,6 +524,34 @@ async def make_link(
     body = response.json()
     assert body["url"].startswith("http://testserver/s/")
     return body["id"], body["url"].rsplit("/", 1)[-1]
+
+
+async def audit_actions(db_sessionmaker: async_sessionmaker[AsyncSession]) -> list[str]:
+    """The actions of all audit entries, oldest first."""
+    async with db_sessionmaker() as session, session.begin():
+        return list(await session.scalars(select(AuditLog.action).order_by(AuditLog.id)))
+
+
+async def used_bytes(db_sessionmaker: async_sessionmaker[AsyncSession], user_id: int) -> int:
+    """The user's ``used_bytes`` counter, read from the database."""
+    async with db_sessionmaker() as session, session.begin():
+        return await session.scalar(select(User.used_bytes).where(User.id == user_id))
+
+
+async def count_files(db_sessionmaker: async_sessionmaker[AsyncSession]) -> int:
+    """The number of rows in ``files``."""
+    async with db_sessionmaker() as session, session.begin():
+        return await session.scalar(select(func.count()).select_from(File))
+
+
+async def expire_link(db_sessionmaker: async_sessionmaker[AsyncSession], link_id: int) -> None:
+    """Make a link expired one minute ago, directly in the database."""
+    async with db_sessionmaker() as session, session.begin():
+        await session.execute(
+            update(ShareLink)
+            .where(ShareLink.id == link_id)
+            .values(expires_at=datetime.now(UTC) - timedelta(minutes=1))
+        )
 
 
 async def open_link(client: httpx.AsyncClient, token: str) -> httpx.Response:

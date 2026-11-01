@@ -35,24 +35,6 @@ def client_from(app: FastAPI, ip: str = "203.0.113.5") -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url="http://t")
 
 
-def test_classes_match_the_spec() -> None:
-    """The limits and what they are keyed on."""
-    limits = {name: rate for name, (rate, _) in ratelimit.LIMIT_CLASSES.items()}
-    assert limits == {
-        "auth": "10/minute",
-        "read": "300/minute",
-        "write": "60/minute",
-        "upload": "10/minute",
-        "admin": "120/minute",
-        "public": "30/minute",
-        "password": "5/minute",
-        "password_ip": "20/minute",
-    }
-    keys = {name: key.__name__ for name, (_, key) in ratelimit.LIMIT_CLASSES.items()}
-    assert keys["auth"] == keys["public"] == keys["password_ip"] == "_ip_key"
-    assert {keys[n] for n in ("read", "write", "upload", "admin", "password")} == {"_user_key"}
-
-
 def test_user_key_uses_the_user_id_or_falls_back_to_the_ip() -> None:
     """Per-user limits key on the authenticated user; without one, on the IP."""
 

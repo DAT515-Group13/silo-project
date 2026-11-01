@@ -1,3 +1,5 @@
+"""The JSON API under ``/api/v1``: one router that includes the router of each area."""
+
 from fastapi import APIRouter
 
 from app.routers.api import admin, auth, files, links, teams

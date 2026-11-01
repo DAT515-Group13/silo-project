@@ -48,7 +48,7 @@ from app.services import audit, teams, users
 from app.services.audit import AuditAction, AuditContext, Outcome
 from app.services.pagination import fetch_page
 from app.services.teams import FileItem
-from app.storage.base import BlobStore
+from app.storage.base import BlobStore, delete_quietly
 
 logger = logging.getLogger("silo")
 
@@ -115,7 +115,7 @@ def normalize_content_type(client_value: str | None) -> str | None:
 
 
 def choose_content_type(head: bytes, client_value: str | None) -> str:
-    """Upload step 3: detected type, else the client's clean value, else octet-stream.
+    """Pick the content type: detected type, else the client's clean value, else octet-stream.
 
     For signatures shared by many formats (ZIP) the client's clean value is preferred, unless
     it is a type a browser would render: a ZIP file is never stored as ``text/html``.
@@ -158,6 +158,7 @@ async def _with_head(chunks: AsyncIterator[bytes]) -> tuple[bytes, AsyncIterator
     head = b"".join(buffered)
 
     async def whole() -> AsyncIterator[bytes]:
+        """Yield the bytes already read for sniffing, then the rest of the stream."""
         if head:
             yield head
         async for chunk in source:
@@ -175,7 +176,7 @@ async def _limited(
 ) -> AsyncIterator[bytes]:
     """Pass chunks on while counting; stop as soon as a limit is passed.
 
-    Raising here aborts the blob upload before anything is committed (upload step 2). The order
+    Raising here aborts the blob upload before anything is committed. The order
     is: file size limit, the user's own quota, then the service's total cap (``None`` = no cap),
     so a user over their own quota is told that, not that the service is full.
     """
@@ -189,23 +190,6 @@ async def _limited(
         if global_remaining is not None and total > global_remaining:
             raise StorageFull
         yield chunk
-
-
-async def _delete_quietly(store: BlobStore, blob_name: str) -> None:
-    """Delete a blob, logging instead of raising: the caller's own error must not be masked.
-
-    A blob that could not be deleted stays behind as an orphan; orphan cleanup removes it later.
-    """
-    try:
-        await store.delete(blob_name)
-    except Exception as exc:
-        # Not only StorageUnavailable: when this runs after the commit, any error here must not
-        # turn a finished delete into a 500.
-        logger.warning(
-            "Could not delete blob %s (%s); it is left for orphan cleanup",
-            blob_name,
-            type(exc).__name__,
-        )
 
 
 async def _audit_denied(session: AsyncSession, ctx: AuditContext, filename: str, code: str) -> None:
@@ -254,8 +238,8 @@ async def upload(
 ) -> FileItem:
     """Store an uploaded file: size hint, quota check, stream to blob storage, then database.
 
-    The comments mark the five steps of the upload flow. ``declared_size`` is the request's
-    Content-Length: only a hint, used to refuse obviously oversized uploads before reading them.
+    ``declared_size`` is the request's Content-Length: only a hint, used to refuse obviously
+    oversized uploads before reading them.
 
     Raises:
         ValidationFailed: the file name is empty after cleaning.
@@ -276,12 +260,13 @@ async def upload(
     blob_name = uuid.uuid4().hex  # random, never derived from user input
     blob_stored = False
     try:
-        # Step 1: Content-Length is a hint only, but a huge value is refused without reading.
+        # Content-Length is a hint only, but a huge value is refused without reading.
         max_size = settings.max_file_size_bytes
         if declared_size is not None and declared_size > max_size + MULTIPART_MARGIN_BYTES:
             raise FileTooLarge
 
-        # Step 2: how much room is left. A stale value is fine; step 4 is the binding check.
+        # How much room is left. A stale value is fine; the atomic quota UPDATE below is the
+        # binding check.
         status = await users.get_quota_status(session, settings, user.id)
         if not status.can_upload:
             raise QuotaExceeded
@@ -289,7 +274,7 @@ async def upload(
         if global_remaining is not None and global_remaining <= 0:
             raise StorageFull
 
-        # Step 3: detect the type from the first bytes; stream the rest to blob storage.
+        # Detect the type from the first bytes; stream the rest to blob storage.
         head, stream = await _with_head(chunks)
         content_type = choose_content_type(head, client_type)
         size = await store.upload_stream(
@@ -304,7 +289,7 @@ async def upload(
         )
         blob_stored = True
 
-        # Step 4: one short transaction. The atomic quota UPDATE is the real check: a parallel
+        # One short transaction. The atomic quota UPDATE is the real check: a parallel
         # upload may have used the space meanwhile.
         async with session.begin():
             await users.reserve_global(session, settings, size)
@@ -333,12 +318,12 @@ async def upload(
         return FileItem(file=file, owner_username=user.username)
     except BaseException as exc:
         _count_failed_upload(exc)
-        # Step 5: anything after the blob was stored removes it again; used_bytes did not change
+        # Anything after the blob was stored removes it again; used_bytes did not change
         # because the transaction above rolled back. BaseException also covers a cancelled
         # request, and the shield lets the cleanup finish even then.
         with anyio.CancelScope(shield=True):
             if blob_stored:
-                await _delete_quietly(store, blob_name)
+                await delete_quietly(store, blob_name)
             if isinstance(exc, FileTooLarge | QuotaExceeded):
                 await _audit_denied(session, ctx, clean_name, exc.code)
         raise
@@ -521,7 +506,7 @@ async def delete_file(
             target_label=file.filename,
             details={"size_bytes": file.size_bytes, "owner_id": file.owner_id},
         )
-    await _delete_quietly(store, blob_name)
+    await delete_quietly(store, blob_name)
 
 
 # --- Sharing with teams --------------------------------------------------------------------------

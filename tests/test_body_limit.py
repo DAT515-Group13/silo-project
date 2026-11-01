@@ -52,7 +52,7 @@ async def test_chunked_oversized_body_is_413(
 async def test_large_multipart_never_reaches_the_disk(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A big file part on a normal form is refused before Starlette can spool it (spec s. 2)."""
+    """A big file part on a normal form is refused before Starlette can spool it."""
 
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("a temporary file was created")

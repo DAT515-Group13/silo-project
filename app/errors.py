@@ -2,7 +2,7 @@
 
 This module must not import anything from FastAPI or Starlette: services do not
 know about HTTP. One exception handler in ``main.py`` turns these into responses.
-The codes are the list in the specification.
+The codes are part of the API contract: clients may rely on them.
 """
 
 
@@ -71,7 +71,7 @@ class UsernameTaken(SiloError):
 
 
 class TeamNameTaken(SiloError):
-    """The owner already has a team with this name (names are unique per owner, D18)."""
+    """The owner already has a team with this name (names are unique per owner)."""
 
     status_code = 409
     code = "team_name_taken"
@@ -79,7 +79,7 @@ class TeamNameTaken(SiloError):
 
 
 class InvalidUserState(SiloError):
-    """Approve or reject of a user who is not ``pending`` (D18)."""
+    """Approve or reject of a user who is not ``pending``."""
 
     status_code = 409
     code = "invalid_user_state"
@@ -87,7 +87,7 @@ class InvalidUserState(SiloError):
 
 
 class RoleRequired(SiloError):
-    """The caller's role may not do this, for example a plain ``user`` creating a team (D19).
+    """The caller's role may not do this, for example a plain ``user`` creating a team.
 
     Used only where the request is about the caller's role, not about a hidden object: missing
     access to an object is always ``NotFound``.

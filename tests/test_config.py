@@ -54,8 +54,8 @@ def error_text(monkeypatch: pytest.MonkeyPatch, **overrides: str | None) -> str:
     return str(info.value)
 
 
-def test_valid_configuration_uses_spec_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Defaults match the specified values."""
+def test_valid_configuration_uses_the_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With only the required variables set, every optional setting has its default."""
     s = make(monkeypatch)
     assert s.registration_mode == "approval"
     assert (s.jwt_access_minutes, s.refresh_token_days, s.session_max_days) == (15, 7, 30)

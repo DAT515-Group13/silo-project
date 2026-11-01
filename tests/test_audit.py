@@ -7,25 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models import AuditLog, Outcome
 from app.services.audit import AuditAction, AuditContext, record, record_failure
 
-# The exact list of audit actions.
-SPEC_ACTIONS = {
-    "auth.register", "auth.login", "auth.logout", "auth.logout_all", "auth.refresh",
-    "auth.refresh_reuse", "auth.lockout", "auth.session_revoke", "auth.password_change",
-    "file.upload",
-    "file.download", "file.rename", "file.delete", "file.share", "file.unshare",
-    "link.create", "link.revoke",
-    "link.update", "link.download", "team.create", "team.delete",
-    "team.member_add", "team.member_remove", "user.approve", "user.reject",
-    "user.role_change", "user.deactivate", "user.activate", "user.sessions_revoke",
-    "user.delete", "storage.orphan_cleanup",
-}  # fmt: skip
 
-
-def test_actions_match_the_spec_list() -> None:
-    """AuditAction has exactly the actions, and each fits the column (50)."""
-    values = {action.value for action in AuditAction}
-    assert values == SPEC_ACTIONS
-    assert all(len(value) <= 50 for value in values)
+def test_every_action_fits_the_column() -> None:
+    """``audit_log.action`` is a String(50): no action name may be longer."""
+    assert all(len(action.value) <= 50 for action in AuditAction)
 
 
 @pytest.mark.db

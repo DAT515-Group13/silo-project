@@ -18,7 +18,7 @@
       <td>{{ file.size_bytes | filesizeformat(true) }}</td>
       <td>{{ file.created_at | utc_time }}</td>
       <td class="text-end">
-        {#- Admins may delete any file (section 6); "next" brings them back to this list. -#}
+        {#- Admins may delete any file; "next" brings them back to this list. -#}
         <form method="post" action="/files/{{ file.id }}/delete">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="next" value="/admin/files">

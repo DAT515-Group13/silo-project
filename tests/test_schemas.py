@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.schemas.auth import LoginIn, RefreshIn, RegisterIn
 from app.schemas.common import normalize_username
+from app.schemas.links import LinkCreateIn, LinkUpdateIn
 from app.schemas.teams import AddMemberIn, TeamIn
 
 
@@ -45,7 +46,7 @@ def test_valid_username_is_accepted(username: str) -> None:
 
 
 def test_login_username_is_only_normalized() -> None:
-    """Login never fails on username format, so it cannot reveal which names are valid (Q20)."""
+    """Login never fails on username format, so it cannot reveal which names are valid."""
     assert LoginIn(username=" Not A Valid Name! ", password="x").username == "not a valid name!"
     with pytest.raises(ValidationError):
         LoginIn(username="a" * 33, password="x")
@@ -73,3 +74,14 @@ def test_team_name_is_trimmed_and_length_limited() -> None:
     for bad in ("", "   ", "a" * 101):
         with pytest.raises(ValidationError):
             TeamIn(name=bad)
+
+
+def test_link_hours_must_be_positive() -> None:
+    """Creating defaults to 24 hours, changing has no default; both need at least 1 hour."""
+    assert LinkCreateIn().expires_in_hours == 24
+    with pytest.raises(ValidationError):
+        LinkCreateIn(expires_in_hours=0)
+    with pytest.raises(ValidationError):
+        LinkUpdateIn()  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        LinkUpdateIn(expires_in_hours=0)

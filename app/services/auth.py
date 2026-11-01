@@ -38,7 +38,7 @@ from app.services import audit, sessions
 from app.services.audit import AuditAction, AuditContext
 from app.services.sessions import IssuedTokens, RevokeReason
 
-# Usernames are visible to other users, so anyone can lock an account on purpose (D25): the lock
+# Usernames are visible to other users, so anyone can lock an account on purpose: the lock
 # stays short. The per-IP rate limit on login still applies.
 MAX_LOCK = timedelta(hours=1)
 
@@ -52,7 +52,7 @@ _INACTIVE_ERRORS: dict[UserStatus, type[SiloError]] = {
 def lock_duration(settings: Settings, failed_login_count: int) -> timedelta:
     """Return how long the account is locked when the failure counter reaches this value.
 
-    ``LOGIN_LOCK_MINUTES * 2^(count / LOGIN_MAX_FAILED - 1)``, at most 1 hour (D25): 15 minutes at
+    ``LOGIN_LOCK_MINUTES * 2^(count / LOGIN_MAX_FAILED - 1)``, at most 1 hour: 15 minutes at
     10 failures, 30 at 20, 60 at 30, and so on. Only call it for multiples of LOGIN_MAX_FAILED.
     """
     exponent = failed_login_count // settings.login_max_failed - 1
@@ -165,7 +165,7 @@ async def login(
     username = username.strip().lower()
     anonymous = AuditContext.anonymous(ip=ip, request_id=request_id)
 
-    # Step 2: look up the user. Unknown username: spend the time of a real check anyway.
+    # Look up the user. Unknown username: spend the time of a real check anyway.
     async with session.begin():
         user = await session.scalar(select(User).where(User.username == username))
     if user is None:
@@ -176,7 +176,7 @@ async def login(
         LOGIN_ATTEMPTS.labels("invalid").inc()
         raise InvalidCredentials
 
-    # Step 3: a locked account answers like a wrong password, even for the right password, and
+    # A locked account answers like a wrong password, even for the right password, and
     # the attempt is not counted, so nobody can extend someone else's lock by spamming it.
     if user.locked_until is not None and user.locked_until > now:
         await verify_dummy_password(password)
@@ -196,7 +196,7 @@ async def login(
 
     password_ok = await verify_password(user.password_hash, password)
 
-    # Step 4: wrong password -> count it, and lock the account at every LOGIN_MAX_FAILED-th failure.
+    # Wrong password -> count it, and lock the account at every LOGIN_MAX_FAILED-th failure.
     if not password_ok:
         target = {"target_type": "user", "target_id": user.id, "target_label": user.username}
         async with session.begin():
@@ -233,7 +233,7 @@ async def login(
         LOGIN_ATTEMPTS.labels("invalid").inc()
         raise InvalidCredentials
 
-    # Step 5: right password, but the account may not log in.
+    # Right password, but the account may not log in.
     if user.status != UserStatus.active:
         await audit.record_failure(
             session,
@@ -248,7 +248,7 @@ async def login(
         LOGIN_ATTEMPTS.labels("inactive").inc()
         raise _INACTIVE_ERRORS[user.status]
 
-    # Step 6: success. Hashing happens before the transaction, which should stay short.
+    # Success. Hashing happens before the transaction, which should stay short.
     new_hash = await hash_password(password) if password_needs_rehash(user.password_hash) else None
     async with session.begin():
         values: dict = {"failed_login_count": 0, "locked_until": None, "last_login_at": now}

@@ -29,7 +29,7 @@ from app.services.files import download_content_type
 from app.services.pagination import fetch_page
 from app.storage.base import BlobStore
 
-# At most this many links of one file may be valid at the same time (section 8.1).
+# At most this many links of one file may be valid at the same time.
 MAX_ACTIVE_LINKS = 10
 # What ``generate_refresh_token`` produces: 32 random bytes as 43 URL-safe characters.
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
@@ -326,8 +326,8 @@ async def resolve_public_link(
         raise NotFound
     async with session.begin():
         # One statement checks everything and counts, so a revoke, an expiry or a disabled
-        # owner cannot slip in between "is it valid?" and "count it". The owner must be active
-        # (section 5); after reactivation the same link works again.
+        # owner cannot slip in between "is it valid?" and "count it". The owner must be active;
+        # after reactivation the same link works again.
         usable_files = (
             select(File.id)
             .join(User, User.id == File.owner_id)

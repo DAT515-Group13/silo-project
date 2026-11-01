@@ -141,9 +141,10 @@ jobs:
           set -euo pipefail
           echo "Deploying $IMAGE to $TARGET"
           kubectl apply -f "$RUNNER_TEMP/manifest.yaml" -l 'app.kubernetes.io/component notin (migrate)'
-          if ! kubectl -n "$TARGET" rollout status deployment/silo --timeout=240s; then
-            kubectl -n "$TARGET" get pods
-            kubectl -n "$TARGET" logs deployment/silo --tail=50 || true
+          if ! kubectl -n "$TARGET" rollout status deployment/silo --timeout=480s; then
+            kubectl -n "$TARGET" describe deployment/silo | tail -n 20
+            kubectl -n "$TARGET" get pods -l app.kubernetes.io/name=silo
+            kubectl -n "$TARGET" logs -l app.kubernetes.io/name=silo --tail=30 --prefix || true
             exit 1
           fi
       - name: Verify running image

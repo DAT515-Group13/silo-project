@@ -1,24 +1,210 @@
-"""Upload and quota behaviour end to end (architecture.md section 10).
+"""Uploads over HTTP: the early refusals, the quota and what a failed upload leaves behind.
 
-All tests need PostgreSQL (marker ``db``): they go through HTTP with real tokens and check the
-database, the audit log and the in-memory blob store together. The key promises: the quota is
-never exceeded, even by parallel uploads, and a refused or failed upload leaves no blob.
+Tests without the ``db`` marker stop before the database: ``act_as`` replaces the login and a
+stand-in replaces the upload service (bad bodies, the 3-at-a-time limit, draining a refused
+body). The ``db`` tests go through HTTP with real tokens and check the database, the audit log
+and the in-memory blob store together. The key promises: the quota is never exceeded, even by
+parallel uploads, and a refused or failed upload leaves no blob.
 """
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.config import Settings
-from app.models import AuditLog, File, User
+from app.errors import FileTooLarge, StorageFull
+from app.models import AuditLog, Role
+from app.ratelimit import _FALLBACK_RETRY_AFTER as FALLBACK_RETRY_AFTER
+from app.ratelimit import MAX_CONCURRENT_UPLOADS, upload_slot
+from app.services import files
 from app.services import users as users_service
 from app.services.users import QuotaStatus
-from tests.conftest import BearerFor, Sessionmaker, UserFactory, sample
+from tests.conftest import (
+    ActAs,
+    BearerFor,
+    Sessionmaker,
+    UserFactory,
+    audit_actions,
+    count_files,
+    sample,
+    used_bytes,
+)
 from tests.fakes import InMemoryBlobStore
 
-pytestmark = [pytest.mark.db, pytest.mark.anyio]
+pytestmark = pytest.mark.anyio
+db = pytest.mark.db
+
+BOUNDARY = "testboundary"
+CHUNK_COUNT = 20
+
+
+# --- No database needed --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "request_args",
+    [
+        {"json": {"file": "x"}},  # not multipart
+        {"files": {"file": ("", b"", "application/octet-stream")}},  # no file chosen
+    ],
+)
+async def test_upload_with_a_bad_body_is_422(
+    client: httpx.AsyncClient, act_as: ActAs, request_args: dict
+) -> None:
+    """A JSON body or an empty file name is a 422, not a crash.
+
+    A wrong part name is in ``test_refused_upload_still_reads_the_whole_body``.
+    """
+    act_as(Role.user)
+    response = await client.post("/api/v1/files", **request_args)
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+
+@pytest.mark.parametrize(
+    ("extra", "drained"),
+    [
+        (1024 * 1024, True),  # over the limit, under the drain cap (+ 5 MiB): the rest is read
+        (10**9, False),  # announced far over the cap: draining could not finish, so it is skipped
+    ],
+)
+async def test_oversized_content_length_is_413_and_drains_only_below_the_cap(
+    client: httpx.AsyncClient,
+    act_as: ActAs,
+    settings: Settings,
+    blob_store: InMemoryBlobStore,
+    extra: int,
+    drained: bool,
+) -> None:
+    """A Content-Length over the limit is refused before any blob work.
+
+    A body that is still small enough is read to the end before the 413 is sent, otherwise the
+    proxy can turn the 413 into a 502. The denied-upload audit entry cannot be written
+    without a database; that is only logged.
+    """
+    act_as(Role.user)
+    sent: list[int] = []
+    head = b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
+
+    async def body() -> AsyncIterator[bytes]:
+        yield head
+        for i in range(20):
+            sent.append(i)
+            yield b"x" * 1000
+        yield b"\r\n--b--\r\n"
+
+    response = await client.post(
+        "/api/v1/files",
+        content=body(),
+        headers={
+            "content-type": "multipart/form-data; boundary=b",
+            "content-length": str(settings.max_file_size_bytes + extra),
+        },
+    )
+    assert (response.status_code, response.json()["code"]) == (413, "file_too_large")
+    assert blob_store.blobs == {}
+    assert (len(sent) == 20) is drained
+
+
+async def test_fourth_parallel_upload_is_429(
+    client: httpx.AsyncClient, act_as: ActAs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three uploads of one user run at once; the fourth is 429 rate_limited until one ends."""
+    act_as(Role.user)
+    release = asyncio.Event()
+    all_running = asyncio.Event()
+    running = 0
+
+    async def held_upload(*args: object, **kwargs: object) -> None:
+        nonlocal running
+        running += 1
+        if running == MAX_CONCURRENT_UPLOADS:
+            all_running.set()
+        await release.wait()
+        raise FileTooLarge  # any ending will do; the test is about the slots
+
+    monkeypatch.setattr(files, "upload", held_upload)
+
+    async def upload() -> httpx.Response:
+        return await client.post("/api/v1/files", files={"file": ("a.bin", b"data")})
+
+    tasks = [asyncio.create_task(upload()) for _ in range(MAX_CONCURRENT_UPLOADS)]
+    try:
+        async with asyncio.timeout(5):
+            await all_running.wait()
+
+        fourth = await upload()
+        assert (fourth.status_code, fourth.json()["code"]) == (429, "rate_limited")
+        assert fourth.headers["retry-after"] == str(FALLBACK_RETRY_AFTER)
+    finally:
+        # Also after a failure: held uploads would keep their slots for the next test.
+        release.set()
+    results = await asyncio.gather(*tasks)
+    assert [r.status_code for r in results] == [413] * MAX_CONCURRENT_UPLOADS
+    assert running == MAX_CONCURRENT_UPLOADS  # the fourth never reached the service
+
+
+@pytest.mark.parametrize(
+    ("case", "status", "code"),
+    [
+        ("busy", 429, "rate_limited"),
+        ("wrong part", 422, "validation_error"),
+        ("service full", 507, "storage_full"),
+    ],
+)
+async def test_refused_upload_still_reads_the_whole_body(
+    client: httpx.AsyncClient,
+    act_as: ActAs,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    status: int,
+    code: str,
+) -> None:
+    """A refused upload is answered after the rest of the body was read (no proxy 502).
+
+    "service full" stands for the global cap: ``StorageFull`` is a ``QuotaExceeded``, so the
+    route drains the body and answers 507 without any route change.
+    """
+    user = act_as(Role.user)
+    field = "other" if case == "wrong part" else "file"  # a part that is not `file` is a 422
+    sent = 0
+
+    async def full(*args: object, **kwargs: object) -> None:
+        raise StorageFull  # refused before reading the file, like the quota check before the upload
+
+    if case == "service full":
+        monkeypatch.setattr(files, "upload", full)
+
+    async def body() -> AsyncIterator[bytes]:
+        nonlocal sent
+        head = f'--{BOUNDARY}\r\nContent-Disposition: form-data; name="{field}"; '
+        yield (head + 'filename="a.bin"\r\n\r\n').encode()
+        sent += 1
+        for _ in range(CHUNK_COUNT):
+            yield b"x" * 1000
+            sent += 1
+        yield f"\r\n--{BOUNDARY}--\r\n".encode()
+        sent += 1
+
+    async with AsyncExitStack() as stack:
+        if case == "busy":  # all slots of this user are taken by other uploads
+            for _ in range(MAX_CONCURRENT_UPLOADS):
+                await stack.enter_async_context(upload_slot(user.id))
+        response = await client.post(
+            "/api/v1/files",
+            content=body(),
+            headers={"Content-Type": f"multipart/form-data; boundary={BOUNDARY}"},
+        )
+
+    assert (response.status_code, response.json()["code"]) == (status, code)
+    assert sent == CHUNK_COUNT + 2  # the client could send everything
+
+
+# --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 
 async def post_file(
@@ -33,16 +219,7 @@ async def post_file(
     )
 
 
-async def used_bytes(db_sessionmaker: Sessionmaker, user_id: int) -> int:
-    async with db_sessionmaker() as session:
-        return await session.scalar(select(User.used_bytes).where(User.id == user_id))
-
-
-async def count_files(db_sessionmaker: Sessionmaker) -> int:
-    async with db_sessionmaker() as session:
-        return await session.scalar(select(func.count()).select_from(File))
-
-
+@db
 async def test_upload_stores_blob_row_quota_and_audit(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
@@ -70,11 +247,11 @@ async def test_upload_stores_blob_row_quota_and_audit(
     assert len(blob_store.blobs) == 1
     assert next(iter(blob_store.blobs.values())).data == b"%PDF-1.4 hello"
     assert await used_bytes(db_sessionmaker, user.id) == 14
-    async with db_sessionmaker() as session:
-        actions = (await session.scalars(select(AuditLog.action))).all()
+    actions = await audit_actions(db_sessionmaker)
     assert actions == ["file.upload"]
 
 
+@db
 async def test_exact_quota_fits_and_one_byte_more_does_not(
     client: httpx.AsyncClient,
     settings: Settings,
@@ -83,7 +260,7 @@ async def test_exact_quota_fits_and_one_byte_more_does_not(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """The remaining quota is a hard limit; a refused upload leaves no blob (section 16)."""
+    """The remaining quota is a hard limit; a refused upload leaves no blob."""
     settings.quota_user_bytes = 100
     user = await user_factory("anna")
     headers = await bearer_for(user)
@@ -109,6 +286,7 @@ async def test_exact_quota_fits_and_one_byte_more_does_not(
     assert len(denied) == 2
 
 
+@db
 async def test_file_over_the_size_limit_leaves_no_blob(
     client: httpx.AsyncClient,
     settings: Settings,
@@ -132,6 +310,7 @@ async def test_file_over_the_size_limit_leaves_no_blob(
     assert await count_files(db_sessionmaker) == 1
 
 
+@db
 async def test_parallel_uploads_at_the_edge_never_exceed_the_quota(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -141,7 +320,7 @@ async def test_parallel_uploads_at_the_edge_never_exceed_the_quota(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Two uploads that fit alone but not together: exactly one wins (section 16).
+    """Two uploads that fit alone but not together: exactly one wins.
 
     Both requests are made to see the same stale "0 bytes used" status, so the early check
     cannot stop the second one and only the atomic UPDATE decides.
@@ -165,6 +344,7 @@ async def test_parallel_uploads_at_the_edge_never_exceed_the_quota(
     assert len(blob_store.blobs) == 1  # the loser's blob was deleted again
 
 
+@db
 async def test_unavailable_storage_is_503_and_changes_nothing(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
@@ -172,7 +352,7 @@ async def test_unavailable_storage_is_503_and_changes_nothing(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """If blob storage fails, the upload is 503 and no row or usage remains (section 11)."""
+    """If blob storage fails, the upload is 503 and no row or usage remains."""
     user = await user_factory("anna")
     headers = await bearer_for(user)
     blob_store.healthy = False
@@ -183,6 +363,7 @@ async def test_unavailable_storage_is_503_and_changes_nothing(
     assert await used_bytes(db_sessionmaker, user.id) == 0
 
 
+@db
 async def test_failed_database_step_deletes_the_blob(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -191,7 +372,7 @@ async def test_failed_database_step_deletes_the_blob(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Anything failing after the blob was stored removes the blob (upload step 5)."""
+    """Anything failing after the blob was stored removes the blob."""
     user = await user_factory("anna")
     headers = await bearer_for(user)
 
@@ -206,6 +387,7 @@ async def test_failed_database_step_deletes_the_blob(
     assert await used_bytes(db_sessionmaker, user.id) == 0
 
 
+@db
 async def test_global_cap_refuses_with_507_and_leaves_no_blob(
     client: httpx.AsyncClient,
     settings: Settings,
@@ -242,6 +424,7 @@ async def test_global_cap_refuses_with_507_and_leaves_no_blob(
     assert codes == ["storage_full", "storage_full"]
 
 
+@db
 async def test_parallel_uploads_of_two_users_at_the_global_edge(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -251,9 +434,9 @@ async def test_parallel_uploads_of_two_users_at_the_global_edge(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Two users whose files fit alone but not together: exactly one wins (section 16).
+    """Two users whose files fit alone but not together: exactly one wins.
 
-    Both see the same stale "everything is free" hint, so only the locked step 4 decides.
+    Both see the same stale "everything is free" hint, so only the locked quota check decides.
     """
     settings.storage_total_max_bytes = 100
     anna = await user_factory("anna")

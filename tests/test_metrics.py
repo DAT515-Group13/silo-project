@@ -2,7 +2,7 @@
 
 The counters of other modules are checked where their behaviour is tested: storage errors in
 ``test_storage.py``, the dependency gauge in ``test_health.py``, logins, uploads and downloads
-in the ``db`` tests of ``test_auth.py``, ``test_files_quota.py``, ``test_files.py`` and
+in the ``db`` tests of ``test_auth.py``, ``test_uploads.py``, ``test_files.py`` and
 ``test_links.py``. Metrics are global, so every check compares before and after.
 """
 

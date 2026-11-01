@@ -1,10 +1,11 @@
-"""Page infrastructure: cookies, CSRF, Origin checks, error pages.
+"""Web security: response headers, cookies, CSRF, Origin checks, error pages.
 
 Tests without the ``db`` marker never reach the database (no valid cookie is involved).
 """
 
+import logging
+import re
 import uuid
-from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -13,6 +14,7 @@ from fastapi import FastAPI, Request, Response
 
 from app.config import Settings
 from app.errors import CsrfFailed, InvalidToken, RefreshInProgress
+from app.main import LOG_FORMAT
 from app.middleware import (
     check_origin,
     cookie_names,
@@ -25,15 +27,26 @@ from app.models import Role
 from app.routers import admin_pages, file_pages, pages, team_pages
 from app.routers.common import (
     PRE_SESSION_BINDING,
+    AuditCtx,
     CsrfChecked,
     PageUser,
     require_csrf,
     verify_origin,
 )
-from app.security import create_access_token, create_csrf_token
+from app.security import create_csrf_token
 from app.services import sessions
 from app.services.sessions import IssuedTokens
-from tests.conftest import ORIGIN, UserFactory, make_settings, route_calls, token_of
+from tests.conftest import (
+    ORIGIN,
+    ActAs,
+    UserFactory,
+    assert_secure,
+    bearer,
+    make_settings,
+    route_calls,
+    token_for,
+    token_of,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -73,6 +86,67 @@ def set_cookie_lines(response: httpx.Response) -> list[str]:
 # --- Static files and error pages ------------------------------------------------------------
 
 
+@pytest.mark.parametrize("path", ["/login", "/healthz", "/api/v1/me", "/no-such-page"])
+async def test_every_response_has_the_headers_and_is_not_cached(
+    client: httpx.AsyncClient, path: str
+) -> None:
+    """Pages, API answers, errors and probes all carry the headers and Cache-Control: no-store.
+
+    Each also gets a new ``X-Request-ID`` (32 hex characters); one sent by the client is ignored.
+    """
+    response = await client.get(path, headers={"X-Request-ID": "chosen-by-client"})
+    assert_secure(response)
+    assert response.headers["cache-control"] == "no-store"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    request_id = response.headers["x-request-id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", request_id)
+    assert (await client.get(path)).headers["x-request-id"] != request_id
+
+
+async def test_request_id_reaches_the_audit_context(
+    client: httpx.AsyncClient, app: FastAPI, act_as: ActAs
+) -> None:
+    """The audit row of a request gets the ID of its response header."""
+
+    @app.get("/_audit_id")
+    async def _audit_id(ctx: AuditCtx) -> dict[str, str | None]:
+        return {"request_id": ctx.request_id}
+
+    act_as(Role.user)
+    response = await client.get("/_audit_id")
+    assert response.json() == {"request_id": response.headers["x-request-id"]}
+
+
+@pytest.mark.parametrize("path", ["/_boom", "/api/v1/_boom"])
+async def test_a_crash_is_logged_with_the_request_id_of_its_500(
+    client: httpx.AsyncClient, app: FastAPI, caplog: pytest.LogCaptureFixture, path: str
+) -> None:
+    """The last-resort 500 (page and API) carries the ID, and so does the logged stack trace."""
+
+    async def boom() -> None:
+        raise RuntimeError("boom")
+
+    app.add_api_route(path, boom)
+    with caplog.at_level(logging.ERROR, logger="silo"):
+        response = await client.get(path)
+    assert response.status_code == 500
+    request_id = response.headers["x-request-id"]
+    record = next(r for r in caplog.records if r.getMessage() == "Unhandled error")
+    assert f"[{request_id}]" in logging.Formatter(LOG_FORMAT).format(record)
+
+
+async def test_static_files_stay_cacheable_but_get_the_other_headers(
+    client: httpx.AsyncClient,
+) -> None:
+    """Bootstrap is served from /static (so the CSP can stay 'self') and may be cached."""
+    response = await client.get("/static/bootstrap.min.css")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/css")
+    assert "Bootstrap" in response.text[:200]
+    assert response.headers.get("cache-control") != "no-store"
+    assert_secure(response)
+
+
 async def test_page_errors_are_html_and_api_errors_are_json(client: httpx.AsyncClient) -> None:
     """Under /api/ errors are JSON, elsewhere an HTML page without internals."""
     page = await client.get("/no-such-page")
@@ -96,6 +170,17 @@ async def test_unauthenticated_page_redirects_to_login_with_next(
     assert response.headers["location"] == f"/login?next={path}"
 
 
+async def test_start_page_sends_visitors_to_login_and_users_to_files(
+    client: httpx.AsyncClient, act_as: ActAs
+) -> None:
+    """``/`` has no content of its own: it only redirects."""
+    anonymous = await client.get("/", follow_redirects=False)
+    assert (anonymous.status_code, anonymous.headers["location"]) == (303, "/login")
+    act_as(Role.user)
+    logged_in = await client.get("/", follow_redirects=False)
+    assert (logged_in.status_code, logged_in.headers["location"]) == (303, "/files")
+
+
 async def test_useless_cookies_are_deleted_on_the_redirect(
     client: httpx.AsyncClient, page_routes: FastAPI, settings: Settings
 ) -> None:
@@ -114,29 +199,22 @@ async def test_useless_cookies_are_deleted_on_the_redirect(
 async def test_bearer_header_is_ignored_on_pages(
     client: httpx.AsyncClient, settings: Settings
 ) -> None:
-    """Pages accept cookies only (section 7): a token in the Authorization header is not read.
+    """Pages accept cookies only: a token in the Authorization header is not read.
 
     If it were read, the lookup would reach the (absent) database and fail with a 500 instead of
     this redirect.
     """
-    token = create_access_token(
-        user_id=1,
-        session_id=uuid.uuid4(),
-        secret=settings.jwt_secret.get_secret_value(),
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-        ttl=timedelta(minutes=15),
-    )
-    response = await client.get(
-        "/files", headers={"Authorization": f"Bearer {token}"}, follow_redirects=False
-    )
+    token = token_for(settings, 1, uuid.uuid4())
+    response = await client.get("/files", headers=bearer(token), follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"].startswith("/login")
 
 
 def test_templates_have_no_inline_script_or_style() -> None:
     """The CSP allows only 'self' scripts and styles: scripts must be files from /static/."""
-    for path in TEMPLATES.glob("*.html"):
+    templates = list(TEMPLATES.glob("*.html"))
+    assert templates  # the guard must not pass because the glob found nothing
+    for path in templates:
         text = path.read_text().lower().replace("<script src=\"{{ url_for('static'", "")
         for forbidden in ("<script", "<style", " style=", "onclick=", "javascript:"):
             assert forbidden not in text, f"{path.name}: {forbidden}"

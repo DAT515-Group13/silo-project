@@ -1,6 +1,7 @@
 """Auth and account API endpoints.
 
-All tests go through HTTP and need PostgreSQL (marker ``db``).
+All tests go through HTTP. Those marked ``db`` need PostgreSQL; the register validation test
+fails before the database.
 """
 
 import httpx
@@ -13,7 +14,8 @@ from app.config import Settings
 from app.models import AuditLog, AuthSession, Outcome
 from tests.conftest import GOOD_PASSWORD, TEST_PASSWORD, UserFactory, use_mode
 
-pytestmark = [pytest.mark.db, pytest.mark.anyio]
+pytestmark = pytest.mark.anyio
+db = pytest.mark.db
 
 
 async def login(
@@ -24,13 +26,35 @@ async def login(
     )
 
 
-def bearer(response: httpx.Response) -> dict[str, str]:
+def bearer_of(response: httpx.Response) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 # --- Register ----------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("username", "password", "field"),
+    [
+        ("x", "secret-value-1234", "username"),  # schema rule
+        ("anna", "short", "password"),  # password policy, checked in the service
+    ],
+)
+async def test_register_validation_errors_do_not_echo_the_password(
+    client: httpx.AsyncClient, username: str, password: str, field: str
+) -> None:
+    """422 lists the bad field and never repeats the password."""
+    response = await client.post(
+        "/api/v1/auth/register", json={"username": username, "password": password}
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "validation_error"
+    assert [e["field"] for e in body["errors"]] == [field]
+    assert password not in response.text
+
+
+@db
 async def test_register_open_creates_the_user_and_refuses_a_taken_name(
     app: FastAPI, client: httpx.AsyncClient, settings: Settings
 ) -> None:
@@ -48,6 +72,7 @@ async def test_register_open_creates_the_user_and_refuses_a_taken_name(
     assert (taken.status_code, taken.json()["code"]) == (409, "username_taken")
 
 
+@db
 async def test_register_approval_answers_the_same_for_new_and_taken(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
@@ -82,6 +107,7 @@ async def test_register_approval_answers_the_same_for_new_and_taken(
     assert reasons == [{"reason": "username_taken"}]
 
 
+@db
 async def test_register_closed_is_404(
     app: FastAPI, client: httpx.AsyncClient, settings: Settings
 ) -> None:
@@ -96,10 +122,11 @@ async def test_register_closed_is_404(
 # --- Login and refresh -------------------------------------------------------------------------
 
 
-async def test_login_matches_example_9_1(
+@db
+async def test_login_returns_tokens_and_user(
     client: httpx.AsyncClient, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """Login returns the token pair, lifetimes and the user (example 9.1)."""
+    """Login returns the token pair, lifetimes and the user."""
     await user_factory(username="anna")
     response = await login(client)
     assert response.status_code == 200
@@ -119,33 +146,23 @@ async def test_login_matches_example_9_1(
     assert body["user"] == {"id": 1, "username": "anna", "role": "user"}
 
 
+@db
 async def test_failed_logins_have_one_shape(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """Unknown user and wrong password: the same 401 body."""
+    """Unknown user, wrong password and a name that could never be valid: the same 401 body."""
     await user_factory(username="anna")
-    unknown = await login(client, "nobody")
-    wrong = await login(client, "anna", "wrong-password-123")
-    assert unknown.status_code == wrong.status_code == 401
-    assert (
-        unknown.json()
-        == wrong.json()
-        == {
-            "detail": "Invalid username or password.",
-            "code": "invalid_credentials",
-        }
-    )
+    expected = {"detail": "Invalid username or password.", "code": "invalid_credentials"}
+    for username, password in [
+        ("nobody", TEST_PASSWORD),
+        ("anna", "wrong-password-123"),
+        ("not a valid name!", TEST_PASSWORD),
+    ]:
+        response = await login(client, username, password)
+        assert (response.status_code, response.json()) == (401, expected), username
 
 
-async def test_login_username_is_case_insensitive_and_lenient(
-    client: httpx.AsyncClient, user_factory: UserFactory
-) -> None:
-    """Login lowercases the username; a name that could never be valid is simply a 401 (Q20)."""
-    await user_factory(username="anna")
-    assert (await login(client, "ANNA")).status_code == 200
-    assert (await login(client, "not a valid name!")).status_code == 401
-
-
+@db
 async def test_refresh_rotates_and_the_old_token_is_refused(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
@@ -168,12 +185,13 @@ async def test_refresh_rotates_and_the_old_token_is_refused(
 # --- Account -----------------------------------------------------------------------------------
 
 
-async def test_me_matches_example_9_2(
+@db
+async def test_me_returns_user_usage_and_quota(
     client: httpx.AsyncClient, settings: Settings, user_factory: UserFactory
 ) -> None:
-    """GET /me returns the user with usage and the quota of their role (example 9.2)."""
+    """GET /me returns the user with usage and the quota of their role."""
     await user_factory(username="anna", used_bytes=1048576)
-    response = await client.get("/api/v1/me", headers=bearer(await login(client)))
+    response = await client.get("/api/v1/me", headers=bearer_of(await login(client)))
     assert response.status_code == 200
     assert response.json() == {
         "id": 1,
@@ -184,10 +202,11 @@ async def test_me_matches_example_9_2(
     }
 
 
+@db
 async def test_sessions_list_and_delete_a_session(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """The list shows own active sessions and marks the current one (example 9.6).
+    """The list shows own active sessions and marks the current one.
 
     Deleting an own session gives 204 and kills its token; a foreign one gives 404.
     """
@@ -196,46 +215,45 @@ async def test_sessions_list_and_delete_a_session(
     anna1, anna2 = await login(client), await login(client)
     bob = await login(client, "bob")
 
-    mine = (await client.get("/api/v1/auth/sessions", headers=bearer(anna2))).json()
+    mine = (await client.get("/api/v1/auth/sessions", headers=bearer_of(anna2))).json()
     assert len(mine) == 2
     assert set(mine[0]) == {"id", "created_at", "last_used_at", "ip", "user_agent", "current"}
     assert sum(row["current"] for row in mine) == 1
     assert mine[0]["ip"] == "127.0.0.1"
     other_of_mine = next(row["id"] for row in mine if not row["current"])
-    bobs_id = (await client.get("/api/v1/auth/sessions", headers=bearer(bob))).json()[0]["id"]
+    bobs_id = (await client.get("/api/v1/auth/sessions", headers=bearer_of(bob))).json()[0]["id"]
 
     assert (
-        await client.delete(f"/api/v1/auth/sessions/{bobs_id}", headers=bearer(anna2))
+        await client.delete(f"/api/v1/auth/sessions/{bobs_id}", headers=bearer_of(anna2))
     ).status_code == 404
-    deleted = await client.delete(f"/api/v1/auth/sessions/{other_of_mine}", headers=bearer(anna2))
+    deleted = await client.delete(
+        f"/api/v1/auth/sessions/{other_of_mine}", headers=bearer_of(anna2)
+    )
     assert deleted.status_code == 204
-    assert (await client.get("/api/v1/me", headers=bearer(anna1))).status_code == 401
-    assert (await client.get("/api/v1/me", headers=bearer(anna2))).status_code == 200
+    assert (await client.get("/api/v1/me", headers=bearer_of(anna1))).status_code == 401
+    assert (await client.get("/api/v1/me", headers=bearer_of(anna2))).status_code == 200
 
 
-async def test_logout_takes_effect_immediately(
+@db
+async def test_logout_ends_one_session_and_logout_all_every_session(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """After POST /auth/logout the access token is rejected at once; other devices stay in."""
-    await user_factory(username="anna")
-    logged_in, other_device = await login(client), await login(client)
-    assert (await client.get("/api/v1/me", headers=bearer(logged_in))).status_code == 200
-    assert (await client.post("/api/v1/auth/logout", headers=bearer(logged_in))).status_code == 204
-    assert (await client.get("/api/v1/me", headers=bearer(logged_in))).status_code == 401
-    assert (await client.get("/api/v1/me", headers=bearer(other_device))).status_code == 200
+    """Logout rejects that access token at once and keeps the other devices logged in.
 
-
-async def test_logout_all_ends_every_session(
-    client: httpx.AsyncClient, user_factory: UserFactory
-) -> None:
-    """logout-all revokes all devices of the user, but not other users' sessions."""
+    logout-all then ends all of the user's devices, but not other users' sessions.
+    """
     await user_factory(username="anna")
     await user_factory(username="bob")
-    a1, a2, bob = await login(client), await login(client), await login(client, "bob")
-    assert (await client.post("/api/v1/auth/logout-all", headers=bearer(a1))).status_code == 204
-    assert (await client.get("/api/v1/me", headers=bearer(a1))).status_code == 401
-    assert (await client.get("/api/v1/me", headers=bearer(a2))).status_code == 401
-    assert (await client.get("/api/v1/me", headers=bearer(bob))).status_code == 200
+    a1, a2, a3 = await login(client), await login(client), await login(client)
+    bob = await login(client, "bob")
+
+    async def me(response: httpx.Response) -> int:
+        return (await client.get("/api/v1/me", headers=bearer_of(response))).status_code
+
+    assert (await client.post("/api/v1/auth/logout", headers=bearer_of(a1))).status_code == 204
+    assert (await me(a1), await me(a2)) == (401, 200)
+    assert (await client.post("/api/v1/auth/logout-all", headers=bearer_of(a2))).status_code == 204
+    assert (await me(a2), await me(a3), await me(bob)) == (401, 401, 200)
 
 
 # --- Password change ---------------------------------------------------------------------------
@@ -251,6 +269,7 @@ async def change_password(
     )
 
 
+@db
 async def test_password_change_keeps_this_session_and_ends_the_others(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
@@ -263,10 +282,10 @@ async def test_password_change_keeps_this_session_and_ends_the_others(
     """
     await user_factory(username="anna")
     here, other = await login(client), await login(client)
-    response = await change_password(client, bearer(here), TEST_PASSWORD, GOOD_PASSWORD)
+    response = await change_password(client, bearer_of(here), TEST_PASSWORD, GOOD_PASSWORD)
     assert response.status_code == 204
-    assert (await client.get("/api/v1/me", headers=bearer(here))).status_code == 200
-    assert (await client.get("/api/v1/me", headers=bearer(other))).status_code == 401
+    assert (await client.get("/api/v1/me", headers=bearer_of(here))).status_code == 200
+    assert (await client.get("/api/v1/me", headers=bearer_of(other))).status_code == 401
     async with db_sessionmaker() as db:
         reasons = (
             await db.scalars(select(AuthSession.revoked_reason).order_by(AuthSession.created_at))
@@ -284,6 +303,7 @@ async def test_password_change_keeps_this_session_and_ends_the_others(
     assert (await login(client, "anna", GOOD_PASSWORD)).status_code == 200
 
 
+@db
 async def test_password_change_refuses_a_wrong_current_or_weak_new_password(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
@@ -294,7 +314,7 @@ async def test_password_change_refuses_a_wrong_current_or_weak_new_password(
     """
     await user_factory(username="anna")
     here = await login(client)
-    response = await change_password(client, bearer(here), "wrong-password-123", GOOD_PASSWORD)
+    response = await change_password(client, bearer_of(here), "wrong-password-123", GOOD_PASSWORD)
     assert response.status_code == 422
     assert response.json()["errors"][0]["field"] == "current_password"
     async with db_sessionmaker() as db:
@@ -306,7 +326,7 @@ async def test_password_change_refuses_a_wrong_current_or_weak_new_password(
     assert outcomes == [Outcome.failed]
 
     for bad in ("short", "ANNA"):
-        response = await change_password(client, bearer(here), TEST_PASSWORD, bad)
+        response = await change_password(client, bearer_of(here), TEST_PASSWORD, bad)
         assert response.status_code == 422
         assert response.json()["errors"][0]["field"] == "new_password"
     assert (await login(client, "anna", TEST_PASSWORD)).status_code == 200

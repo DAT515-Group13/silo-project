@@ -24,6 +24,7 @@ from app.routers.common import (
     PageUser,
     SettingsDep,
     file_out,
+    page_count,
     render_page,
     see_other,
     validation_messages,
@@ -35,7 +36,7 @@ router = APIRouter(include_in_schema=False)
 
 FILES_PER_PAGE = 20
 
-# Shown after every add-member request: it must not reveal whether the account exists (8.1).
+# Shown after every add-member request: it must not reveal whether the account exists.
 MEMBER_ADD_NOTICE = "If an active account with this username exists, it is now a member."
 
 
@@ -89,7 +90,7 @@ async def create_team_submit(
     name: Annotated[str, Form()] = "",
 ) -> Response:
     """Create a team and open its page; problems show the list again with a message."""
-    # Checked first, so a plain user gets the 403 without any database work (D19).
+    # Checked first, so a plain user gets the 403 without any database work.
     if not can_create_team(user):
         raise RoleRequired
     try:
@@ -153,7 +154,7 @@ async def _team_page(
             "members": detail.members,
             "files": [file_out(item, user.id) for item in items],
             "page": page,
-            "pages": max(1, -(-total // FILES_PER_PAGE)),
+            "pages": page_count(total, FILES_PER_PAGE),
             "total": total,
             "is_owner": can_manage_members(user, detail.team),
             "can_delete": can_delete_team(user, detail.team),
