@@ -15,17 +15,9 @@ from app.errors import InvalidToken, RefreshInProgress
 from app.models import AuditLog, AuthSession, RefreshToken, Role, User, UserStatus
 from app.security import decode_access_token, hash_token
 from app.services import sessions
-from tests.conftest import Sessionmaker, UserFactory
+from tests.conftest import Sessionmaker, UserFactory, issue_session
 
 pytestmark = [pytest.mark.db, pytest.mark.anyio]
-
-
-async def login(
-    sm: Sessionmaker, settings: Settings, user: User, now: datetime | None = None
-) -> sessions.IssuedTokens:
-    """Create a session in its own transaction, like the login service does."""
-    async with sm() as db, db.begin():
-        return await sessions.create_session(db, settings, user, now=now)
 
 
 async def load_session(sm: Sessionmaker, session_id: uuid.UUID) -> AuthSession:
@@ -48,7 +40,7 @@ async def test_create_session_stores_only_the_hash(
     """
     user = await user_factory(username="anna", role=Role.team_lead)
     now = datetime.now(UTC)
-    tokens = await login(db_sessionmaker, settings, user, now)
+    tokens = await issue_session(db_sessionmaker, settings, user, now)
     auth_session = await load_session(db_sessionmaker, tokens.session_id)
     assert auth_session.expires_at == now + timedelta(days=settings.session_max_days)
     assert tokens.refresh_expires_in == settings.refresh_token_days * 86400
@@ -76,7 +68,7 @@ async def test_refresh_token_never_outlives_the_session(
     """Near the session's end the new refresh token is cut to that end."""
     user = await user_factory()
     start = datetime.now(UTC)
-    tokens = await login(db_sessionmaker, settings, user, start)
+    tokens = await issue_session(db_sessionmaker, settings, user, start)
     # A refresh token lives 7 days, so reach the end of the 30-day session in steps of 6 days
     # (a single jump would find the first token expired). The last step is at day 24: 24 + 7 is
     # past the session's end at day 30, so that token must be cut to it.
@@ -101,7 +93,7 @@ async def test_reuse_after_the_window_revokes_the_session(
     """A token used again more than 10 s later revokes the session and is audited."""
     user = await user_factory()
     t0 = datetime.now(UTC)
-    first = await login(db_sessionmaker, settings, user, t0)
+    first = await issue_session(db_sessionmaker, settings, user, t0)
     second = await rotate(db_sessionmaker, settings, first.refresh_token, t0)
 
     with pytest.raises(InvalidToken):
@@ -125,7 +117,7 @@ async def test_concurrent_refresh_with_one_token(
 ) -> None:
     """Two parallel requests with the same token: one succeeds, the other gets 409 (row lock)."""
     user = await user_factory()
-    first = await login(db_sessionmaker, settings, user)
+    first = await issue_session(db_sessionmaker, settings, user)
 
     results = await asyncio.gather(
         rotate(db_sessionmaker, settings, first.refresh_token),
@@ -145,8 +137,8 @@ async def test_unknown_expired_and_revoked_tokens_are_invalid(
     """Unknown token, idle-expired token, revoked session and disabled user: same InvalidToken."""
     user = await user_factory()
     t0 = datetime.now(UTC)
-    tokens = await login(db_sessionmaker, settings, user, t0)
-    second = await login(db_sessionmaker, settings, user, t0)
+    tokens = await issue_session(db_sessionmaker, settings, user, t0)
+    second = await issue_session(db_sessionmaker, settings, user, t0)
 
     with pytest.raises(InvalidToken):
         await rotate(db_sessionmaker, settings, "no-such-token")
@@ -173,13 +165,14 @@ async def test_session_limit_revokes_the_least_recently_used(
     user = await user_factory()
     t0 = datetime.now(UTC) - timedelta(hours=1)
     created = [
-        await login(db_sessionmaker, settings, user, t0 + timedelta(minutes=i)) for i in range(10)
+        await issue_session(db_sessionmaker, settings, user, t0 + timedelta(minutes=i))
+        for i in range(10)
     ]
     # The oldest device is in active use again, so the second oldest is now the least recent.
     async with db_sessionmaker() as db, db.begin():
         assert await sessions.touch(db, created[0].session_id, now=t0 + timedelta(minutes=30))
 
-    newest = await login(db_sessionmaker, settings, user, t0 + timedelta(minutes=40))
+    newest = await issue_session(db_sessionmaker, settings, user, t0 + timedelta(minutes=40))
 
     revoked = await load_session(db_sessionmaker, created[1].session_id)
     assert (revoked.revoked_reason, revoked.revoked_at is not None) == ("session_limit", True)

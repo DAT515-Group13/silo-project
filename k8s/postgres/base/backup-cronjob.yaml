@@ -1,0 +1,70 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: postgres-backup
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: dump
+              image: postgres:17
+              command: ["sh", "-c", "pg_dump -Fc -f /backup/silo.dump"]
+              securityContext:
+                runAsUser: 999
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGHOST
+                  value: postgres
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: silo-db, key: POSTGRES_USER } }
+                - name: PGDATABASE
+                  valueFrom: { secretKeyRef: { name: silo-db, key: POSTGRES_DB } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: silo-db, key: POSTGRES_PASSWORD } }
+              volumeMounts:
+                - { name: backup, mountPath: /backup }
+          containers:
+            - name: upload
+              image: mcr.microsoft.com/azure-cli:2.91.0
+              command:
+                - sh
+                - -c
+                - |
+                  set -e
+                  az storage container create -n backups --only-show-errors >/dev/null
+                  az storage blob upload -c backups -f /backup/silo.dump \
+                    -n "silo-$(date +%Y-%m-%d-%H%M).dump" --only-show-errors
+              securityContext:
+                runAsUser: 10001
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: AZURE_STORAGE_CONNECTION_STRING
+                  valueFrom: { secretKeyRef: { name: silo-azure, key: AZURE_STORAGE_CONNECTION_STRING } }
+              volumeMounts:
+                - { name: backup, mountPath: /backup }
+                - { name: tmp, mountPath: /tmp }
+          volumes:
+            - { name: backup, emptyDir: {} }
+            - { name: tmp, emptyDir: {} }

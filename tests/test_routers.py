@@ -1,9 +1,13 @@
-"""Pagination and ID parameters shared by the endpoints."""
+"""Pagination and ID parameters shared by the endpoints, and small router helpers."""
+
+import uuid
 
 import httpx
 import pytest
 
 from app.models import Role
+from app.routers.common import page_count
+from app.routers.file_pages import _file_id_of
 from tests.conftest import ActAs
 
 
@@ -42,3 +46,27 @@ async def test_sort_and_scope_are_validated(client: httpx.AsyncClient, act_as: A
     act_as(Role.user)
     assert (await client.get("/api/v1/files", params={"sort": "owner_id"})).status_code == 422
     assert (await client.get("/api/v1/files", params={"scope": "all"})).status_code == 422
+
+
+@pytest.mark.parametrize(("total", "pages"), [(0, 1), (1, 1), (25, 1), (26, 2), (50, 2)])
+def test_page_count_rounds_up_and_is_at_least_one(total: int, pages: int) -> None:
+    """An empty list is "page 1 of 1"; 26 rows at 25 per page are 2 pages."""
+    assert page_count(total, 25) == pages
+
+
+FILE_ID = uuid.uuid4()
+
+
+@pytest.mark.parametrize(
+    ("next_url", "expected"),
+    [
+        (f"/files/{FILE_ID}", FILE_ID),
+        ("/files/not-a-uuid", None),
+        (f"/files/{FILE_ID}/rename", None),
+        ("/links", None),
+        ("", None),
+    ],
+)
+def test_return_address_of_a_file_page(next_url: str, expected: uuid.UUID | None) -> None:
+    """Only ``/files/<id>`` is a file page; any other ``next`` falls back to the links overview."""
+    assert _file_id_of(next_url) == expected

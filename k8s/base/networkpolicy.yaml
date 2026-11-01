@@ -84,4 +84,28 @@ spec:
               app.kubernetes.io/name: postgres
       ports:
         - { port: 5432, protocol: TCP }
+---
+# 5) The cleanup job.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: silo-cleanup
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: silo-cleanup
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - { port: 5432, protocol: TCP }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8]
+      ports:
+        - { port: 443, protocol: TCP }
         

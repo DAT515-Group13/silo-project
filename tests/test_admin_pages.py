@@ -31,7 +31,10 @@ pytestmark = pytest.mark.anyio
         ("GET", "/admin"),
         ("GET", "/admin/files"),
         ("GET", "/admin/audit"),
+        ("POST", "/admin/users/2"),
         ("POST", "/admin/users/2/approve"),
+        ("POST", "/admin/users/2/reject"),
+        ("POST", "/admin/users/2/revoke-sessions"),
         ("POST", "/admin/users/2/delete"),
     ],
 )
@@ -58,6 +61,38 @@ async def test_delete_needs_the_confirmation_box(
     response = await client.post("/admin/users/2/delete", data=data, headers=headers)
     assert response.status_code == 422
     assert "Tick the confirmation box" in response.text
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "fields", "message"),
+    [
+        # Messages are matched without quotes: the page HTML-escapes them.
+        ("POST", "/admin/users/2", {"role": "boss"}, "Input should be"),
+        ("POST", "/admin/users/2", {"status": "pending"}, "Status must be active or disabled."),
+        ("POST", "/admin/users/2/reject", {"reason": "x" * 501}, "500 characters"),
+        ("GET", "/admin/audit?outcome=bogus", {}, "A filter value is not valid."),
+        ("GET", "/admin/audit?actor_id=0", {}, "A filter value is not valid."),
+        ("GET", "/admin/audit?from=yesterday", {}, "is not a valid date and time."),
+    ],
+    ids=["unknown role", "pending status", "long reason", "bad outcome", "bad actor", "bad time"],
+)
+async def test_bad_form_or_filter_values_show_a_422_page(
+    client: httpx.AsyncClient,
+    act_as: ActAs,
+    settings: Settings,
+    method: str,
+    path: str,
+    fields: dict[str, str],
+    message: str,
+) -> None:
+    """A bad value is refused with a readable message before the service (and the database)."""
+    admin = act_as(Role.admin)
+    headers, data = page_csrf(settings, admin)
+    form = {**data, **fields} if method == "POST" else None  # a GET filter sends no form
+    response = await client.request(method, path, data=form, headers=headers)
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("text/html")
+    assert message in response.text
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
@@ -98,6 +133,52 @@ async def test_admin_approves_a_pending_user_from_the_page(
     )
     assert response.status_code == 303
     assert await state(db_sessionmaker, newbie.id) == UserStatus.active
+
+
+@pytest.mark.db
+async def test_admin_changes_rejects_and_logs_out_from_the_page(
+    client: httpx.AsyncClient,
+    admin_login: tuple,
+    user_factory: UserFactory,
+    page_login: PageLogin,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """The role/status, reject and revoke-sessions forms work; a 409 becomes the error page.
+
+    The rules themselves are tested through the API in test_admin_users.py; this checks the
+    page wiring.
+    """
+    root, headers, data = admin_login
+    anna = await user_factory(username="anna")
+    newbie = await user_factory(username="newbie", status=UserStatus.pending)
+    bob = await user_factory(username="bob")
+    bobs = await page_login(bob)
+
+    async def submit(path: str, **fields: str) -> httpx.Response:
+        return await client.post(
+            path, data={**data, **fields}, headers=headers, follow_redirects=False
+        )
+
+    changed = await submit(f"/admin/users/{anna.id}", role="team_lead", status="disabled")
+    assert (changed.status_code, changed.headers["location"]) == (303, "/admin")
+    async with db_sessionmaker() as session, session.begin():
+        row = (
+            await session.execute(select(User.role, User.status).where(User.id == anna.id))
+        ).one()
+    assert (row.role, row.status) == (Role.team_lead, UserStatus.disabled)
+
+    rejected = await submit(f"/admin/users/{newbie.id}/reject", reason="unknown person")
+    assert rejected.headers["location"] == "/admin?status=pending"
+    assert await state(db_sessionmaker, newbie.id) == UserStatus.rejected
+
+    assert (await client.get("/account", headers=bobs[0])).status_code == 200
+    revoked = await submit(f"/admin/users/{bob.id}/revoke-sessions")
+    assert revoked.headers["location"] == "/admin"
+    assert (await client.get("/account", headers=bobs[0])).status_code == 303  # to /login
+
+    myself = await submit(f"/admin/users/{root.id}", status="disabled")
+    assert myself.status_code == 409  # last_admin, as the HTML error page
+    assert myself.headers["content-type"].startswith("text/html")
 
 
 @pytest.mark.db

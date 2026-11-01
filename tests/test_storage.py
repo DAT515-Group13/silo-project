@@ -128,7 +128,7 @@ async def test_azure_empty_upload_commits_an_empty_blob() -> None:
 
 
 async def test_azure_aborted_upload_never_commits() -> None:
-    """If the chunks raise, nothing is committed and the original error propagates (s. 2.2)."""
+    """If the chunks raise, nothing is committed and the original error propagates."""
     store, container = make_store()
     with pytest.raises(FileTooLarge):
         await store.upload_stream(

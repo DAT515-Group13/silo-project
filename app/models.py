@@ -1,6 +1,6 @@
 """SQLAlchemy tables. Tables only: no business logic.
 
-Cascades are done by the database (ON DELETE), so there are no ORM relationships yet.
+Cascades are done by the database (ON DELETE), so there are no ORM relationships.
 """
 
 import enum
@@ -122,7 +122,7 @@ class AuthSession(Base):
     last_used_at: Mapped[datetime]
     expires_at: Mapped[datetime]
     revoked_at: Mapped[datetime | None]
-    # logout, logout_all, reuse_detected, user_disabled, admin, session_limit
+    # logout, logout_all, reuse_detected, user_disabled, admin, session_limit, password_change
     revoked_reason: Mapped[str | None] = mapped_column(String(30))
     ip: Mapped[str | None] = mapped_column(INET)
     user_agent: Mapped[str | None] = mapped_column(String(255))

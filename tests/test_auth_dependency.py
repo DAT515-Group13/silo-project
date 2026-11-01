@@ -14,11 +14,11 @@ from app.config import Settings, get_settings
 from app.models import AuthSession, User, UserStatus
 from app.routers.api import admin, auth, files, links, teams
 from app.routers.common import ApiUser, get_current_api_user
-from app.services import sessions
 from tests.conftest import (
     Sessionmaker,
     UserFactory,
     bearer,
+    issue_session,
     make_settings,
     route_calls,
     token_for,
@@ -36,11 +36,6 @@ def whoami(app: FastAPI) -> str:
         return {"id": user.id, "username": user.username, "role": user.role.value}
 
     return "/api/v1/_whoami"
-
-
-async def login(sm: Sessionmaker, settings: Settings, user: User) -> sessions.IssuedTokens:
-    async with sm() as db, db.begin():
-        return await sessions.create_session(db, settings, user)
 
 
 # --- Failures that need no database ------------------------------------------------------
@@ -115,7 +110,7 @@ async def test_token_of_a_dead_session_or_inactive_user_is_rejected(
     """A session past SESSION_MAX_DAYS is dead even if the JWT itself is still valid, and only
     status active may use the API (checked on every request)."""
     user = await user_factory()
-    tokens = await login(db_sessionmaker, settings, user)
+    tokens = await issue_session(db_sessionmaker, settings, user)
     headers = bearer(tokens.access_token)
     assert (await client.get(whoami, headers=headers)).status_code == 200
     async with db_sessionmaker() as db, db.begin():
@@ -139,7 +134,7 @@ async def test_session_of_another_user_is_rejected(
     made-up session is invalid, although the token is correctly signed."""
     anna = await user_factory(username="anna")
     bob = await user_factory(username="bob")
-    bobs = await login(db_sessionmaker, settings, bob)
+    bobs = await issue_session(db_sessionmaker, settings, bob)
     for session_id in (bobs.session_id, uuid.uuid4()):
         forged = token_for(settings, anna.id, session_id)
         assert (await client.get(whoami, headers=bearer(forged))).status_code == 401
@@ -158,7 +153,7 @@ async def test_previous_secret_is_accepted_during_rotation(
     old_secret = "o" * 40
     database_url = settings.database_url.get_secret_value()
     user = await user_factory()
-    tokens = await login(db_sessionmaker, settings, user)
+    tokens = await issue_session(db_sessionmaker, settings, user)
     token = token_for(settings, user.id, tokens.session_id, secret=old_secret)
 
     # After rotation the new secret is JWT_SECRET and the old one is JWT_SECRET_PREVIOUS.

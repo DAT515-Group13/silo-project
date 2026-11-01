@@ -1,12 +1,13 @@
-"""Cookies, Origin checks, and the middleware stack (metrics, security headers, body limit).
+"""Cookies, Origin checks, and the middleware stack (request ID, metrics, headers, body limit).
 
-The page surface authenticates with cookies, the API with Bearer tokens; the two never mix. The
-request ID and trusted host middleware are planned hardening steps.
+The page surface authenticates with cookies, the API with Bearer tokens; the two never mix.
 """
 
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from fastapi import HTTPException, Request, Response
 from starlette.datastructures import Headers, MutableHeaders
@@ -190,7 +191,7 @@ CACHEABLE_PREFIX = "/static/"
 
 
 class SecurityHeadersMiddleware:
-    """Add the response headers of spec section 12 to every response.
+    """Add the response security headers to every response.
 
     Outermost middleware, so error pages and the 413 of ``BodyLimitMiddleware`` get them too.
     A header a route set itself (for example the ``no-store`` of ``/s/{token}``) is kept.
@@ -202,12 +203,14 @@ class SecurityHeadersMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Add the headers to every HTTP response; other scopes (lifespan) pass through."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         path = scope["path"]
 
         async def send_with_headers(message: Message) -> None:
+            """Add the headers to the response start; ``setdefault`` keeps what a route set."""
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
                 for name, value in SECURITY_HEADERS.items():
@@ -223,6 +226,44 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+# The ID of the request being handled, for log lines ("-" outside a request). A ContextVar is
+# per task, so concurrent requests never see each other's ID.
+REQUEST_ID: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+class RequestIdMiddleware:
+    """Give every request a new random ID, for logs, audit entries and the response.
+
+    The ID is stored in ``request.state.request_id`` (read by the audit context) and in
+    ``REQUEST_ID`` (read by the log format), and sent back as ``X-Request-ID``, so an operator
+    can match a user's report to log lines and audit rows. An incoming ``X-Request-ID`` is
+    ignored: a client could otherwise put anything into our logs. Outermost middleware, so error
+    pages and 413s carry the header too; the last-resort 500 adds it itself.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Set the ID for HTTP requests; other scopes (lifespan) pass through."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request_id = uuid4().hex  # 32 characters, fits audit_log.request_id (String(36))
+        scope.setdefault("state", {})["request_id"] = request_id
+
+        async def send_with_id(message: Message) -> None:
+            """Add the ID header to the response start."""
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Request-ID"] = request_id
+            await send(message)
+
+        # Not reset afterwards: Starlette's last-resort 500 handler runs outside this middleware
+        # and must still log the ID. The next request on the same connection sets its own.
+        REQUEST_ID.set(request_id)
+        await self.app(scope, receive, send_with_id)
+
+
 # Any other method becomes "OTHER": the method comes from the client, so without this list a
 # client could create endless label values (and memory use in Prometheus).
 KNOWN_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
@@ -233,14 +274,15 @@ class MetricsMiddleware:
 
     The label is the template (``/s/{token}``), never the real path: a public link path is a
     secret. Starlette's router stores the matched route in ``scope["route"]``; no route means
-    ``unmatched``; an unknown HTTP method is ``OTHER``. Outermost middleware, so 413s and error
-    pages are counted too.
+    ``unmatched``; an unknown HTTP method is ``OTHER``. Only ``RequestIdMiddleware`` wraps it, so
+    413s and error pages are counted too.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Time and count every HTTP request, also one that fails with an exception."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -248,6 +290,7 @@ class MetricsMiddleware:
         status = 500  # stays 500 if the app fails before it answers
 
         async def send_and_note_status(message: Message) -> None:
+            """Pass the message on and remember the status code for the metrics."""
             nonlocal status
             if message["type"] == "http.response.start":
                 status = message["status"]
@@ -282,6 +325,7 @@ class BodyLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass upload routes through; refuse other bodies above ``MAX_BODY_BYTES``."""
         if scope["type"] != "http" or (scope["method"], scope["path"]) in UNLIMITED_BODY_ROUTES:
             await self.app(scope, receive, send)
             return
@@ -289,7 +333,7 @@ class BodyLimitMiddleware:
         # A declared size is checked first, so an honest oversized client is refused unread.
         declared = Headers(scope=scope).get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
-            # The API keeps its JSON error shape (section 9.5); pages get plain text.
+            # The API keeps its JSON error shape; pages get plain text.
             if scope["path"].startswith("/api/"):
                 body = {"detail": "Request body too large.", "code": "payload_too_large"}
                 await JSONResponse(body, status_code=413)(scope, receive, send)
@@ -306,6 +350,7 @@ class BodyLimitMiddleware:
         received = 0
 
         async def limited_receive() -> Message:
+            """Count the received body bytes and stop as soon as the limit is passed."""
             nonlocal received
             message = await receive()
             if message["type"] == "http.request":
@@ -331,6 +376,7 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        """Run the route, then set or delete the auth cookies as the request noted."""
         response = await call_next(request)
         settings: Settings = request.app.state.settings
         refreshed: IssuedTokens | None = getattr(request.state, "refreshed_tokens", None)

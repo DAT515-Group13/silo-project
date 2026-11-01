@@ -1,4 +1,4 @@
-"""Admin commands, run as ``python -m app.cli <command>`` (architecture.md section 10).
+"""Admin commands, run as ``python -m app.cli <command>``.
 
 ``cleanup-orphans [--dry-run]`` removes blobs that no file row refers to. It is meant to run
 as a scheduled job (for example a Kubernetes CronJob) with the same environment as the app.

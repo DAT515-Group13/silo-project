@@ -1,8 +1,7 @@
 """App factory, lifespan and exception handlers.
 
 Run with: ``uvicorn app.main:create_app --factory``. The lifespan owns the database engine and
-the BlobStore. Errors are rendered as JSON under ``/api/`` and as HTML pages elsewhere. The
-request ID and trusted host middleware are planned hardening steps.
+the BlobStore. Errors are rendered as JSON under ``/api/`` and as HTML pages elsewhere.
 """
 
 import logging
@@ -23,9 +22,11 @@ from app.db import create_engine, create_session_factory
 from app.errors import InvalidToken, RateLimited, SiloError, ValidationFailed
 from app.metrics import STORAGE_CAP, start_metrics_server
 from app.middleware import (
+    REQUEST_ID,
     AuthCookieMiddleware,
     BodyLimitMiddleware,
     MetricsMiddleware,
+    RequestIdMiddleware,
     SecurityHeadersMiddleware,
     clear_auth_cookies,
 )
@@ -40,7 +41,16 @@ from app.storage.base import BlobStore
 
 logger = logging.getLogger("silo")
 
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_FORMAT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
+
+
+class AddRequestId(logging.Filter):
+    """Put the ID of the current request on each log record ("-" outside a request)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Set ``record.request_id``; never drops a record."""
+        record.request_id = REQUEST_ID.get()
+        return True
 
 
 class RedactLinkTokens(logging.Filter):
@@ -51,6 +61,7 @@ class RedactLinkTokens(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Replace the token in the path argument of an access log record; never drops a record."""
         # Uvicorn's access records have the arguments (client, method, path, http_version, status).
         args = record.args
         if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
@@ -67,7 +78,6 @@ def configure_logging() -> None:
     logger, where nothing is attached in production and pytest's ``caplog`` listens in tests.
     The handler is added once, however many apps a process creates (the tests create many).
     """
-    # Added once, however many apps a process creates.
     access_logger = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, RedactLinkTokens) for f in access_logger.filters):
         access_logger.addFilter(RedactLinkTokens())
@@ -75,6 +85,8 @@ def configure_logging() -> None:
         return
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    # On the handler, not the logger: a logger's filters skip records of its child loggers.
+    handler.addFilter(AddRequestId())
     handler._silo = True  # type: ignore[attr-defined]  # marks the handler as ours
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
@@ -109,7 +121,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     metrics_server = None
     # Everything after the engine is inside the try, so a failed startup still disposes it.
     try:
-        # "First admin": runs at every startup, does nothing if the account exists.
+        # Create the first admin account: runs at every startup, does nothing if it exists.
         # Tests without a database switch it off with create_app(initial_admin=False).
         if app.state.initial_admin:
             async with app.state.session_factory() as session:
@@ -174,6 +186,7 @@ def _login_redirect(request: Request) -> Response:
 
 
 async def _silo_error_handler(request: Request, exc: SiloError) -> Response:
+    """Domain error -> JSON under /api/, else the HTML error page (a lost session: /login)."""
     headers: dict[str, str] = {}
     if isinstance(exc, RateLimited) and exc.retry_after is not None:
         headers["Retry-After"] = str(exc.retry_after)
@@ -193,6 +206,7 @@ async def _silo_error_handler(request: Request, exc: SiloError) -> Response:
 
 
 async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
+    """429: JSON for the API, the HTML error page with the same Retry-After for pages."""
     if _is_api(request):
         return await rate_limit_handler(request, exc)
     json_response = await rate_limit_handler(request, exc)
@@ -203,6 +217,7 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Respo
 
 
 async def _validation_error_handler(request: Request, exc: RequestValidationError) -> Response:
+    """422: the API lists field names and messages (never the input), pages get a short text."""
     if not _is_api(request):
         return _error_page(request, 422, "Some of the submitted data is not valid.")
     # Never echo the input: it may contain a password.
@@ -215,6 +230,7 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
 
 
 async def _http_error_handler(request: Request, exc: StarletteHTTPException) -> Response:
+    """Plain HTTP errors (404, 405, 413...): HTML for pages, JSON for the API and probes."""
     if not _is_api(request) and request.url.path not in {"/healthz", "/readyz"}:
         message = _PAGE_MESSAGES.get(exc.status_code, str(exc.detail))
         return _error_page(request, exc.status_code, message, exc.headers)
@@ -227,12 +243,19 @@ async def _http_error_handler(request: Request, exc: StarletteHTTPException) -> 
 
 
 async def _unhandled_error_handler(request: Request, exc: Exception) -> Response:
+    """Last resort: log the stack trace, answer a generic 500 without details.
+
+    Starlette runs this outside every middleware, so the response gets ``X-Request-ID`` here.
+    """
     logger.exception("Unhandled error")
     if not _is_api(request):
-        return _error_page(request, 500, "Something went wrong. Please try again later.")
-    return JSONResponse(
-        {"detail": "Internal server error.", "code": "internal_error"}, status_code=500
-    )
+        response = _error_page(request, 500, "Something went wrong. Please try again later.")
+    else:
+        response = JSONResponse(
+            {"detail": "Internal server error.", "code": "internal_error"}, status_code=500
+        )
+    response.headers["X-Request-ID"] = REQUEST_ID.get()
+    return response
 
 
 def create_app(
@@ -277,7 +300,8 @@ def create_app(
     app.add_middleware(BodyLimitMiddleware)
     app.add_middleware(AuthCookieMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)  # also covers error pages and 413
-    app.add_middleware(MetricsMiddleware)  # outermost: counts every response, 413 included
+    app.add_middleware(MetricsMiddleware)  # counts every response, 413 included
+    app.add_middleware(RequestIdMiddleware)  # outermost: every response carries X-Request-ID
     app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
     app.add_exception_handler(SiloError, _silo_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)

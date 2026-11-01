@@ -1,4 +1,4 @@
-"""Orphan cleanup (architecture.md sections 10 and 16): only unreferenced blobs older than 24 h.
+"""Orphan cleanup: only unreferenced blobs older than 24 h.
 
 The service runs against a stand-in session whose database lookup is replaced, so the rules are
 tested without PostgreSQL; one ``db`` test checks the real lookup.
@@ -22,7 +22,7 @@ pytestmark = pytest.mark.anyio
 NOW = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
 
 
-class FakeSession:
+class AuditOnlySession:
     """Just enough of an AsyncSession for the audit entry: begin, add, flush."""
 
     def __init__(self) -> None:
@@ -62,11 +62,11 @@ def stocked_store() -> InMemoryBlobStore:
 async def test_only_old_unreferenced_blobs_are_deleted(referenced: set[str]) -> None:
     """A used blob and a blob younger than 24 hours stay; the old orphan goes and is audited."""
     referenced.add("old-used")
-    store, session = stocked_store(), FakeSession()
+    store, session = stocked_store(), AuditOnlySession()
     result = await cleanup_orphans(session, store, now=NOW)  # type: ignore[arg-type]
     assert (result.scanned, result.deleted) == (2, 1)
     assert set(store.blobs) == {"old-used", "new-orphan"}
-    # One audit entry, actor system, with the counts in the details (section 10).
+    # One audit entry, actor system, with the counts in the details.
     (entry,) = session.added
     assert entry.action == "storage.orphan_cleanup"
     assert (entry.actor_type, entry.outcome) == (ActorType.system, Outcome.success)
@@ -75,7 +75,7 @@ async def test_only_old_unreferenced_blobs_are_deleted(referenced: set[str]) -> 
 
 async def test_dry_run_changes_and_audits_nothing(referenced: set[str]) -> None:
     """--dry-run counts what would go but deletes nothing and writes no audit entry."""
-    store, session = stocked_store(), FakeSession()
+    store, session = stocked_store(), AuditOnlySession()
     result = await cleanup_orphans(session, store, dry_run=True, now=NOW)  # type: ignore[arg-type]
     assert (result.scanned, result.deleted) == (2, 2)
     assert len(store.blobs) == 3
@@ -86,7 +86,7 @@ async def test_a_storage_failure_is_audited_as_failed_then_raised(
     referenced: set[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The counts so far are kept in a `failed` entry, so a half-done run is visible."""
-    store, session = stocked_store(), FakeSession()
+    store, session = stocked_store(), AuditOnlySession()
 
     async def broken_delete(name: str) -> None:
         raise StorageUnavailable
@@ -108,7 +108,7 @@ async def test_many_blobs_are_checked_in_batches(
     for number in range(5):
         store.put(f"old-{number}", b"x", last_modified=NOW - timedelta(days=2))
     referenced.add("old-3")
-    result = await cleanup_orphans(FakeSession(), store, now=NOW)  # type: ignore[arg-type]
+    result = await cleanup_orphans(AuditOnlySession(), store, now=NOW)  # type: ignore[arg-type]
     assert (result.scanned, result.deleted) == (5, 4)
     assert set(store.blobs) == {"old-3"}
 
