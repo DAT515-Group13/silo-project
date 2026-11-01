@@ -60,6 +60,17 @@ async def test_eleventh_request_in_a_minute_is_429_per_ip(app: FastAPI) -> None:
         assert (await other.get("/api/v1/_limited")).status_code == 200
 
 
+def test_both_login_routes_use_the_auth_limit() -> None:
+    """The login page and the login API are limited to 10 a minute per IP (class `auth`).
+
+    The 429 itself is tested with a stand-in route above; this checks that the real routes carry
+    the limit. It reads slowapi's registry, which is pinned in pyproject.toml.
+    """
+    registered = ratelimit.limiter._route_limits
+    for name in ("app.routers.api.auth.login", "app.routers.pages.login_submit"):
+        assert [str(limit.limit) for limit in registered[name]] == ["10 per 1 minute"], name
+
+
 async def test_concurrency_guard_is_per_user_and_releases_slots() -> None:
     """Another user is independent; slots come back after use, also after an error."""
     guard = ConcurrencyGuard(1)
