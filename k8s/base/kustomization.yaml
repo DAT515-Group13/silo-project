@@ -7,3 +7,4 @@ resources:
   - ingress.yaml
   - networkpolicy.yaml
   - podmonitor.yaml
+  - ingress-internal.yaml

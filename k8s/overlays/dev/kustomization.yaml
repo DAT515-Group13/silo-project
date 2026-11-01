@@ -19,7 +19,7 @@ configMapGenerator:
       - JWT_AUDIENCE=silo-dev
       - INITIAL_ADMIN_USERNAME=admin
       - MAX_FILE_SIZE_BYTES=104857600
-      - COOKIE_SECURE=false
+      - COOKIE_SECURE=true
       - ENABLE_DOCS=true
       - FORWARDED_ALLOW_IPS=10.244.0.0/16
       - METRICS_PORT=9000

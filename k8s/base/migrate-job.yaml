@@ -28,17 +28,12 @@ spec:
         - name: migrate
           image: IMAGE_PLACEHOLDER
           command: ["alembic", "upgrade", "head"]
-          envFrom:
-            - configMapRef:
-                name: silo-config
-            - secretRef:
-                name: silo-app
           env:
-            - name: AZURE_STORAGE_CONNECTION_STRING
+            - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: silo-azure
-                  key: AZURE_STORAGE_CONNECTION_STRING
+                  name: silo-app
+                  key: DATABASE_URL
           resources:
             requests:
               cpu: 50m
