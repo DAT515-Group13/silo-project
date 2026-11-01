@@ -62,6 +62,7 @@ async def cleanup_orphans(
     failure: StorageUnavailable | None = None
 
     async def process(batch: list[str]) -> None:
+        """Delete the unreferenced blobs of one batch (in a dry run only count them)."""
         referenced = await _referenced(session, batch)
         for name in batch:
             if name in referenced:
@@ -81,6 +82,7 @@ async def cleanup_orphans(
         if batch:
             await process(batch)
     except StorageUnavailable as exc:
+        # Not raised yet: the counts so far are audited first (not in a dry run), then re-raised.
         failure = exc
 
     if not dry_run:

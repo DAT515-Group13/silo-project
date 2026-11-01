@@ -81,6 +81,7 @@ def limit(*names: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             decorators.append(limiter.limit(rate, key_func=key_func))
 
     def apply(func: Callable[..., Any]) -> Callable[..., Any]:
+        """Wrap the route function in the slowapi decorator of each class."""
         for decorator in decorators:
             func = decorator(func)
         return func

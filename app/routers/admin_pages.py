@@ -62,6 +62,7 @@ ADMIN_POST = [Depends(require_admin_page_user), CsrfChecked]
 
 def _pages(total: int) -> int:
     """Number of pages for ``total`` rows (at least 1, so "page 1 of 1" for an empty list)."""
+    # -(-a // b) is a // b rounded up: 26 rows at 25 per page are 2 pages.
     return max(1, -(-total // PER_PAGE))
 
 

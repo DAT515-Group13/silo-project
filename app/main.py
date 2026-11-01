@@ -50,6 +50,7 @@ class RedactLinkTokens(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Replace the token in the path argument of an access log record; never drops a record."""
         # Uvicorn's access records have the arguments (client, method, path, http_version, status).
         args = record.args
         if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
@@ -172,6 +173,7 @@ def _login_redirect(request: Request) -> Response:
 
 
 async def _silo_error_handler(request: Request, exc: SiloError) -> Response:
+    """Domain error -> JSON under /api/, else the HTML error page (a lost session: /login)."""
     headers: dict[str, str] = {}
     if isinstance(exc, RateLimited) and exc.retry_after is not None:
         headers["Retry-After"] = str(exc.retry_after)
@@ -191,6 +193,7 @@ async def _silo_error_handler(request: Request, exc: SiloError) -> Response:
 
 
 async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Response:
+    """429: JSON for the API, the HTML error page with the same Retry-After for pages."""
     if _is_api(request):
         return await rate_limit_handler(request, exc)
     json_response = await rate_limit_handler(request, exc)
@@ -201,6 +204,7 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Respo
 
 
 async def _validation_error_handler(request: Request, exc: RequestValidationError) -> Response:
+    """422: the API lists field names and messages (never the input), pages get a short text."""
     if not _is_api(request):
         return _error_page(request, 422, "Some of the submitted data is not valid.")
     # Never echo the input: it may contain a password.
@@ -213,6 +217,7 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
 
 
 async def _http_error_handler(request: Request, exc: StarletteHTTPException) -> Response:
+    """Plain HTTP errors (404, 405, 413...): HTML for pages, JSON for the API and probes."""
     if not _is_api(request) and request.url.path not in {"/healthz", "/readyz"}:
         message = _PAGE_MESSAGES.get(exc.status_code, str(exc.detail))
         return _error_page(request, exc.status_code, message, exc.headers)
@@ -225,6 +230,7 @@ async def _http_error_handler(request: Request, exc: StarletteHTTPException) -> 
 
 
 async def _unhandled_error_handler(request: Request, exc: Exception) -> Response:
+    """Last resort: log the stack trace, answer a generic 500 without details."""
     logger.exception("Unhandled error")
     if not _is_api(request):
         return _error_page(request, 500, "Something went wrong. Please try again later.")

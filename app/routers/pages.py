@@ -192,6 +192,7 @@ async def register_submit(
     }
 
     def again(errors: list[str], status_code: int) -> Response:
+        """Show the registration form again with these errors and status code."""
         return render_page(
             request,
             settings,

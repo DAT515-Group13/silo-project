@@ -110,6 +110,7 @@ class AzureBlobStore:
         total = 0
 
         async def stage(data: bytes) -> None:
+            """Upload one block; it stays invisible until the block list is committed."""
             if len(block_ids) >= MAX_BLOCKS:
                 raise StorageUnavailable  # only reachable with a tiny UPLOAD_CHUNK_BYTES
             # Fixed-width IDs: Azure requires all block IDs of a blob to have the same length.

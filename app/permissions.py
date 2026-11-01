@@ -38,6 +38,7 @@ def is_admin(user: CurrentUser) -> bool:
 
 
 def _is_file_owner(user: CurrentUser, file: File) -> bool:
+    """True if the user owns the file."""
     return file.owner_id == user.id
 
 

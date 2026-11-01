@@ -201,12 +201,14 @@ class SecurityHeadersMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Add the headers to every HTTP response; other scopes (lifespan) pass through."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         path = scope["path"]
 
         async def send_with_headers(message: Message) -> None:
+            """Add the headers to the response start; ``setdefault`` keeps what a route set."""
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
                 for name, value in SECURITY_HEADERS.items():
@@ -240,6 +242,7 @@ class MetricsMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Time and count every HTTP request, also one that fails with an exception."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -247,6 +250,7 @@ class MetricsMiddleware:
         status = 500  # stays 500 if the app fails before it answers
 
         async def send_and_note_status(message: Message) -> None:
+            """Pass the message on and remember the status code for the metrics."""
             nonlocal status
             if message["type"] == "http.response.start":
                 status = message["status"]
@@ -281,6 +285,7 @@ class BodyLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass upload routes through; refuse other bodies above ``MAX_BODY_BYTES``."""
         if scope["type"] != "http" or (scope["method"], scope["path"]) in UNLIMITED_BODY_ROUTES:
             await self.app(scope, receive, send)
             return
@@ -305,6 +310,7 @@ class BodyLimitMiddleware:
         received = 0
 
         async def limited_receive() -> Message:
+            """Count the received body bytes and stop as soon as the limit is passed."""
             nonlocal received
             message = await receive()
             if message["type"] == "http.request":
@@ -330,6 +336,7 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        """Run the route, then set or delete the auth cookies as the request noted."""
         response = await call_next(request)
         settings: Settings = request.app.state.settings
         refreshed: IssuedTokens | None = getattr(request.state, "refreshed_tokens", None)

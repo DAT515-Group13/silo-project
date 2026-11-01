@@ -153,6 +153,7 @@ async def _team_page(
             "members": detail.members,
             "files": [file_out(item, user.id) for item in items],
             "page": page,
+            # Rounded-up division: at least one page, also for an empty list.
             "pages": max(1, -(-total // FILES_PER_PAGE)),
             "total": total,
             "is_owner": can_manage_members(user, detail.team),

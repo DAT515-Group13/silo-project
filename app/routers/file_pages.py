@@ -106,6 +106,7 @@ async def _files_page(
             "sort": sort,
             "sort_choices": SORT_CHOICES,
             "page": page,
+            # Rounded-up division: at least one page, also for an empty list.
             "pages": max(1, -(-total // FILES_PER_PAGE)),
             "total": total,
             "used_bytes": status.used_bytes,
@@ -489,6 +490,7 @@ async def _links_page(
             "statuses": get_args(links.LinkStatus),
             "file_id": file_id,
             "page": page,
+            # Rounded-up division: at least one page, also for an empty list.
             "pages": max(1, -(-total // LINKS_PER_PAGE)),
             "total": total,
             "notice": notice,

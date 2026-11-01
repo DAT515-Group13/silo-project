@@ -158,6 +158,7 @@ async def _with_head(chunks: AsyncIterator[bytes]) -> tuple[bytes, AsyncIterator
     head = b"".join(buffered)
 
     async def whole() -> AsyncIterator[bytes]:
+        """Yield the bytes already read for sniffing, then the rest of the stream."""
         if head:
             yield head
         async for chunk in source:

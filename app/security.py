@@ -95,6 +95,7 @@ def _dummy_hash() -> str:
 
 
 def _verify_dummy(password: str) -> None:
+    """Check against the dummy hash and ignore the result: only the time spent counts."""
     _verify(_dummy_hash(), password)
 
 

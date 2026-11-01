@@ -158,9 +158,10 @@ async def reserve_global(session: AsyncSession, settings: Settings, size: int) -
     if cap is None:
         return
     # The per-user UPDATE locks only that user's row, so two users at the global edge could
-    # both see room and both commit. This lock serialises the short step-4 transactions of all
-    # uploads; PostgreSQL releases it at commit or rollback. The sum below is read after the
-    # lock is held, so (READ COMMITTED) it includes everything the previous holder committed.
+    # both see room and both commit. This lock serialises the short final transactions of all
+    # uploads (quota, file row, audit entry); PostgreSQL releases it at commit or rollback. The
+    # sum below is read after the lock is held, so (READ COMMITTED) it includes everything the
+    # previous holder committed.
     # Deletes need no lock: they only lower the sum.
     await session.execute(select(func.pg_advisory_xact_lock(_GLOBAL_QUOTA_LOCK)))
     if await total_used_bytes(session) + size > cap:
@@ -507,6 +508,7 @@ async def delete_user(
     limit = asyncio.Semaphore(DELETE_CONCURRENCY)
 
     async def delete_blob(blob_name: str) -> None:
+        """Delete one blob; a failure is logged, not raised."""
         async with limit:
             try:
                 await store.delete(blob_name)
