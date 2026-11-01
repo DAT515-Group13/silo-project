@@ -67,10 +67,14 @@ async def test_non_admins_get_404_on_every_admin_endpoint(
 async def test_patch_only_switches_between_active_and_disabled(
     client: httpx.AsyncClient, act_as: ActAs, body: dict
 ) -> None:
-    """PATCH accepts status active or disabled only, and no unknown fields."""
+    """PATCH accepts status active or disabled only, and no unknown fields.
+
+    The message is readable: no Python enum repr such as ``<UserStatus.active: 'active'>``.
+    """
     act_as(Role.admin)
     response = await client.patch("/api/v1/admin/users/2", json=body)
     assert response.status_code == 422
+    assert "<UserStatus" not in response.text
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
