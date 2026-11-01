@@ -22,9 +22,11 @@ from app.db import create_engine, create_session_factory
 from app.errors import InvalidToken, RateLimited, SiloError, ValidationFailed
 from app.metrics import STORAGE_CAP, start_metrics_server
 from app.middleware import (
+    REQUEST_ID,
     AuthCookieMiddleware,
     BodyLimitMiddleware,
     MetricsMiddleware,
+    RequestIdMiddleware,
     SecurityHeadersMiddleware,
     clear_auth_cookies,
 )
@@ -39,7 +41,16 @@ from app.storage.base import BlobStore
 
 logger = logging.getLogger("silo")
 
-LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_FORMAT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
+
+
+class AddRequestId(logging.Filter):
+    """Put the ID of the current request on each log record ("-" outside a request)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Set ``record.request_id``; never drops a record."""
+        record.request_id = REQUEST_ID.get()
+        return True
 
 
 class RedactLinkTokens(logging.Filter):
@@ -74,6 +85,8 @@ def configure_logging() -> None:
         return
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    # On the handler, not the logger: a logger's filters skip records of its child loggers.
+    handler.addFilter(AddRequestId())
     handler._silo = True  # type: ignore[attr-defined]  # marks the handler as ours
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
@@ -230,13 +243,19 @@ async def _http_error_handler(request: Request, exc: StarletteHTTPException) -> 
 
 
 async def _unhandled_error_handler(request: Request, exc: Exception) -> Response:
-    """Last resort: log the stack trace, answer a generic 500 without details."""
+    """Last resort: log the stack trace, answer a generic 500 without details.
+
+    Starlette runs this outside every middleware, so the response gets ``X-Request-ID`` here.
+    """
     logger.exception("Unhandled error")
     if not _is_api(request):
-        return _error_page(request, 500, "Something went wrong. Please try again later.")
-    return JSONResponse(
-        {"detail": "Internal server error.", "code": "internal_error"}, status_code=500
-    )
+        response = _error_page(request, 500, "Something went wrong. Please try again later.")
+    else:
+        response = JSONResponse(
+            {"detail": "Internal server error.", "code": "internal_error"}, status_code=500
+        )
+    response.headers["X-Request-ID"] = REQUEST_ID.get()
+    return response
 
 
 def create_app(
@@ -281,7 +300,8 @@ def create_app(
     app.add_middleware(BodyLimitMiddleware)
     app.add_middleware(AuthCookieMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)  # also covers error pages and 413
-    app.add_middleware(MetricsMiddleware)  # outermost: counts every response, 413 included
+    app.add_middleware(MetricsMiddleware)  # counts every response, 413 included
+    app.add_middleware(RequestIdMiddleware)  # outermost: every response carries X-Request-ID
     app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
     app.add_exception_handler(SiloError, _silo_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)

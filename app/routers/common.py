@@ -350,9 +350,9 @@ def client_ip(request: Request) -> str | None:
 
 
 def request_id(request: Request) -> str | None:
-    """Return the request ID stored on ``request.state``, or None.
+    """Return the request ID that ``RequestIdMiddleware`` stored on ``request.state``, or None.
 
-    No middleware sets one yet, so audit entries have no request ID for now.
+    None only when the middleware is not installed (an app built by hand in a test).
     """
     return getattr(request.state, "request_id", None)
 
