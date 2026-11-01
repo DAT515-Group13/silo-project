@@ -326,8 +326,8 @@ async def resolve_public_link(
         raise NotFound
     async with session.begin():
         # One statement checks everything and counts, so a revoke, an expiry or a disabled
-        # owner cannot slip in between "is it valid?" and "count it". The owner must be active
-        # ; after reactivation the same link works again.
+        # owner cannot slip in between "is it valid?" and "count it". The owner must be active;
+        # after reactivation the same link works again.
         usable_files = (
             select(File.id)
             .join(User, User.id == File.owner_id)

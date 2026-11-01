@@ -67,7 +67,7 @@ def test_offline_sql_contains_every_table_enum_and_index(monkeypatch: pytest.Mon
 
 
 def test_migration_env_does_not_need_the_app_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The migration job only has DATABASE_URL (D13), so a missing variable is a clear error."""
+    """The migration job only has DATABASE_URL, so a missing variable is a clear error."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
     config = alembic_config()
     config.output_buffer = io.StringIO()

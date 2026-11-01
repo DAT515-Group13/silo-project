@@ -1,8 +1,9 @@
-"""Tests for the pure file rules: cleaning of file names and choosing content types.
+"""Tests for the pure file rules: file names, content types and the upload stream helpers.
 
 These need no database. They check that dangerous names (paths, control characters) are cleaned,
-that a file's type is detected from its first bytes instead of trusting the client, and that
-types a browser would render are always downloaded as ``application/octet-stream``.
+that a file's type is detected from its first bytes instead of trusting the client, that types a
+browser would render are always downloaded as ``application/octet-stream``, and that the upload
+stream stops at the first limit passed and counts a refused upload once.
 """
 
 import pytest

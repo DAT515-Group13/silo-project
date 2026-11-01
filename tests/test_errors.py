@@ -1,4 +1,4 @@
-"""Domain errors and how the exception handlers render them."""
+"""Domain errors: the HTTP status and the error code of each class."""
 
 from app import errors
 from app.errors import SiloError
@@ -30,7 +30,7 @@ EXPECTED = {
 
 
 def test_every_error_has_its_status_and_code() -> None:
-    """Every domain error has the specified status and code; no class is missing or extra."""
+    """Every domain error has its status and code; no class is missing or extra."""
     domain = [
         c
         for c in vars(errors).values()

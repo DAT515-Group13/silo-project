@@ -1,8 +1,8 @@
 """Storage quotas: per role and the service's total cap.
 
 The tests without the ``db`` marker check the pure parts. The ``db`` tests check the atomic
-quota update against PostgreSQL, including two parallel reservations at the quota edge. The
-total cap over HTTP (and its parallel edge) is tested in ``test_uploads.py``.
+quota update against PostgreSQL. Uploads at the quota edge and at the total cap, also in
+parallel, are tested over HTTP in ``test_uploads.py``.
 """
 
 import pytest
@@ -59,7 +59,7 @@ async def test_global_remaining_is_never_negative(used: int, remaining: int) -> 
 
 
 async def reserve(db_sessionmaker: async_sessionmaker[AsyncSession], user_id: int, size: int):
-    """Reserve in a transaction of its own and commit, like the upload service will."""
+    """Reserve in a transaction of its own and commit, like the upload service does."""
     async with db_sessionmaker() as session, session.begin():
         return await reserve_quota(session, SETTINGS, user_id, size)
 

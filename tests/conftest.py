@@ -180,6 +180,7 @@ def database_url() -> Iterator[str]:
 
 
 async def _truncate(url: str) -> None:
+    """Empty every table and reset the ID sequences, so the next test starts from scratch."""
     engine = create_async_engine(url, poolclass=NullPool)
     async with engine.begin() as connection:
         await connection.execute(text(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY CASCADE"))

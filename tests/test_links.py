@@ -67,10 +67,8 @@ async def test_malformed_token_is_a_404_with_the_privacy_headers(
 ) -> None:
     """A token that cannot exist is refused without a database lookup, like any other 404."""
     response = await client.get(f"/s/{token}")
-    assert response.status_code == 404
+    assert_same_404(response)
     assert response.headers["content-type"].startswith("text/html")
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
 
 
 def test_access_log_hides_the_link_token() -> None:
@@ -195,7 +193,7 @@ async def test_every_failing_link_gives_the_same_404(
 ) -> None:
     """Unknown, expired, revoked and deleted-file links are indistinguishable.
 
-    A file's links are removed with it (cascade). A disabled owner: see the admin tests.
+    A file's links are removed with it (cascade). A disabled owner: see test_admin_users.py.
     """
     owner = await user_factory("owner")
     file, gone = await file_factory(owner.id), await file_factory(owner.id)

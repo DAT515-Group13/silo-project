@@ -55,8 +55,10 @@ CHUNK_COUNT = 20
 async def test_upload_with_a_bad_body_is_422(
     client: httpx.AsyncClient, act_as: ActAs, request_args: dict
 ) -> None:
-    """A JSON body or an empty file name is a 422, not a crash (a wrong part name: see
-    this file)."""
+    """A JSON body or an empty file name is a 422, not a crash.
+
+    A wrong part name is in ``test_refused_upload_still_reads_the_whole_body``.
+    """
     act_as(Role.user)
     response = await client.post("/api/v1/files", **request_args)
     assert response.status_code == 422

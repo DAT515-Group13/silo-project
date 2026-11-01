@@ -1,7 +1,4 @@
-"""Building blocks shared by all schema modules: input base class, usernames, pages, errors.
-
-Implements the username rule and the response shapes (errors, pagination).
-"""
+"""Building blocks shared by all schema modules: input base class, usernames, passwords, pages."""
 
 import re
 from typing import Annotated
@@ -47,8 +44,7 @@ def _normalize_login_username(value: str) -> str:
 Username = Annotated[str, AfterValidator(normalize_username)]
 
 # Login only normalizes and caps the length. A string that cannot be a valid username must
-# behave like any unknown username (401 plus dummy hash), not produce a different error class
-# .
+# behave like any unknown username (401 plus dummy hash), not produce a different error class.
 LoginUsername = Annotated[
     str, AfterValidator(_normalize_login_username), Field(min_length=1, max_length=32)
 ]

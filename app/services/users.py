@@ -1,7 +1,8 @@
 """User management: storage quotas, admin user actions and the first admin.
 
-Implements the quota rules, the admin endpoints with their rules (last admin, disabling
-revokes sessions, deleting a user deletes their blobs) and the "First admin" rule.
+Quotas are counted in ``users.used_bytes`` and changed with atomic UPDATEs. The admin actions
+keep their rules here: the last active admin cannot be removed, disabling revokes sessions, and
+deleting a user deletes their blobs. ``ensure_initial_admin`` creates the first admin at startup.
 """
 
 import asyncio

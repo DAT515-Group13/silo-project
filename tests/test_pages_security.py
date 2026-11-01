@@ -4,7 +4,6 @@ Tests without the ``db`` marker never reach the database (no valid cookie is inv
 """
 
 import uuid
-from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -30,7 +29,7 @@ from app.routers.common import (
     require_csrf,
     verify_origin,
 )
-from app.security import create_access_token, create_csrf_token
+from app.security import create_csrf_token
 from app.services import sessions
 from app.services.sessions import IssuedTokens
 from tests.conftest import (
@@ -38,8 +37,10 @@ from tests.conftest import (
     ActAs,
     UserFactory,
     assert_secure,
+    bearer,
     make_settings,
     route_calls,
+    token_for,
     token_of,
 )
 
@@ -161,17 +162,8 @@ async def test_bearer_header_is_ignored_on_pages(
     If it were read, the lookup would reach the (absent) database and fail with a 500 instead of
     this redirect.
     """
-    token = create_access_token(
-        user_id=1,
-        session_id=uuid.uuid4(),
-        secret=settings.jwt_secret.get_secret_value(),
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-        ttl=timedelta(minutes=15),
-    )
-    response = await client.get(
-        "/files", headers={"Authorization": f"Bearer {token}"}, follow_redirects=False
-    )
+    token = token_for(settings, 1, uuid.uuid4())
+    response = await client.get("/files", headers=bearer(token), follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"].startswith("/login")
 

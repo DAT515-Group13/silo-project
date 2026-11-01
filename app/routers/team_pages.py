@@ -36,7 +36,7 @@ router = APIRouter(include_in_schema=False)
 
 FILES_PER_PAGE = 20
 
-# Shown after every add-member request: it must not reveal whether the account exists (8.1).
+# Shown after every add-member request: it must not reveal whether the account exists.
 MEMBER_ADD_NOTICE = "If an active account with this username exists, it is now a member."
 
 

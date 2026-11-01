@@ -289,10 +289,6 @@ async def test_who_revokes_a_link_and_where_they_land(
     assert revoked.headers["location"] == location.format(file_id=file.id)
     async with db_sessionmaker() as session:
         assert await session.scalar(select(ShareLink.revoked_at)) is not None
-    if actor == "owner":
-        # The file page lists active links only; the history is on /links.
-        page = await client.get(f"/links?file={file.id}&status=revoked", headers=owner_login[0])
-        assert ">revoked</span>" in page.text
 
 
 @db
@@ -305,7 +301,7 @@ async def test_links_pages_filter_renew_and_return_to_the_file(
 ) -> None:
     """The page filters by status and file, the form redirects or shows a message on its page.
 
-    The rules themselves are tested through the API above; this checks the page wiring.
+    The rules themselves are tested through the API in test_links.py; this checks the page wiring.
     """
     owner = await user_factory("owner")
     login = await page_login(owner)

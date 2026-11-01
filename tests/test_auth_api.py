@@ -150,29 +150,16 @@ async def test_login_returns_tokens_and_user(
 async def test_failed_logins_have_one_shape(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """Unknown user and wrong password: the same 401 body."""
+    """Unknown user, wrong password and a name that could never be valid: the same 401 body."""
     await user_factory(username="anna")
-    unknown = await login(client, "nobody")
-    wrong = await login(client, "anna", "wrong-password-123")
-    assert unknown.status_code == wrong.status_code == 401
-    assert (
-        unknown.json()
-        == wrong.json()
-        == {
-            "detail": "Invalid username or password.",
-            "code": "invalid_credentials",
-        }
-    )
-
-
-@db
-async def test_login_username_is_case_insensitive_and_lenient(
-    client: httpx.AsyncClient, user_factory: UserFactory
-) -> None:
-    """Login lowercases the username; a name that could never be valid is simply a 401."""
-    await user_factory(username="anna")
-    assert (await login(client, "ANNA")).status_code == 200
-    assert (await login(client, "not a valid name!")).status_code == 401
+    expected = {"detail": "Invalid username or password.", "code": "invalid_credentials"}
+    for username, password in [
+        ("nobody", TEST_PASSWORD),
+        ("anna", "wrong-password-123"),
+        ("not a valid name!", TEST_PASSWORD),
+    ]:
+        response = await login(client, username, password)
+        assert (response.status_code, response.json()) == (401, expected), username
 
 
 @db

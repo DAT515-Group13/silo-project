@@ -175,7 +175,9 @@ async def rotate_refresh(
 ) -> IssuedTokens:
     """Exchange a refresh token for a new token pair.
 
-    Owns its transaction. Raises:
+    Owns its transaction.
+
+    Raises:
         InvalidToken: unknown or expired token, revoked or expired session, inactive user, or a
             token that was already used more than 10 s ago. In the last case the session is
             revoked and the revocation is committed before the error is raised.

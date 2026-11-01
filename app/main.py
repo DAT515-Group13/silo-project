@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     metrics_server = None
     # Everything after the engine is inside the try, so a failed startup still disposes it.
     try:
-        # "First admin": runs at every startup, does nothing if the account exists.
+        # Create the first admin account: runs at every startup, does nothing if it exists.
         # Tests without a database switch it off with create_app(initial_admin=False).
         if app.state.initial_admin:
             async with app.state.session_factory() as session:
