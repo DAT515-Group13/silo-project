@@ -48,7 +48,7 @@ from app.services import audit, teams, users
 from app.services.audit import AuditAction, AuditContext, Outcome
 from app.services.pagination import fetch_page
 from app.services.teams import FileItem
-from app.storage.base import BlobStore
+from app.storage.base import BlobStore, delete_quietly
 
 logger = logging.getLogger("silo")
 
@@ -192,23 +192,6 @@ async def _limited(
         yield chunk
 
 
-async def _delete_quietly(store: BlobStore, blob_name: str) -> None:
-    """Delete a blob, logging instead of raising: the caller's own error must not be masked.
-
-    A blob that could not be deleted stays behind as an orphan; orphan cleanup removes it later.
-    """
-    try:
-        await store.delete(blob_name)
-    except Exception as exc:
-        # Not only StorageUnavailable: when this runs after the commit, any error here must not
-        # turn a finished delete into a 500.
-        logger.warning(
-            "Could not delete blob %s (%s); it is left for orphan cleanup",
-            blob_name,
-            type(exc).__name__,
-        )
-
-
 async def _audit_denied(session: AsyncSession, ctx: AuditContext, filename: str, code: str) -> None:
     """Audit a refused upload in its own session, so the entry survives the rollback.
 
@@ -340,7 +323,7 @@ async def upload(
         # request, and the shield lets the cleanup finish even then.
         with anyio.CancelScope(shield=True):
             if blob_stored:
-                await _delete_quietly(store, blob_name)
+                await delete_quietly(store, blob_name)
             if isinstance(exc, FileTooLarge | QuotaExceeded):
                 await _audit_denied(session, ctx, clean_name, exc.code)
         raise
@@ -523,7 +506,7 @@ async def delete_file(
             target_label=file.filename,
             details={"size_bytes": file.size_bytes, "owner_id": file.owner_id},
         )
-    await _delete_quietly(store, blob_name)
+    await delete_quietly(store, blob_name)
 
 
 # --- Sharing with teams --------------------------------------------------------------------------

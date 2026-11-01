@@ -303,7 +303,7 @@ async def test_links_pages_filter_renew_and_return_to_the_file(
     page_login: PageLogin,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """The page filters by status and file, the form redirects or shows a message.
+    """The page filters by status and file, the form redirects or shows a message on its page.
 
     The rules themselves are tested through the API above; this checks the page wiring.
     """
@@ -326,6 +326,11 @@ async def test_links_pages_filter_renew_and_return_to_the_file(
     assert back.headers["location"] == f"/files/{file.id}"
     bad = await post(client, login, f"/links/{link_id}/expiry", expires_in_hours="0")
     assert bad.status_code == 422
+    # A bad value sent from the file page shows the file page again, not the overview.
+    bad_on_file = await post(
+        client, login, f"/links/{link_id}/expiry", expires_in_hours="0", next=f"/files/{file.id}"
+    )
+    assert bad_on_file.status_code == 422 and f"/files/{file.id}/rename" in bad_on_file.text
 
     await expire_link(db_sessionmaker, link_id)
     assert "No active" in (await client.get("/links", headers=login[0])).text

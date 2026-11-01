@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.errors import CsrfFailed, InvalidToken, RefreshInProgress
+from app.errors import CsrfFailed, InvalidToken, RefreshInProgress, ValidationFailed
 from app.middleware import check_origin, cookie_names, set_csrf_cookie
 from app.models import AuthSession, User, UserStatus
 from app.permissions import CurrentUser
@@ -382,9 +382,20 @@ def see_other(url: str) -> RedirectResponse:
     return RedirectResponse(url, status_code=303)
 
 
-def validation_messages(error: ValidationError) -> list[str]:
-    """Readable messages of a pydantic error, without the submitted values (may be a password)."""
+def validation_messages(error: ValidationError | ValidationFailed) -> list[str]:
+    """Readable messages of a form error, without the submitted values (may be a password).
+
+    ``ValidationError`` comes from pydantic, ``ValidationFailed`` from a service rule.
+    """
+    if isinstance(error, ValidationFailed):
+        return [item["message"] for item in error.errors]
     return [str(item["msg"]).removeprefix("Value error, ") for item in error.errors()]
+
+
+def page_count(total: int, per_page: int) -> int:
+    """Number of pages for ``total`` rows (at least 1, so "page 1 of 1" for an empty list)."""
+    # -(-a // b) is a // b rounded up: 26 rows at 25 per page are 2 pages.
+    return max(1, -(-total // per_page))
 
 
 def file_out(item: FileItem, viewer_id: int) -> FileOut:

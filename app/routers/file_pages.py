@@ -47,6 +47,7 @@ from app.routers.common import (
     declared_size,
     file_out,
     link_url,
+    page_count,
     render_page,
     see_other,
     validation_messages,
@@ -106,8 +107,7 @@ async def _files_page(
             "sort": sort,
             "sort_choices": SORT_CHOICES,
             "page": page,
-            # Rounded-up division: at least one page, also for an empty list.
-            "pages": max(1, -(-total // FILES_PER_PAGE)),
+            "pages": page_count(total, FILES_PER_PAGE),
             "total": total,
             "used_bytes": status.used_bytes,
             "quota_bytes": status.quota_bytes,
@@ -136,11 +136,6 @@ async def files_page(
     return await _files_page(
         request, session, settings, user, tab=tab, sort=sort, page=page, notice=notice
     )
-
-
-def _messages(error: ValidationFailed) -> list[str]:
-    """The messages of a business validation error, for the page's error box."""
-    return [item["message"] for item in error.errors]
 
 
 async def _read_small(chunks: AsyncIterator[bytes], limit_bytes: int) -> str:
@@ -209,7 +204,7 @@ async def upload_submit(
         )
         if isinstance(exc, RateLimited):
             raise  # the 429 error page
-        errors = _messages(exc) if isinstance(exc, ValidationFailed) else [exc.detail]
+        errors = validation_messages(exc) if isinstance(exc, ValidationFailed) else [exc.detail]
         return await _files_page(
             request, session, settings, user, errors=errors, status_code=exc.status_code
         )
@@ -245,8 +240,8 @@ async def _file_page(
     shared_with: list = []
     share_choices: list = []
     file_links: list = []
+    now = datetime.now(UTC)
     if is_owner:
-        now = datetime.now(UTC)
         # Only active links here; the history is on /links?file=<id>&status=all.
         file_links = [
             link
@@ -265,7 +260,7 @@ async def _file_page(
         {
             "file": file_out(item, user.id),
             "links": file_links,
-            "now": datetime.now(UTC),
+            "now": now,
             "new_link_url": new_link_url,
             "max_link_hours": settings.public_link_max_hours,
             "is_owner": is_owner,
@@ -414,14 +409,10 @@ async def create_link_submit(
         link, token = await links.create_link(
             session, settings, user, file_id, form.expires_in_hours, ctx
         )
-    except ValidationError as exc:
+    except (ValidationError, ValidationFailed) as exc:
         errors = validation_messages(exc)
         return await _file_page(
             request, session, settings, user, file_id, errors=errors, status_code=422
-        )
-    except ValidationFailed as exc:
-        return await _file_page(
-            request, session, settings, user, file_id, errors=_messages(exc), status_code=422
         )
     except LinkLimit as exc:
         return await _file_page(
@@ -490,8 +481,7 @@ async def _links_page(
             "statuses": get_args(links.LinkStatus),
             "file_id": file_id,
             "page": page,
-            # Rounded-up division: at least one page, also for an empty list.
-            "pages": max(1, -(-total // LINKS_PER_PAGE)),
+            "pages": page_count(total, LINKS_PER_PAGE),
             "total": total,
             "notice": notice,
             "errors": errors or [],
@@ -531,23 +521,38 @@ async def change_expiry_submit(
     expires_in_hours: Annotated[str, Form()] = "",
     next_url: Annotated[str, Form(alias="next")] = "",
 ) -> Response:
-    """Change the expiry of a link; a bad value shows the overview with a message.
+    """Change the expiry of a link; a bad value shows the form's page again with a message.
 
     ``next`` lets the file page return to itself; the default is the overview.
     """
+
+    async def again(errors: list[str], status_code: int) -> Response:
+        """The page the form was sent from (file page or overview), with the errors."""
+        file_id = _file_id_of(next_url)
+        if file_id is not None:
+            return await _file_page(
+                request, session, settings, user, file_id, errors=errors, status_code=status_code
+            )
+        return await _links_page(
+            request, session, settings, user, errors=errors, status_code=status_code
+        )
+
     try:
         form = LinkUpdateIn.model_validate({"expires_in_hours": expires_in_hours})
         await links.change_expiry(session, settings, user, link_id, form.expires_in_hours, ctx)
-    except ValidationError as exc:
-        return await _links_page(
-            request, session, settings, user, errors=validation_messages(exc), status_code=422
-        )
-    except ValidationFailed as exc:
-        return await _links_page(
-            request, session, settings, user, errors=_messages(exc), status_code=422
-        )
+    except (ValidationError, ValidationFailed) as exc:
+        return await again(validation_messages(exc), 422)
     except LinkLimit as exc:
-        return await _links_page(
-            request, session, settings, user, errors=[exc.detail], status_code=409
-        )
+        return await again([exc.detail], 409)
     return see_other(safe_next(next_url, "/links?updated=1"))
+
+
+def _file_id_of(next_url: str) -> uuid.UUID | None:
+    """The file ID of a ``/files/<id>`` return address, or ``None`` for any other address."""
+    rest = next_url.removeprefix("/files/")
+    if rest == next_url:
+        return None
+    try:
+        return uuid.UUID(rest)
+    except ValueError:
+        return None

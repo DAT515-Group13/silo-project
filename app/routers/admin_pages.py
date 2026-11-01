@@ -28,6 +28,7 @@ from app.routers.common import (
     SettingsDep,
     Store,
     file_out,
+    page_count,
     render_page,
     see_other,
     validation_messages,
@@ -58,12 +59,6 @@ AdminUser = Annotated[CurrentUser, Depends(require_admin_page_user)]
 # non-admin gets the 404 page even without a CSRF token (a 403 would reveal the action exists).
 # FastAPI caches the admin check, so the route's ``AdminUser`` parameter reuses its result.
 ADMIN_POST = [Depends(require_admin_page_user), CsrfChecked]
-
-
-def _pages(total: int) -> int:
-    """Number of pages for ``total`` rows (at least 1, so "page 1 of 1" for an empty list)."""
-    # -(-a // b) is a // b rounded up: 26 rows at 25 per page are 2 pages.
-    return max(1, -(-total // PER_PAGE))
 
 
 def _invalid(field: str, message: str) -> ValidationFailed:
@@ -106,7 +101,7 @@ async def users_page(
             "statuses": [s.value for s in UserStatus],
             "roles": [r.value for r in Role],
             "page": page,
-            "pages": _pages(total),
+            "pages": page_count(total, PER_PAGE),
             "total": total,
         },
     )
@@ -213,7 +208,7 @@ async def files_page(
         {
             "files": [file_out(item, user.id) for item in items],
             "page": page,
-            "pages": _pages(total),
+            "pages": page_count(total, PER_PAGE),
             "total": total,
         },
     )
@@ -286,7 +281,7 @@ async def audit_page(
             "filter_query": urlencode({k: v for k, v in form_values.items() if v}),
             "outcomes": [o.value for o in Outcome],
             "page": page,
-            "pages": _pages(total),
+            "pages": page_count(total, PER_PAGE),
             "total": total,
         },
     )

@@ -214,10 +214,8 @@ async def register_submit(
             ip=client_ip(request),
             request_id=request_id(request),
         )
-    except ValidationError as exc:
+    except (ValidationError, ValidationFailed) as exc:
         return again(validation_messages(exc), 422)
-    except ValidationFailed as exc:
-        return again([item["message"] for item in exc.errors], 422)
     except UsernameTaken:
         return again(["That username is already taken."], 409)
 
@@ -313,10 +311,8 @@ async def change_password_submit(
         await auth.change_password(
             session, settings, user, ctx, form.current_password, form.new_password
         )
-    except ValidationError as exc:
+    except (ValidationError, ValidationFailed) as exc:
         errors = validation_messages(exc)
-    except ValidationFailed as exc:
-        errors = [item["message"] for item in exc.errors]
     else:
         return see_other("/account?password_changed=true")
     return await _account_response(request, user, session, settings, errors=errors, status_code=422)

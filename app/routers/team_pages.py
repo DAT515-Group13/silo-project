@@ -24,6 +24,7 @@ from app.routers.common import (
     PageUser,
     SettingsDep,
     file_out,
+    page_count,
     render_page,
     see_other,
     validation_messages,
@@ -153,8 +154,7 @@ async def _team_page(
             "members": detail.members,
             "files": [file_out(item, user.id) for item in items],
             "page": page,
-            # Rounded-up division: at least one page, also for an empty list.
-            "pages": max(1, -(-total // FILES_PER_PAGE)),
+            "pages": page_count(total, FILES_PER_PAGE),
             "total": total,
             "is_owner": can_manage_members(user, detail.team),
             "can_delete": can_delete_team(user, detail.team),

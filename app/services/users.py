@@ -8,7 +8,6 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
 
 from sqlalchemy import Case, ScalarSelect, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -23,6 +22,7 @@ from app.services import audit, sessions
 from app.services.audit import AuditAction, AuditContext
 from app.services.pagination import fetch_page
 from app.services.sessions import RevokeReason
+from app.storage.base import BlobStore, delete_quietly
 
 logger = logging.getLogger("silo")
 
@@ -188,14 +188,6 @@ async def release_quota(session: AsyncSession, user_id: int, size: int) -> None:
 # --- Admin user management ------------------------------------------------
 
 
-class BlobDeleter(Protocol):
-    """The part of the BlobStore that ``delete_user`` needs."""
-
-    async def delete(self, blob_name: str) -> None:
-        """Delete one blob; idempotent; raises ``StorageUnavailable`` on storage errors."""
-        ...
-
-
 @dataclass(frozen=True)
 class UserWithFiles:
     """A user row and the number of files they own (the admin list warns before deleting)."""
@@ -204,7 +196,7 @@ class UserWithFiles:
     file_count: int
 
 
-def _require_admin(actor: CurrentUser) -> None:
+def require_admin(actor: CurrentUser) -> None:
     """Permission check of every admin function: non-admins get 404, not 403."""
     if not is_admin(actor):
         raise NotFound
@@ -277,7 +269,7 @@ async def list_users(
     Raises:
         NotFound: the actor is not an admin.
     """
-    _require_admin(actor)
+    require_admin(actor)
     async with session.begin():
         statement = select(User, _file_count().label("file_count")).order_by(
             User.created_at.desc(), User.id.desc()
@@ -304,7 +296,7 @@ async def approve_user(
 
     Side effects: sets ``approved_by`` and ``approved_at``, writes ``user.approve``.
     """
-    _require_admin(actor)
+    require_admin(actor)
     now = now or datetime.now(UTC)
     async with session.begin():
         target = await _lock_target(session, user_id)
@@ -342,7 +334,7 @@ async def reject_user(
     Side effects: revokes all sessions (a pending account has none; done anyway, so a
     rejected account can never keep a session), writes ``user.reject`` with ``details.reason``.
     """
-    _require_admin(actor)
+    require_admin(actor)
     async with session.begin():
         target = await _lock_target(session, user_id)
         if target.status != UserStatus.pending:
@@ -385,7 +377,7 @@ async def update_user(
     ``user_disabled``), so their access tokens stop working at once; writes
     ``user.role_change``, ``user.deactivate`` or ``user.activate``.
     """
-    _require_admin(actor)
+    require_admin(actor)
     if status not in (None, UserStatus.active, UserStatus.disabled):
         raise ValueError("status can only be set to active or disabled")
 
@@ -444,7 +436,7 @@ async def revoke_user_sessions(
     Side effects: revokes all active sessions with reason ``admin``, writes
     ``user.sessions_revoke``.
     """
-    _require_admin(actor)
+    require_admin(actor)
     async with session.begin():
         target = await _lock_target(session, user_id)
         revoked = await sessions.revoke_all(session, target.id, RevokeReason.admin)
@@ -462,7 +454,7 @@ async def revoke_user_sessions(
 
 async def delete_user(
     session: AsyncSession,
-    store: BlobDeleter,
+    store: BlobStore,
     actor: CurrentUser,
     user_id: int,
     ctx: AuditContext,
@@ -481,7 +473,7 @@ async def delete_user(
     Side effects: deletes the user and then the blobs, writes ``user.delete`` with
     ``details.files_deleted``.
     """
-    _require_admin(actor)
+    require_admin(actor)
 
     async with session.begin():
         # The rules are checked under the admin locks, so another admin cannot act in between.
@@ -510,14 +502,7 @@ async def delete_user(
     async def delete_blob(blob_name: str) -> None:
         """Delete one blob; a failure is logged, not raised."""
         async with limit:
-            try:
-                await store.delete(blob_name)
-            except Exception as exc:
-                logger.warning(
-                    "Could not delete blob %s (%s); it is left for orphan cleanup",
-                    blob_name,
-                    type(exc).__name__,
-                )
+            await delete_quietly(store, blob_name)
 
     await asyncio.gather(*(delete_blob(name) for name in blob_names))
     return len(blob_names)
