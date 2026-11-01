@@ -197,13 +197,13 @@ async def upload_submit(
                 chunks=reader.iter_data(),
                 declared_size=declared_size(request),
             )
-    except (FileTooLarge, QuotaExceeded, ValidationFailed, RateLimited) as exc:
+    except (FileTooLarge, QuotaExceeded, ValidationFailed, RateLimited, CsrfFailed) as exc:
         # Let the browser finish sending, or the proxy may turn this answer into a 502.
         await drain_refused_upload(
             body, declared_size=declared_size(request), max_file_bytes=settings.max_file_size_bytes
         )
-        if isinstance(exc, RateLimited):
-            raise  # the 429 error page
+        if isinstance(exc, (RateLimited, CsrfFailed)):
+            raise  # the 429 or 403 error page
         errors = validation_messages(exc) if isinstance(exc, ValidationFailed) else [exc.detail]
         return await _files_page(
             request, session, settings, user, errors=errors, status_code=exc.status_code

@@ -5,6 +5,8 @@ protected (the CSRF token must be the first part of the body, Origin must match)
 need a login. The ``db`` tests log in with a real session in the access cookie.
 """
 
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 from sqlalchemy import select
@@ -50,6 +52,33 @@ async def test_upload_needs_the_csrf_token_first(
         assert response.status_code == 403
         assert "CSRF validation failed." in response.text
     assert blob_store.blobs == {}
+
+
+async def test_upload_with_a_wrong_token_still_reads_the_whole_body(
+    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
+) -> None:
+    """The 403 is sent after the rest of the body was read, so the proxy does not make it a 502."""
+    user = act_as(Role.user)
+    headers, _ = page_csrf(settings, user)
+    sent = 0
+
+    async def body() -> AsyncIterator[bytes]:
+        nonlocal sent
+        yield b'--b\r\nContent-Disposition: form-data; name="csrf_token"\r\n\r\nforged\r\n'
+        yield b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
+        for _ in range(20):
+            sent += 1
+            yield b"x" * 1000
+        yield b"\r\n--b--\r\n"
+
+    response = await client.post(
+        "/files/upload",
+        content=body(),
+        headers={**headers, "content-type": "multipart/form-data; boundary=b"},
+    )
+    assert response.status_code == 403
+    assert "CSRF validation failed." in response.text
+    assert sent == 20
 
 
 @pytest.mark.parametrize("origin", [None, "http://evil.example"])
