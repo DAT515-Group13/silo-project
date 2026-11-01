@@ -178,6 +178,31 @@ async def test_inactive_account_is_revealed_only_after_the_right_password(
 
 @pytest.mark.db
 @pytest.mark.anyio
+async def test_unknown_or_locked_account_still_spends_a_hash(
+    db_sessionmaker: Sessionmaker,
+    settings: Settings,
+    user_factory: UserFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown username and a locked account check the password against a dummy hash.
+
+    Without it the 401 would come back faster, and the timing would tell which names exist.
+    """
+    checked: list[str] = []
+
+    async def dummy(password: str) -> None:
+        checked.append(password)
+
+    monkeypatch.setattr(auth, "verify_dummy_password", dummy)
+    await user_factory(username="anna", locked_until=datetime.now(UTC) + timedelta(minutes=5))
+    for username in ("nobody", "anna"):
+        with pytest.raises(InvalidCredentials):
+            await attempt(db_sessionmaker, settings, username, TEST_PASSWORD)
+    assert checked == [TEST_PASSWORD, TEST_PASSWORD]
+
+
+@pytest.mark.db
+@pytest.mark.anyio
 async def test_outdated_hash_is_replaced_at_login(
     db_sessionmaker: Sessionmaker, settings: Settings, user_factory: UserFactory
 ) -> None:

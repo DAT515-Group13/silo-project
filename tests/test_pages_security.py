@@ -35,6 +35,7 @@ from app.services import sessions
 from app.services.sessions import IssuedTokens
 from tests.conftest import (
     ORIGIN,
+    ActAs,
     UserFactory,
     assert_secure,
     make_settings,
@@ -124,6 +125,17 @@ async def test_unauthenticated_page_redirects_to_login_with_next(
     response = await client.get(path, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == f"/login?next={path}"
+
+
+async def test_start_page_sends_visitors_to_login_and_users_to_files(
+    client: httpx.AsyncClient, act_as: ActAs
+) -> None:
+    """``/`` has no content of its own: it only redirects."""
+    anonymous = await client.get("/", follow_redirects=False)
+    assert (anonymous.status_code, anonymous.headers["location"]) == (303, "/login")
+    act_as(Role.user)
+    logged_in = await client.get("/", follow_redirects=False)
+    assert (logged_in.status_code, logged_in.headers["location"]) == (303, "/files")
 
 
 async def test_useless_cookies_are_deleted_on_the_redirect(

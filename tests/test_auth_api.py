@@ -248,32 +248,25 @@ async def test_sessions_list_and_delete_a_session(
 
 
 @db
-async def test_logout_takes_effect_immediately(
+async def test_logout_ends_one_session_and_logout_all_every_session(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """After POST /auth/logout the access token is rejected at once; other devices stay in."""
-    await user_factory(username="anna")
-    logged_in, other_device = await login(client), await login(client)
-    assert (await client.get("/api/v1/me", headers=bearer_of(logged_in))).status_code == 200
-    assert (
-        await client.post("/api/v1/auth/logout", headers=bearer_of(logged_in))
-    ).status_code == 204
-    assert (await client.get("/api/v1/me", headers=bearer_of(logged_in))).status_code == 401
-    assert (await client.get("/api/v1/me", headers=bearer_of(other_device))).status_code == 200
+    """Logout rejects that access token at once and keeps the other devices logged in.
 
-
-@db
-async def test_logout_all_ends_every_session(
-    client: httpx.AsyncClient, user_factory: UserFactory
-) -> None:
-    """logout-all revokes all devices of the user, but not other users' sessions."""
+    logout-all then ends all of the user's devices, but not other users' sessions.
+    """
     await user_factory(username="anna")
     await user_factory(username="bob")
-    a1, a2, bob = await login(client), await login(client), await login(client, "bob")
-    assert (await client.post("/api/v1/auth/logout-all", headers=bearer_of(a1))).status_code == 204
-    assert (await client.get("/api/v1/me", headers=bearer_of(a1))).status_code == 401
-    assert (await client.get("/api/v1/me", headers=bearer_of(a2))).status_code == 401
-    assert (await client.get("/api/v1/me", headers=bearer_of(bob))).status_code == 200
+    a1, a2, a3 = await login(client), await login(client), await login(client)
+    bob = await login(client, "bob")
+
+    async def me(response: httpx.Response) -> int:
+        return (await client.get("/api/v1/me", headers=bearer_of(response))).status_code
+
+    assert (await client.post("/api/v1/auth/logout", headers=bearer_of(a1))).status_code == 204
+    assert (await me(a1), await me(a2)) == (401, 200)
+    assert (await client.post("/api/v1/auth/logout-all", headers=bearer_of(a2))).status_code == 204
+    assert (await me(a2), await me(a3), await me(bob)) == (401, 401, 200)
 
 
 # --- Password change ---------------------------------------------------------------------------

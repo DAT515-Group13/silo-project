@@ -193,39 +193,27 @@ async def test_every_failing_link_gives_the_same_404(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """Unknown, expired and revoked links are indistinguishable (disabled owner: admin tests)."""
+    """Unknown, expired, revoked and deleted-file links are indistinguishable.
+
+    A file's links are removed with it (cascade). A disabled owner: see the admin tests.
+    """
     owner = await user_factory("owner")
-    file = await file_factory(owner.id)
+    file, gone = await file_factory(owner.id), await file_factory(owner.id)
     headers = await bearer_for(owner)
     expired_id, expired = await make_link(client, headers, file.id)
     revoked_id, revoked = await make_link(client, headers, file.id)
+    _, of_deleted_file = await make_link(client, headers, gone.id)
 
     await expire_link(db_sessionmaker, expired_id)
     assert (await client.delete(f"/api/v1/links/{revoked_id}", headers=headers)).status_code == 204
+    assert (await client.delete(f"/api/v1/files/{gone.id}", headers=headers)).status_code == 204
 
     bodies = set()
-    for token in (expired, revoked, "U" * 43):  # expired, revoked, unknown
+    for token in (expired, revoked, of_deleted_file, "U" * 43):
         response = await open_link(client, token)
         assert_same_404(response)
         bodies.add(response.text)
     assert len(bodies) == 1
-
-
-@db
-async def test_deleting_the_file_kills_its_links(
-    client: httpx.AsyncClient,
-    user_factory: UserFactory,
-    file_factory: FileFactory,
-    bearer_for: BearerFor,
-) -> None:
-    """Links are removed with their file (cascade), so the token stops working."""
-    owner = await user_factory("owner")
-    file = await file_factory(owner.id)
-    headers = await bearer_for(owner)
-    _, token = await make_link(client, headers, file.id)
-    deleted = await client.delete(f"/api/v1/files/{file.id}", headers=headers)
-    assert deleted.status_code == 204
-    assert_same_404(await open_link(client, token))
 
 
 @db

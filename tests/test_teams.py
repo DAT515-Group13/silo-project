@@ -76,20 +76,28 @@ async def test_lead_creates_a_team_and_becomes_owner_and_member(
 
 
 @pytest.mark.db
-async def test_non_members_get_404_everywhere(
+async def test_strangers_get_404_and_only_the_owner_adds_members(
     client: httpx.AsyncClient, user_factory: UserFactory, bearer_for: BearerFor
 ) -> None:
-    """A stranger cannot see, list files of, delete or change a team: always 404."""
+    """A stranger cannot see, list files of, delete or change a team: always 404.
+
+    A member, and even an admin, cannot add members to someone else's team either.
+    """
     owner = await bearer_for(await user_factory(username="lead", role=Role.team_lead))
     stranger = await bearer_for(await user_factory(username="eve"))
-    team_id = await make_team(client, owner)
+    member = await bearer_for(await user_factory(username="anna"))
+    admin = await bearer_for(await user_factory(username="root", role=Role.admin))
+    await user_factory(username="bob")
+    team_id = await team_with(client, owner, "anna")
 
     assert (await client.get(f"/api/v1/teams/{team_id}", headers=stranger)).status_code == 404
     files = await client.get(f"/api/v1/teams/{team_id}/files", headers=stranger)
     assert files.status_code == 404
     assert (await client.delete(f"/api/v1/teams/{team_id}", headers=stranger)).status_code == 404
-    assert await add_member(client, stranger, team_id, "eve") == 404
     assert (await client.get("/api/v1/teams/999999", headers=stranger)).status_code == 404
+    for headers in (stranger, member, admin):
+        assert await add_member(client, headers, team_id, "bob") == 404
+    assert await member_names(client, owner, team_id) == ["anna", "lead"]
 
 
 @pytest.mark.db
@@ -120,23 +128,6 @@ async def test_add_member_always_answers_204(
             )
         ).all()
     assert [entry["user_id"] for entry in added] == [anna.id]
-
-
-@pytest.mark.db
-async def test_only_the_owner_adds_members(
-    client: httpx.AsyncClient, user_factory: UserFactory, bearer_for: BearerFor
-) -> None:
-    """A member, and even an admin, cannot add members to someone else's team."""
-    owner = await bearer_for(await user_factory(username="lead", role=Role.team_lead))
-    member_user = await user_factory(username="anna")
-    member = await bearer_for(member_user)
-    admin = await bearer_for(await user_factory(username="root", role=Role.admin))
-    await user_factory(username="bob")
-    team_id = await team_with(client, owner, "anna")
-
-    assert await add_member(client, member, team_id, "bob") == 404
-    assert await add_member(client, admin, team_id, "bob") == 404
-    assert await member_names(client, owner, team_id) == ["anna", "lead"]
 
 
 @pytest.mark.db

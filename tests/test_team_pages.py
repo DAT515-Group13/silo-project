@@ -53,10 +53,13 @@ async def test_add_member_shows_the_same_notice_for_any_name(
 
 
 @pytest.mark.db
-async def test_member_leaves_and_owner_cannot(
+async def test_member_leaves_and_owner_deletes_the_team(
     client: httpx.AsyncClient, user_factory: UserFactory, page_login: PageLogin
 ) -> None:
-    """A member leaves and goes to /teams; the owner gets the 409 page."""
+    """A member leaves and goes to /teams; the owner gets the 409 page and deletes the team.
+
+    The former member cannot delete it (404); after the owner's delete the page is gone too.
+    """
     lead_user = await user_factory(username="lead", role=Role.team_lead)
     lead = await page_login(lead_user)
     anna_user = await user_factory(username="anna")
@@ -69,3 +72,8 @@ async def test_member_leaves_and_owner_cannot(
     owner = await post(client, lead, f"{team_path}/members/{lead_user.id}/remove")
     assert owner.status_code == 409
     assert "The team owner cannot leave the team." in owner.text
+
+    assert (await post(client, anna, f"{team_path}/delete")).status_code == 404
+    deleted = await post(client, lead, f"{team_path}/delete")
+    assert (deleted.status_code, deleted.headers["location"]) == (303, "/teams")
+    assert (await client.get(team_path, headers=lead[0])).status_code == 404
