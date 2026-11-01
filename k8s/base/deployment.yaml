@@ -14,7 +14,7 @@ spec:
       labels:
         app.kubernetes.io/name: silo
     spec:
-      # Only needed while the GHCR package is private. Harmless if it is public.
+      terminationGracePeriodSeconds: 120
       imagePullSecrets:
         - name: ghcr-pull
       securityContext:
@@ -24,8 +24,11 @@ spec:
           type: RuntimeDefault
       containers:
         - name: silo
-          # CI replaces IMAGE_PLACEHOLDER with ghcr.io/<owner>/<repo>/silo:<git sha>
           image: IMAGE_PLACEHOLDER
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           ports:
             - name: http
               containerPort: 8000

@@ -1,0 +1,810 @@
+{
+    "uid": "silo",
+    "title": "Silo",
+    "tags": [
+        "silo"
+    ],
+    "timezone": "browser",
+    "schemaVersion": 39,
+    "version": 1,
+    "editable": true,
+    "time": {
+        "from": "now-6h",
+        "to": "now"
+    },
+    "refresh": "30s",
+    "templating": {
+        "list": [
+            {
+                "name": "prom",
+                "label": "Prometheus",
+                "type": "datasource",
+                "query": "prometheus",
+                "current": {},
+                "hide": 0
+            },
+            {
+                "name": "loki",
+                "label": "Loki",
+                "type": "datasource",
+                "query": "loki",
+                "current": {},
+                "hide": 0
+            },
+            {
+                "name": "namespace",
+                "label": "Environment",
+                "type": "custom",
+                "query": "dev,prod",
+                "current": {
+                    "text": "dev",
+                    "value": "dev"
+                },
+                "options": [
+                    {
+                        "text": "dev",
+                        "value": "dev",
+                        "selected": true
+                    },
+                    {
+                        "text": "prod",
+                        "value": "prod",
+                        "selected": false
+                    }
+                ],
+                "hide": 0
+            }
+        ]
+    },
+    "panels": [
+        {
+            "id": 1,
+            "type": "row",
+            "title": "Health",
+            "collapsed": false,
+            "gridPos": {
+                "x": 0,
+                "y": 0,
+                "w": 24,
+                "h": 1
+            },
+            "panels": []
+        },
+        {
+            "id": 2,
+            "title": "Ready pods",
+            "type": "stat",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 0,
+                "y": 1,
+                "w": 4,
+                "h": 4
+            },
+            "targets": [
+                {
+                    "expr": "sum(kube_pod_status_ready{namespace=\"$namespace\", condition=\"true\", pod=~\"silo-.*\"})",
+                    "legendFormat": "silo",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                },
+                {
+                    "expr": "sum(kube_pod_status_ready{namespace=\"$namespace\", condition=\"true\", pod=~\"postgres-.*\"})",
+                    "legendFormat": "postgres",
+                    "refId": "B",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+            },
+            "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "reduceOptions": {
+                    "calcs": [
+                        "lastNotNull"
+                    ]
+                }
+            }
+        },
+        {
+            "id": 3,
+            "title": "Database",
+            "type": "stat",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 4,
+                "y": 1,
+                "w": 4,
+                "h": 4
+            },
+            "targets": [
+                {
+                    "expr": "min(silo_dependency_up{namespace=\"$namespace\", dependency=\"database\"})",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "mappings": [
+                        {
+                            "type": "value",
+                            "options": {
+                                "0": {
+                                    "text": "DOWN",
+                                    "color": "red"
+                                },
+                                "1": {
+                                    "text": "UP",
+                                    "color": "green"
+                                }
+                            }
+                        }
+                    ],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "green",
+                                "value": 1
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "reduceOptions": {
+                    "calcs": [
+                        "lastNotNull"
+                    ]
+                }
+            }
+        },
+        {
+            "id": 4,
+            "title": "Blob storage",
+            "type": "stat",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 8,
+                "y": 1,
+                "w": 4,
+                "h": 4
+            },
+            "targets": [
+                {
+                    "expr": "min(silo_dependency_up{namespace=\"$namespace\", dependency=\"blob_storage\"})",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "mappings": [
+                        {
+                            "type": "value",
+                            "options": {
+                                "0": {
+                                    "text": "DOWN",
+                                    "color": "red"
+                                },
+                                "1": {
+                                    "text": "UP",
+                                    "color": "green"
+                                }
+                            }
+                        }
+                    ],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "green",
+                                "value": 1
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "reduceOptions": {
+                    "calcs": [
+                        "lastNotNull"
+                    ]
+                }
+            }
+        },
+        {
+            "id": 5,
+            "title": "Error rate (5xx, 5m)",
+            "type": "stat",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 12,
+                "y": 1,
+                "w": 4,
+                "h": 4
+            },
+            "targets": [
+                {
+                    "expr": "sum(rate(silo_http_requests_total{namespace=\"$namespace\", status=~\"5..\"}[5m])) / sum(rate(silo_http_requests_total{namespace=\"$namespace\"}[5m]))",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percentunit",
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 0.01
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "reduceOptions": {
+                    "calcs": [
+                        "lastNotNull"
+                    ]
+                }
+            }
+        },
+        {
+            "id": 6,
+            "title": "Storage used",
+            "type": "stat",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 16,
+                "y": 1,
+                "w": 4,
+                "h": 4
+            },
+            "targets": [
+                {
+                    "expr": "max(silo_storage_used_bytes{namespace=\"$namespace\"})",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "bytes"
+                },
+                "overrides": []
+            },
+            "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "reduceOptions": {
+                    "calcs": [
+                        "lastNotNull"
+                    ]
+                }
+            }
+        },
+        {
+            "id": 7,
+            "title": "Hours since last backup",
+            "type": "stat",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 20,
+                "y": 1,
+                "w": 4,
+                "h": 4
+            },
+            "targets": [
+                {
+                    "expr": "(time() - kube_cronjob_status_last_successful_time{namespace=\"$namespace\", cronjob=\"postgres-backup\"}) / 3600",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "h",
+                    "decimals": 1,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 26
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "reduceOptions": {
+                    "calcs": [
+                        "lastNotNull"
+                    ]
+                }
+            }
+        },
+        {
+            "id": 8,
+            "type": "row",
+            "title": "Traffic",
+            "collapsed": false,
+            "gridPos": {
+                "x": 0,
+                "y": 5,
+                "w": 24,
+                "h": 1
+            },
+            "panels": []
+        },
+        {
+            "id": 9,
+            "title": "Requests per second by route",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 0,
+                "y": 6,
+                "w": 12,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "sum by (route) (rate(silo_http_requests_total{namespace=\"$namespace\"}[5m]))",
+                    "legendFormat": "{{route}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "reqps"
+                },
+                "overrides": []
+            },
+            "options": {}
+        },
+        {
+            "id": 10,
+            "title": "Response time p95 by route",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 12,
+                "y": 6,
+                "w": 12,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "histogram_quantile(0.95, sum by (le, route) (rate(silo_http_request_duration_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+                    "legendFormat": "{{route}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "s"
+                },
+                "overrides": []
+            },
+            "options": {}
+        },
+        {
+            "id": 11,
+            "title": "Responses by status",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 0,
+                "y": 14,
+                "w": 12,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "sum by (status) (rate(silo_http_requests_total{namespace=\"$namespace\"}[5m]))",
+                    "legendFormat": "{{status}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "reqps"
+                },
+                "overrides": []
+            },
+            "options": {}
+        },
+        {
+            "id": 12,
+            "title": "Logins by result (per hour)",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 12,
+                "y": 14,
+                "w": 12,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "sum by (result) (increase(silo_login_attempts_total{namespace=\"$namespace\"}[1h]))",
+                    "legendFormat": "{{result}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+            },
+            "options": {},
+            "description": "A rise in invalid/locked means someone is guessing passwords."
+        },
+        {
+            "id": 13,
+            "type": "row",
+            "title": "Files",
+            "collapsed": false,
+            "gridPos": {
+                "x": 0,
+                "y": 22,
+                "w": 24,
+                "h": 1
+            },
+            "panels": []
+        },
+        {
+            "id": 14,
+            "title": "Uploads by result (per hour)",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 0,
+                "y": 23,
+                "w": 8,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "sum by (result) (increase(silo_uploads_total{namespace=\"$namespace\"}[1h]))",
+                    "legendFormat": "{{result}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+            },
+            "options": {}
+        },
+        {
+            "id": 15,
+            "title": "Downloads by kind (per hour)",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 8,
+                "y": 23,
+                "w": 8,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "sum by (kind) (increase(silo_downloads_total{namespace=\"$namespace\"}[1h]))",
+                    "legendFormat": "{{kind}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+            },
+            "options": {}
+        },
+        {
+            "id": 16,
+            "title": "Azure errors (per hour)",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 16,
+                "y": 23,
+                "w": 8,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "sum by (operation) (increase(silo_storage_errors_total{namespace=\"$namespace\"}[1h]))",
+                    "legendFormat": "{{operation}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+            },
+            "options": {}
+        },
+        {
+            "id": 17,
+            "type": "row",
+            "title": "Resources",
+            "collapsed": false,
+            "gridPos": {
+                "x": 0,
+                "y": 31,
+                "w": 24,
+                "h": 1
+            },
+            "panels": []
+        },
+        {
+            "id": 18,
+            "title": "CPU by pod",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 0,
+                "y": 32,
+                "w": 12,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container!=\"\"}[5m]))",
+                    "legendFormat": "{{pod}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "cores"
+                },
+                "overrides": []
+            },
+            "options": {}
+        },
+        {
+            "id": 19,
+            "title": "Memory by pod",
+            "type": "timeseries",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "${prom}"
+            },
+            "gridPos": {
+                "x": 12,
+                "y": 32,
+                "w": 12,
+                "h": 8
+            },
+            "targets": [
+                {
+                    "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"$namespace\", container!=\"\"})",
+                    "legendFormat": "{{pod}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "prometheus",
+                        "uid": "${prom}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "bytes"
+                },
+                "overrides": []
+            },
+            "options": {}
+        },
+        {
+            "id": 20,
+            "type": "row",
+            "title": "Logs",
+            "collapsed": false,
+            "gridPos": {
+                "x": 0,
+                "y": 40,
+                "w": 24,
+                "h": 1
+            },
+            "panels": []
+        },
+        {
+            "id": 21,
+            "title": "App logs",
+            "type": "logs",
+            "datasource": {
+                "type": "loki",
+                "uid": "${loki}"
+            },
+            "gridPos": {
+                "x": 0,
+                "y": 41,
+                "w": 24,
+                "h": 10
+            },
+            "targets": [
+                {
+                    "expr": "{namespace=\"$namespace\", app=\"silo\"}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "loki",
+                        "uid": "${loki}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+            },
+            "options": {
+                "showTime": true,
+                "wrapLogMessage": true,
+                "sortOrder": "Descending"
+            }
+        },
+        {
+            "id": 22,
+            "title": "Error lines per minute",
+            "type": "timeseries",
+            "datasource": {
+                "type": "loki",
+                "uid": "${loki}"
+            },
+            "gridPos": {
+                "x": 0,
+                "y": 51,
+                "w": 24,
+                "h": 6
+            },
+            "targets": [
+                {
+                    "expr": "sum by (pod) (count_over_time({namespace=\"$namespace\"} |~ \"(?i)error\" [1m]))",
+                    "legendFormat": "{{pod}}",
+                    "refId": "A",
+                    "datasource": {
+                        "type": "loki",
+                        "uid": "${loki}"
+                    }
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+            },
+            "options": {}
+        }
+    ]
+}

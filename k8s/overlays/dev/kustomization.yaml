@@ -19,15 +19,13 @@ configMapGenerator:
       - JWT_AUDIENCE=silo-dev
       - INITIAL_ADMIN_USERNAME=admin
       - MAX_FILE_SIZE_BYTES=104857600
-      - COOKIE_SECURE=false
+      - COOKIE_SECURE=true
       - ENABLE_DOCS=true
       - FORWARDED_ALLOW_IPS=10.244.0.0/16
       - METRICS_PORT=9000
 patches:
-  # Reached through Traefik at https://dev.152.94.171.92.nip.io:30443
   - target:
       kind: Ingress
-      name: silo
     patch: |-
       - op: replace
         path: /spec/rules/0/host
@@ -35,3 +33,10 @@ patches:
       - op: replace
         path: /spec/tls/0/hosts/0
         value: dev.152.94.171.92.nip.io
+  - target:
+      kind: Ingress
+      name: silo-health
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/traefik.ingress.kubernetes.io~1router.middlewares
+        value: dev-internal-only@kubernetescrd

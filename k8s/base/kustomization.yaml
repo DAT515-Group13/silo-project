@@ -6,5 +6,6 @@ resources:
   - migrate-job.yaml
   - ingress.yaml
   - networkpolicy.yaml
-  - cleanup-cronjob.yaml
   - podmonitor.yaml
+  - ingress-internal.yaml
+  - cleanup-cronjob.yaml
