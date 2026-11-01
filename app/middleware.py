@@ -1,7 +1,6 @@
 """Cookies, Origin checks, and the middleware stack (metrics, security headers, body limit).
 
-The page surface authenticates with cookies, the API with Bearer tokens; the two never mix. The
-request ID and trusted host middleware are planned hardening steps.
+The page surface authenticates with cookies, the API with Bearer tokens; the two never mix.
 """
 
 import time
@@ -190,7 +189,7 @@ CACHEABLE_PREFIX = "/static/"
 
 
 class SecurityHeadersMiddleware:
-    """Add the response headers of spec section 12 to every response.
+    """Add the response security headers to every response.
 
     Outermost middleware, so error pages and the 413 of ``BodyLimitMiddleware`` get them too.
     A header a route set itself (for example the ``no-store`` of ``/s/{token}``) is kept.
@@ -202,12 +201,14 @@ class SecurityHeadersMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Add the headers to every HTTP response; other scopes (lifespan) pass through."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         path = scope["path"]
 
         async def send_with_headers(message: Message) -> None:
+            """Add the headers to the response start; ``setdefault`` keeps what a route set."""
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
                 for name, value in SECURITY_HEADERS.items():
@@ -241,6 +242,7 @@ class MetricsMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Time and count every HTTP request, also one that fails with an exception."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -248,6 +250,7 @@ class MetricsMiddleware:
         status = 500  # stays 500 if the app fails before it answers
 
         async def send_and_note_status(message: Message) -> None:
+            """Pass the message on and remember the status code for the metrics."""
             nonlocal status
             if message["type"] == "http.response.start":
                 status = message["status"]
@@ -282,6 +285,7 @@ class BodyLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass upload routes through; refuse other bodies above ``MAX_BODY_BYTES``."""
         if scope["type"] != "http" or (scope["method"], scope["path"]) in UNLIMITED_BODY_ROUTES:
             await self.app(scope, receive, send)
             return
@@ -289,7 +293,7 @@ class BodyLimitMiddleware:
         # A declared size is checked first, so an honest oversized client is refused unread.
         declared = Headers(scope=scope).get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
-            # The API keeps its JSON error shape (section 9.5); pages get plain text.
+            # The API keeps its JSON error shape; pages get plain text.
             if scope["path"].startswith("/api/"):
                 body = {"detail": "Request body too large.", "code": "payload_too_large"}
                 await JSONResponse(body, status_code=413)(scope, receive, send)
@@ -306,6 +310,7 @@ class BodyLimitMiddleware:
         received = 0
 
         async def limited_receive() -> Message:
+            """Count the received body bytes and stop as soon as the limit is passed."""
             nonlocal received
             message = await receive()
             if message["type"] == "http.request":
@@ -331,6 +336,7 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        """Run the route, then set or delete the auth cookies as the request noted."""
         response = await call_next(request)
         settings: Settings = request.app.state.settings
         refreshed: IssuedTokens | None = getattr(request.state, "refreshed_tokens", None)

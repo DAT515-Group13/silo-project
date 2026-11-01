@@ -69,10 +69,9 @@ async def upload_file(
     user already has 3 uploads running, 503 `storage_unavailable`, 507 `storage_full` when the
     service's total cap (`STORAGE_TOTAL_MAX_BYTES`) is reached.
     """
-    # At most 3 uploads at the same time per user.
     body = request.stream()
     try:
-        async with upload_slot(user.id):
+        async with upload_slot(user.id):  # at most 3 uploads at the same time per user
             reader = MultipartReader(request.headers.get("content-type", ""), body, max_parts=1)
             part = await reader.next_part()
             if part is None or part.name != "file" or part.filename is None:

@@ -1,8 +1,9 @@
-"""Tests for the pure file rules: cleaning of file names and choosing content types.
+"""Tests for the pure file rules: file names, content types and the upload stream helpers.
 
 These need no database. They check that dangerous names (paths, control characters) are cleaned,
-that a file's type is detected from its first bytes instead of trusting the client, and that
-types a browser would render are always downloaded as ``application/octet-stream``.
+that a file's type is detected from its first bytes instead of trusting the client, that types a
+browser would render are always downloaded as ``application/octet-stream``, and that the upload
+stream stops at the first limit passed and counts a refused upload once.
 """
 
 import pytest
@@ -214,7 +215,7 @@ async def test_limited_stops_at_the_first_limit_passed(
     ],
 )
 def test_failed_upload_is_counted_under_one_label(exc: Exception, label: str | None) -> None:
-    """A refused upload adds 1 to exactly one ``silo_uploads_total`` label (section 8.3)."""
+    """A refused upload adds 1 to exactly one ``silo_uploads_total`` label."""
     labels = ["too_large", "quota_exceeded", "storage_full", "storage_error"]
     before = {name: sample("silo_uploads_total", result=name) for name in labels}
     _count_failed_upload(exc)

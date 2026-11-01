@@ -19,7 +19,6 @@ from app.errors import (
     InvalidCredentials,
 )
 from app.models import AuditLog, AuthSession, Role, User, UserStatus
-from app.security import decode_access_token
 from app.services import auth
 from app.services.users import ensure_initial_admin
 from tests.conftest import (
@@ -56,7 +55,7 @@ async def attempt(sm: Sessionmaker, settings: Settings, username: str, password:
 
 @pytest.mark.parametrize(("failures", "minutes"), [(10, 15), (20, 30), (500, 60)])
 def test_lock_duration_doubles_and_is_capped(failures: int, minutes: int) -> None:
-    """15 minutes at 10 failures, doubling at each further 10, at most 1 hour (D25)."""
+    """15 minutes at 10 failures, doubling at each further 10, at most 1 hour."""
     assert auth.lock_duration(make_settings(), failures) == timedelta(minutes=minutes)
 
 
@@ -74,13 +73,7 @@ async def test_successful_login_issues_tokens_and_a_session(
     tokens = await attempt(db_sessionmaker, settings, "Anna", TEST_PASSWORD, ip="203.0.113.7")
     assert sample("silo_login_attempts_total", result="success") == before + 1
 
-    claims = decode_access_token(
-        tokens.access_token,
-        secrets=[settings.jwt_secret.get_secret_value()],
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-    )
-    assert claims.user_id == user.id
+    assert tokens.user_id == user.id
     assert tokens.role is Role.team_lead
     async with db_sessionmaker() as db:
         session_row = await db.get_one(AuthSession, tokens.session_id)
@@ -181,6 +174,31 @@ async def test_inactive_account_is_revealed_only_after_the_right_password(
         await attempt(db_sessionmaker, settings, "anna", "wrong-password-123")
     with pytest.raises(error):
         await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
+
+
+@pytest.mark.db
+@pytest.mark.anyio
+async def test_unknown_or_locked_account_still_spends_a_hash(
+    db_sessionmaker: Sessionmaker,
+    settings: Settings,
+    user_factory: UserFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown username and a locked account check the password against a dummy hash.
+
+    Without it the 401 would come back faster, and the timing would tell which names exist.
+    """
+    checked: list[str] = []
+
+    async def dummy(password: str) -> None:
+        checked.append(password)
+
+    monkeypatch.setattr(auth, "verify_dummy_password", dummy)
+    await user_factory(username="anna", locked_until=datetime.now(UTC) + timedelta(minutes=5))
+    for username in ("nobody", "anna"):
+        with pytest.raises(InvalidCredentials):
+            await attempt(db_sessionmaker, settings, username, TEST_PASSWORD)
+    assert checked == [TEST_PASSWORD, TEST_PASSWORD]
 
 
 @pytest.mark.db

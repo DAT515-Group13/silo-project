@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api/v1", tags=["auth"])
 
 
 def _token_response(tokens: IssuedTokens) -> TokenPairOut:
-    """Build the token pair response of example 9.1."""
+    """Build the token pair response."""
     return TokenPairOut(
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,
@@ -135,7 +135,7 @@ async def logout_all(request: Request, user: ApiUser, ctx: AuditCtx, session: Db
 @router.get("/auth/sessions", response_model=list[SessionOut])
 @limit("read")
 async def list_sessions(request: Request, user: ApiUser, session: DbSession) -> list[SessionOut]:
-    """List the current user's active sessions (example 9.6)."""
+    """List the current user's active sessions."""
     rows = await sessions.list_active(session, user.id)
     return [
         SessionOut(
@@ -162,7 +162,7 @@ async def revoke_session(
 @router.get("/me", response_model=MeOut)
 @limit("read")
 async def me(request: Request, user: ApiUser, session: DbSession, settings: SettingsDep) -> MeOut:
-    """Return the current user with storage usage and quota (example 9.2)."""
+    """Return the current user with storage usage and quota."""
     account = await users.get_user(session, user.id)
     return MeOut(
         id=account.id,

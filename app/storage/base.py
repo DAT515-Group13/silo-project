@@ -8,10 +8,13 @@ Every backend error is re-raised as ``StorageUnavailable`` (chained, never with 
 message).
 """
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
+
+logger = logging.getLogger("silo")
 
 
 @dataclass(frozen=True)
@@ -63,3 +66,20 @@ class BlobStore(Protocol):
     async def close(self) -> None:
         """Release the connection to the backend (called once at shutdown)."""
         ...
+
+
+async def delete_quietly(store: BlobStore, blob_name: str) -> None:
+    """Delete a blob, logging instead of raising: the caller's own error must not be masked.
+
+    A blob that could not be deleted stays behind as an orphan; orphan cleanup removes it later.
+    """
+    try:
+        await store.delete(blob_name)
+    except Exception as exc:
+        # Not only StorageUnavailable: when this runs after the commit, any error here must not
+        # turn a finished delete into a 500.
+        logger.warning(
+            "Could not delete blob %s (%s); it is left for orphan cleanup",
+            blob_name,
+            type(exc).__name__,
+        )

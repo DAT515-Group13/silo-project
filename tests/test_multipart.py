@@ -161,7 +161,7 @@ async def test_discard_body_ignores_a_client_disconnect() -> None:
         yield b"x"
         raise ClientDisconnect
 
-    await discard_body(body(), max_bytes=10_000)
+    await discard_body(body(), max_bytes=10_000)  # must simply return, nothing to assert
 
 
 async def test_discard_body_gives_up_when_the_client_is_too_slow(
@@ -175,4 +175,6 @@ async def test_discard_body_gives_up_when_the_client_is_too_slow(
         await anyio.sleep(5)
         yield b"y"
 
-    await discard_body(body(), max_bytes=10_000)
+    # Without the timeout this would wait 5 s; fail_after turns that into a failure.
+    with anyio.fail_after(1):
+        await discard_body(body(), max_bytes=10_000)

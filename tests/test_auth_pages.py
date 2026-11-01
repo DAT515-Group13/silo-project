@@ -132,19 +132,29 @@ async def test_register_open_redirects_to_login_and_the_account_works(
 
 
 @pytest.mark.db
+@pytest.mark.parametrize(
+    ("next_url", "location"), [("/account", "/account"), ("//evil.example", "/files")]
+)
 async def test_login_sets_cookies_and_goes_to_next(
-    client: httpx.AsyncClient, settings: Settings, user_factory: UserFactory
+    client: httpx.AsyncClient,
+    settings: Settings,
+    user_factory: UserFactory,
+    next_url: str,
+    location: str,
 ) -> None:
-    """A correct login sets the access and refresh cookies and redirects to ?next= (checked)."""
+    """A correct login sets the access and refresh cookies and redirects to ?next= (checked).
+
+    The open redirect guard also applies to the POST: an outside ``next`` goes to /files.
+    """
     await user_factory(username="anna")
     names = cookie_names(settings)
     response = await post_form(
         client,
         "/login",
-        {"username": "Anna", "password": TEST_PASSWORD, "next": "/account"},
+        {"username": "Anna", "password": TEST_PASSWORD, "next": next_url},
         token_from="/login",
     )
-    assert (response.status_code, response.headers["location"]) == (303, "/account")
+    assert (response.status_code, response.headers["location"]) == (303, location)
     names_set = {c.split("=")[0] for c in response.headers.get_list("set-cookie")}
     assert {names.access, names.refresh} <= names_set
 
@@ -176,21 +186,6 @@ async def test_login_with_a_dead_cookie_keeps_the_new_session(
     ]
     assert len(written) == 1 and "Max-Age=0" not in written[0]
     assert (await client.get("/account", follow_redirects=False)).status_code == 200
-
-
-@pytest.mark.db
-async def test_login_with_an_outside_next_goes_to_files(
-    client: httpx.AsyncClient, user_factory: UserFactory
-) -> None:
-    """The open redirect guard also applies to the POST."""
-    await user_factory(username="anna")
-    response = await post_form(
-        client,
-        "/login",
-        {"username": "anna", "password": TEST_PASSWORD, "next": "//evil.example"},
-        token_from="/login",
-    )
-    assert response.headers["location"] == "/files"
 
 
 @pytest.mark.db
@@ -297,10 +292,10 @@ async def test_account_page_can_sign_out_one_device_or_all(
 async def test_account_password_form_changes_the_password(
     client: httpx.AsyncClient, user_factory: UserFactory
 ) -> None:
-    """Wrong current and weak new passwords show the page again (422) and change nothing.
+    """A refused change shows the page again (422) with the message and changes nothing.
 
     The right current password and a good new one redirect, show the banner, and the new password
-    works at login.
+    works at login. The rules (wrong current, weak new) are tested through the API.
     """
     await user_factory(username="anna")
     await post_form(
@@ -325,11 +320,7 @@ async def test_account_password_form_changes_the_password(
     assert wrong.status_code == 422
     assert "Current password is wrong." in wrong.text
 
-    weak = await submit(TEST_PASSWORD, "short")
-    assert weak.status_code == 422
-    assert "Password must be at least" in weak.text
-
-    # Both failures left the password alone, so TEST_PASSWORD is still the current one.
+    # The failure left the password alone, so TEST_PASSWORD is still the current one.
     done = await submit(TEST_PASSWORD, GOOD_PASSWORD)
     assert (done.status_code, done.headers["location"]) == (303, "/account?password_changed=true")
     assert "Password changed." in (await client.get("/account?password_changed=true")).text

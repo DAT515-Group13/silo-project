@@ -1,14 +1,14 @@
 """User management: storage quotas, admin user actions and the first admin.
 
-Implements the quota rules, the admin endpoints with their rules (last admin, disabling
-revokes sessions, deleting a user deletes their blobs) and the "First admin" rule.
+Quotas are counted in ``users.used_bytes`` and changed with atomic UPDATEs. The admin actions
+keep their rules here: the last active admin cannot be removed, disabling revokes sessions, and
+deleting a user deletes their blobs. ``ensure_initial_admin`` creates the first admin at startup.
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
 
 from sqlalchemy import Case, ScalarSelect, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -23,6 +23,7 @@ from app.services import audit, sessions
 from app.services.audit import AuditAction, AuditContext
 from app.services.pagination import fetch_page
 from app.services.sessions import RevokeReason
+from app.storage.base import BlobStore, delete_quietly
 
 logger = logging.getLogger("silo")
 
@@ -75,7 +76,7 @@ def quota_case(settings: Settings) -> Case:
 
 
 async def get_quota_status(session: AsyncSession, settings: Settings, user_id: int) -> QuotaStatus:
-    """Read the user's usage and quota in its own read-only transaction (upload step 2).
+    """Read the user's usage and quota in its own read-only transaction.
 
     Only a hint for streaming: the binding check is ``reserve_quota``.
 
@@ -92,7 +93,7 @@ async def get_quota_status(session: AsyncSession, settings: Settings, user_id: i
 
 
 async def reserve_quota(session: AsyncSession, settings: Settings, user_id: int, size: int) -> int:
-    """Add ``size`` bytes to the user's usage if they fit into the quota (upload step 4).
+    """Add ``size`` bytes to the user's usage if they fit into the quota.
 
     Runs inside the caller's ``session.begin()`` block, together with the insert of the
     ``files`` row and the audit entry, and never commits.
@@ -132,7 +133,7 @@ async def total_used_bytes(session: AsyncSession) -> int:
 
 
 async def get_global_remaining(session: AsyncSession, settings: Settings) -> int | None:
-    """Return the bytes left under ``STORAGE_TOTAL_MAX_BYTES`` (upload step 2), or None if off.
+    """Return the bytes left under ``STORAGE_TOTAL_MAX_BYTES``, or None if off.
 
     Read in its own transaction and only a hint for streaming: the binding check is
     ``reserve_global``. Never negative.
@@ -146,7 +147,7 @@ async def get_global_remaining(session: AsyncSession, settings: Settings) -> int
 
 
 async def reserve_global(session: AsyncSession, settings: Settings, size: int) -> None:
-    """Check that ``size`` more bytes fit under ``STORAGE_TOTAL_MAX_BYTES`` (upload step 4).
+    """Check that ``size`` more bytes fit under ``STORAGE_TOTAL_MAX_BYTES``.
 
     Runs inside the caller's ``session.begin()`` block, before ``reserve_quota``, and does
     nothing when the cap is off.
@@ -158,9 +159,10 @@ async def reserve_global(session: AsyncSession, settings: Settings, size: int) -
     if cap is None:
         return
     # The per-user UPDATE locks only that user's row, so two users at the global edge could
-    # both see room and both commit. This lock serialises the short step-4 transactions of all
-    # uploads; PostgreSQL releases it at commit or rollback. The sum below is read after the
-    # lock is held, so (READ COMMITTED) it includes everything the previous holder committed.
+    # both see room and both commit. This lock serialises the short final transactions of all
+    # uploads (quota, file row, audit entry); PostgreSQL releases it at commit or rollback. The
+    # sum below is read after the lock is held, so (READ COMMITTED) it includes everything the
+    # previous holder committed.
     # Deletes need no lock: they only lower the sum.
     await session.execute(select(func.pg_advisory_xact_lock(_GLOBAL_QUOTA_LOCK)))
     if await total_used_bytes(session) + size > cap:
@@ -187,14 +189,6 @@ async def release_quota(session: AsyncSession, user_id: int, size: int) -> None:
 # --- Admin user management ------------------------------------------------
 
 
-class BlobDeleter(Protocol):
-    """The part of the BlobStore that ``delete_user`` needs."""
-
-    async def delete(self, blob_name: str) -> None:
-        """Delete one blob; idempotent; raises ``StorageUnavailable`` on storage errors."""
-        ...
-
-
 @dataclass(frozen=True)
 class UserWithFiles:
     """A user row and the number of files they own (the admin list warns before deleting)."""
@@ -203,7 +197,7 @@ class UserWithFiles:
     file_count: int
 
 
-def _require_admin(actor: CurrentUser) -> None:
+def require_admin(actor: CurrentUser) -> None:
     """Permission check of every admin function: non-admins get 404, not 403."""
     if not is_admin(actor):
         raise NotFound
@@ -276,7 +270,7 @@ async def list_users(
     Raises:
         NotFound: the actor is not an admin.
     """
-    _require_admin(actor)
+    require_admin(actor)
     async with session.begin():
         statement = select(User, _file_count().label("file_count")).order_by(
             User.created_at.desc(), User.id.desc()
@@ -299,11 +293,11 @@ async def approve_user(
 
     Raises:
         NotFound: the actor is not an admin, or the user does not exist.
-        InvalidUserState: the user is not ``pending`` (D18).
+        InvalidUserState: the user is not ``pending``.
 
     Side effects: sets ``approved_by`` and ``approved_at``, writes ``user.approve``.
     """
-    _require_admin(actor)
+    require_admin(actor)
     now = now or datetime.now(UTC)
     async with session.begin():
         target = await _lock_target(session, user_id)
@@ -336,12 +330,12 @@ async def reject_user(
 
     Raises:
         NotFound: the actor is not an admin, or the user does not exist.
-        InvalidUserState: the user is not ``pending`` (D18).
+        InvalidUserState: the user is not ``pending``.
 
-    Side effects: revokes all sessions (a pending account has none, but the spec asks for it
-    on every rejection), writes ``user.reject`` with ``details.reason``.
+    Side effects: revokes all sessions (a pending account has none; done anyway, so a
+    rejected account can never keep a session), writes ``user.reject`` with ``details.reason``.
     """
-    _require_admin(actor)
+    require_admin(actor)
     async with session.begin():
         target = await _lock_target(session, user_id)
         if target.status != UserStatus.pending:
@@ -384,7 +378,7 @@ async def update_user(
     ``user_disabled``), so their access tokens stop working at once; writes
     ``user.role_change``, ``user.deactivate`` or ``user.activate``.
     """
-    _require_admin(actor)
+    require_admin(actor)
     if status not in (None, UserStatus.active, UserStatus.disabled):
         raise ValueError("status can only be set to active or disabled")
 
@@ -443,7 +437,7 @@ async def revoke_user_sessions(
     Side effects: revokes all active sessions with reason ``admin``, writes
     ``user.sessions_revoke``.
     """
-    _require_admin(actor)
+    require_admin(actor)
     async with session.begin():
         target = await _lock_target(session, user_id)
         revoked = await sessions.revoke_all(session, target.id, RevokeReason.admin)
@@ -461,7 +455,7 @@ async def revoke_user_sessions(
 
 async def delete_user(
     session: AsyncSession,
-    store: BlobDeleter,
+    store: BlobStore,
     actor: CurrentUser,
     user_id: int,
     ctx: AuditContext,
@@ -471,7 +465,7 @@ async def delete_user(
     Same order as ``files.delete_file``: first one transaction deletes the user row (whose
     foreign keys cascade to sessions, files, owned teams, memberships and links) and writes the
     audit entry, then the blobs are deleted. A blob that cannot be deleted is logged and left
-    for orphan cleanup (D24); the user is gone either way. Audit rows stay.
+    for orphan cleanup; the user is gone either way. Audit rows stay.
 
     Raises:
         NotFound: the actor is not an admin, or the user does not exist.
@@ -480,7 +474,7 @@ async def delete_user(
     Side effects: deletes the user and then the blobs, writes ``user.delete`` with
     ``details.files_deleted``.
     """
-    _require_admin(actor)
+    require_admin(actor)
 
     async with session.begin():
         # The rules are checked under the admin locks, so another admin cannot act in between.
@@ -507,15 +501,9 @@ async def delete_user(
     limit = asyncio.Semaphore(DELETE_CONCURRENCY)
 
     async def delete_blob(blob_name: str) -> None:
+        """Delete one blob; a failure is logged, not raised."""
         async with limit:
-            try:
-                await store.delete(blob_name)
-            except Exception as exc:
-                logger.warning(
-                    "Could not delete blob %s (%s); it is left for orphan cleanup",
-                    blob_name,
-                    type(exc).__name__,
-                )
+            await delete_quietly(store, blob_name)
 
     await asyncio.gather(*(delete_blob(name) for name in blob_names))
     return len(blob_names)

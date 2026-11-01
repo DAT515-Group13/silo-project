@@ -11,9 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.errors import NotFound
 from app.models import AuditLog, File, Outcome, User
-from app.permissions import CurrentUser, is_admin
+from app.permissions import CurrentUser
 from app.services import users
 from app.services.pagination import fetch_page
 from app.services.teams import FileItem
@@ -32,12 +31,6 @@ class AuditFilters:
     to: datetime | None = None
 
 
-def _require_admin(actor: CurrentUser) -> None:
-    """Permission check: non-admins get 404, not 403."""
-    if not is_admin(actor):
-        raise NotFound
-
-
 async def list_all_files(
     session: AsyncSession, actor: CurrentUser, *, page: int, size: int
 ) -> tuple[list[FileItem], int]:
@@ -46,7 +39,7 @@ async def list_all_files(
     Raises:
         NotFound: the actor is not an admin.
     """
-    _require_admin(actor)
+    users.require_admin(actor)
     async with session.begin():
         statement = (
             select(File, User.username)
@@ -67,7 +60,7 @@ async def list_audit(
     Raises:
         NotFound: the actor is not an admin.
     """
-    _require_admin(actor)
+    users.require_admin(actor)
     statement = select(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
     conditions = {
         AuditLog.action: filters.action,
@@ -100,7 +93,7 @@ async def storage_totals(
     Raises:
         NotFound: the actor is not an admin.
     """
-    _require_admin(actor)
+    users.require_admin(actor)
     async with session.begin():
         used = await users.total_used_bytes(session)
     return used, settings.global_cap()

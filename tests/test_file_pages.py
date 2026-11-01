@@ -5,6 +5,8 @@ protected (the CSRF token must be the first part of the body, Origin must match)
 need a login. The ``db`` tests log in with a real session in the access cookie.
 """
 
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 from sqlalchemy import select
@@ -17,6 +19,7 @@ from tests.conftest import (
     PageLogin,
     Sessionmaker,
     UserFactory,
+    expire_link,
     page_csrf,
     post,
 )
@@ -49,6 +52,33 @@ async def test_upload_needs_the_csrf_token_first(
         assert response.status_code == 403
         assert "CSRF validation failed." in response.text
     assert blob_store.blobs == {}
+
+
+async def test_upload_with_a_wrong_token_still_reads_the_whole_body(
+    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
+) -> None:
+    """The 403 is sent after the rest of the body was read, so the proxy does not make it a 502."""
+    user = act_as(Role.user)
+    headers, _ = page_csrf(settings, user)
+    sent = 0
+
+    async def body() -> AsyncIterator[bytes]:
+        nonlocal sent
+        yield b'--b\r\nContent-Disposition: form-data; name="csrf_token"\r\n\r\nforged\r\n'
+        yield b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
+        for _ in range(20):
+            sent += 1
+            yield b"x" * 1000
+        yield b"\r\n--b--\r\n"
+
+    response = await client.post(
+        "/files/upload",
+        content=body(),
+        headers={**headers, "content-type": "multipart/form-data; boundary=b"},
+    )
+    assert response.status_code == 403
+    assert "CSRF validation failed." in response.text
+    assert sent == 20
 
 
 @pytest.mark.parametrize("origin", [None, "http://evil.example"])
@@ -206,7 +236,7 @@ async def test_admin_deletes_a_file_from_the_admin_list(
 
     The quota and audit side of an admin delete are checked in test_files.py.
     """
-    owner = await user_factory("owner", used_bytes=10)  # the delete gives these bytes back
+    owner = await user_factory("owner")
     stranger = await page_login(await user_factory("stranger"))
     admin = await page_login(await user_factory("boss", role=Role.admin))
     file = await file_factory(owner.id)
@@ -248,13 +278,18 @@ async def test_link_url_is_shown_once_and_the_page_is_not_cached(
         assert (await session.scalars(select(ShareLink))).one().download_count == 0
 
 
+async def only_link_id(db_sessionmaker: Sessionmaker) -> int:
+    """The ID of the one link in the database."""
+    async with db_sessionmaker() as session:
+        return (await session.scalars(select(ShareLink.id))).one()
+
+
 @db
 @pytest.mark.parametrize(
-    ("actor", "status", "location"),
+    ("actor", "location"),
     [
-        ("owner", 303, "/files/{file_id}"),
-        ("admin", 303, "/admin/files"),  # an admin cannot open the file page
-        ("stranger", 404, None),
+        ("owner", "/files/{file_id}"),
+        ("admin", "/admin/files"),  # an admin cannot open the file page
     ],
 )
 async def test_who_revokes_a_link_and_where_they_land(
@@ -264,33 +299,68 @@ async def test_who_revokes_a_link_and_where_they_land(
     page_login: PageLogin,
     db_sessionmaker: Sessionmaker,
     actor: str,
-    status: int,
-    location: str | None,
+    location: str,
 ) -> None:
-    """The owner and an admin revoke a link, a stranger gets 404; each lands on a page they see."""
+    """The owner and an admin revoke a link and land on a page they can see."""
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     owner_login = await page_login(owner)
     await post(client, owner_login, f"/files/{file.id}/links")
-    async with db_sessionmaker() as session:
-        link_id = (await session.scalars(select(ShareLink.id))).one()
+    link_id = await only_link_id(db_sessionmaker)
 
     if actor == "owner":
         who = owner_login
-    elif actor == "admin":
-        who = await page_login(await user_factory("boss", role=Role.admin))
     else:
-        who = await page_login(await user_factory("stranger"))
-        assert (await post(client, who, f"/files/{file.id}/links")).status_code == 404
+        who = await page_login(await user_factory("boss", role=Role.admin))
 
     revoked = await post(client, who, f"/links/{link_id}/revoke")
-    assert revoked.status_code == status
-    if location:
-        assert revoked.headers["location"] == location.format(file_id=file.id)
+    assert revoked.status_code == 303
+    assert revoked.headers["location"] == location.format(file_id=file.id)
     async with db_sessionmaker() as session:
-        revoked_at = await session.scalar(select(ShareLink.revoked_at))
-    assert (revoked_at is not None) is (status == 303)
-    if actor == "owner":
-        # The file page lists active links only; the history is on /links.
-        page = await client.get(f"/links?file={file.id}&status=revoked", headers=owner_login[0])
-        assert ">revoked</span>" in page.text
+        assert await session.scalar(select(ShareLink.revoked_at)) is not None
+
+
+@db
+async def test_links_pages_filter_renew_and_return_to_the_file(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    page_login: PageLogin,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """The page filters by status and file, the form redirects or shows a message on its page.
+
+    The rules themselves are tested through the API in test_links.py; this checks the page wiring.
+    """
+    owner = await user_factory("owner")
+    login = await page_login(owner)
+    file = await file_factory(owner.id)
+    await post(client, login, f"/files/{file.id}/links")
+    link_id = await only_link_id(db_sessionmaker)
+
+    page = await client.get("/links", headers=login[0])
+    assert page.status_code == 200 and f"/links/{link_id}/expiry" in page.text
+    file_page = await client.get(f"/files/{file.id}", headers=login[0])
+    assert f"/links?file={file.id}&status=all" in file_page.text
+
+    changed = await post(client, login, f"/links/{link_id}/expiry", expires_in_hours="3")
+    assert changed.status_code == 303 and changed.headers["location"] == "/links?updated=1"
+    back = await post(
+        client, login, f"/links/{link_id}/expiry", expires_in_hours="3", next=f"/files/{file.id}"
+    )
+    assert back.headers["location"] == f"/files/{file.id}"
+    bad = await post(client, login, f"/links/{link_id}/expiry", expires_in_hours="0")
+    assert bad.status_code == 422
+    # A bad value sent from the file page shows the file page again, not the overview.
+    bad_on_file = await post(
+        client, login, f"/links/{link_id}/expiry", expires_in_hours="0", next=f"/files/{file.id}"
+    )
+    assert bad_on_file.status_code == 422 and f"/files/{file.id}/rename" in bad_on_file.text
+
+    await expire_link(db_sessionmaker, link_id)
+    assert "No active" in (await client.get("/links", headers=login[0])).text
+    expired = await client.get("/links?status=expired", headers=login[0])
+    assert "Renew" in expired.text
+    await post(client, login, f"/links/{link_id}/revoke")
+    revoked = await client.get(f"/links?file={file.id}&status=revoked", headers=login[0])
+    assert file.filename in revoked.text

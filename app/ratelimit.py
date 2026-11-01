@@ -7,7 +7,7 @@ guessing must stay slow; both layers apply together). Uploads are also limited t
 per user.
 
 The counters live in the memory of one process (no Redis). With N replicas the
-effective limit is up to N times higher; this is an accepted limitation (open question Q6).
+effective limit is up to N times higher; this is an accepted limitation.
 Counters are per route, so the login page and ``/api/v1/auth/login`` each have their own 10/min.
 Except the ``SHARED`` classes: one counter for all routes that use them (the password change
 API and page).
@@ -81,6 +81,7 @@ def limit(*names: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             decorators.append(limiter.limit(rate, key_func=key_func))
 
     def apply(func: Callable[..., Any]) -> Callable[..., Any]:
+        """Wrap the route function in the slowapi decorator of each class."""
         for decorator in decorators:
             func = decorator(func)
         return func

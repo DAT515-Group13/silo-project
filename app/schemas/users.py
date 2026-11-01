@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, StringConstraints, field_validator
 
 from app.models import ActorType, Outcome, Role, UserStatus
 from app.schemas.common import InputModel
@@ -29,6 +29,17 @@ class AdminUserPatchIn(InputModel):
 
     role: Role | None = None
     status: Literal[UserStatus.active, UserStatus.disabled] | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _active_or_disabled(cls, value: object) -> object:
+        """Refuse other values with a readable message (pydantic's would show the enum repr).
+
+        Pending and rejected are only set by approve and reject.
+        """
+        if value is not None and value not in ("active", "disabled"):
+            raise ValueError("Status must be active or disabled.")
+        return value
 
 
 class RejectIn(InputModel):

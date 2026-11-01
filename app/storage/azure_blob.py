@@ -102,7 +102,7 @@ class AzureBlobStore:
     async def upload_stream(
         self, blob_name: str, chunks: AsyncIterator[bytes], *, content_type: str
     ) -> int:
-        """Stage the chunks as blocks and commit them after the last one (upload step 2)."""
+        """Stage the chunks as blocks and commit them after the last one."""
         blob = self._container.get_blob_client(blob_name)
         block_ids: list[str] = []
         pending: list[bytes] = []
@@ -110,6 +110,7 @@ class AzureBlobStore:
         total = 0
 
         async def stage(data: bytes) -> None:
+            """Upload one block; it stays invisible until the block list is committed."""
             if len(block_ids) >= MAX_BLOCKS:
                 raise StorageUnavailable  # only reachable with a tiny UPLOAD_CHUNK_BYTES
             # Fixed-width IDs: Azure requires all block IDs of a blob to have the same length.

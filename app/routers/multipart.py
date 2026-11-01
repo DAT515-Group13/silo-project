@@ -108,27 +108,33 @@ class MultipartReader:
     # --- Parser callbacks (synchronous, they only record what happened) ---------------------------
 
     def _on_data(self, data: bytes, start: int, end: int) -> None:
+        """A piece of the current part's body."""
         # Copy: the parser reuses the buffer it passes in.
         self._events.append(("data", bytes(data[start:end])))
 
     def _on_header_field(self, data: bytes, start: int, end: int) -> None:
+        """A piece of a header name (names can arrive split over chunks)."""
         self._header_name += data[start:end]
 
     def _on_header_value(self, data: bytes, start: int, end: int) -> None:
+        """A piece of a header value."""
         self._header_value += data[start:end]
 
     def _on_header_end(self) -> None:
+        """One header is complete: store it and empty the buffers."""
         self._headers[bytes(self._header_name).lower()] = bytes(self._header_value)
         self._header_name.clear()
         self._header_value.clear()
 
     def _on_headers_finished(self) -> None:
+        """All headers of a part are read: record them as one event."""
         # The headers travel inside the event: with a large chunk the parser can finish several
         # parts before the async code below reads the first one.
         self._events.append(("headers", self._headers))
         self._headers = {}
 
     def _on_end(self) -> None:
+        """The closing boundary was seen: the body is complete."""
         self._ended = True
 
     # --- Feeding the parser ---------------------------------------------------------------------

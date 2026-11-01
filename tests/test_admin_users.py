@@ -1,15 +1,24 @@
-"""Admin user management.
+"""Admin API: user management, the file list and the audit log.
 
 Tests without the ``db`` marker stop at the admin check or at validation. The ``db`` tests go
 through HTTP with real tokens.
 """
 
+from datetime import UTC, datetime, timedelta
+
 import httpx
 import pytest
 from sqlalchemy import func, select
 
-from app.models import AuditLog, File, Role, Team, User, UserStatus
-from tests.conftest import ActAs, BearerFor, FileFactory, Sessionmaker, UserFactory
+from app.models import ActorType, AuditLog, File, Outcome, Role, Team, User, UserStatus
+from tests.conftest import (
+    ActAs,
+    BearerFor,
+    FileFactory,
+    Sessionmaker,
+    UserFactory,
+    audit_actions,
+)
 from tests.fakes import InMemoryBlobStore
 
 pytestmark = pytest.mark.anyio
@@ -58,10 +67,14 @@ async def test_non_admins_get_404_on_every_admin_endpoint(
 async def test_patch_only_switches_between_active_and_disabled(
     client: httpx.AsyncClient, act_as: ActAs, body: dict
 ) -> None:
-    """PATCH accepts status active or disabled only, and no unknown fields."""
+    """PATCH accepts status active or disabled only, and no unknown fields.
+
+    The message is readable: no Python enum repr such as ``<UserStatus.active: 'active'>``.
+    """
     act_as(Role.admin)
     response = await client.patch("/api/v1/admin/users/2", json=body)
     assert response.status_code == 422
+    assert "<UserStatus" not in response.text
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
@@ -73,11 +86,6 @@ async def status_of(sm: Sessionmaker, user_id: int) -> tuple[Role, UserStatus] |
             await session.execute(select(User.role, User.status).where(User.id == user_id))
         ).first()
     return None if row is None else (row.role, row.status)
-
-
-async def actions(sm: Sessionmaker) -> list[str]:
-    async with sm() as session, session.begin():
-        return list(await session.scalars(select(AuditLog.action).order_by(AuditLog.id)))
 
 
 @pytest.fixture
@@ -118,7 +126,7 @@ async def test_approve_only_pending_accounts(
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """pending -> active, audited; approving again is 409 invalid_user_state (D18)."""
+    """pending -> active, audited; approving again is 409 invalid_user_state."""
     newbie = await user_factory(username="newbie", status=UserStatus.pending)
     headers = await bearer_for(root)
 
@@ -133,7 +141,7 @@ async def test_approve_only_pending_accounts(
     assert await status_of(db_sessionmaker, newbie.id) == (Role.user, UserStatus.active)
     again = await client.post(f"/api/v1/admin/users/{newbie.id}/approve", headers=headers)
     assert (again.status_code, again.json()["code"]) == (409, "invalid_user_state")
-    assert "user.approve" in await actions(db_sessionmaker)
+    assert "user.approve" in await audit_actions(db_sessionmaker)
 
     async with db_sessionmaker() as session, session.begin():
         approved_by = await session.scalar(select(User.approved_by).where(User.id == newbie.id))
@@ -178,7 +186,7 @@ async def test_disabling_revokes_sessions_immediately(
     db_sessionmaker: Sessionmaker,
 ) -> None:
     """A disabled user's tokens and public links stop working at once; activation revives only
-    the links, not the tokens (s. 7). "Revoke sessions" logs a user out the same way."""
+    the links, not the tokens. "Revoke sessions" logs a user out the same way."""
     anna = await user_factory(username="anna")
     annas = await bearer_for(anna)
     headers = await bearer_for(root)
@@ -209,7 +217,7 @@ async def test_disabling_revokes_sessions_immediately(
     assert revoke.status_code == 204
     assert (await client.get("/api/v1/me", headers=fresh)).status_code == 401
     assert {"user.deactivate", "user.activate", "user.sessions_revoke"} <= set(
-        await actions(db_sessionmaker)
+        await audit_actions(db_sessionmaker)
     )
 
 
@@ -246,7 +254,7 @@ async def test_admin_can_demote_another_admin(
 ) -> None:
     """One admin may demote another; the demoted user then loses the admin area (404).
 
-    The same token gets the new rights at once: the role is read from the database (s. 6, 7).
+    The same token gets the new rights at once: the role is read from the database.
     """
     second = await user_factory(username="second", role=Role.admin)
     roots = await bearer_for(root)
@@ -305,7 +313,7 @@ async def test_delete_user_succeeds_when_storage_fails(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """A blob that cannot be deleted becomes an orphan (D24); the user is deleted anyway."""
+    """A blob that cannot be deleted becomes an orphan; the user is deleted anyway."""
     anna = await user_factory(username="anna")
     await file_factory(anna.id)
     blob_store.healthy = False
@@ -314,3 +322,95 @@ async def test_delete_user_succeeds_when_storage_fails(
     assert await status_of(db_sessionmaker, anna.id) is None
     async with db_sessionmaker() as session, session.begin():
         assert await session.scalar(select(func.count()).select_from(File)) == 0
+
+
+# --- Admin file list and audit log -------------------------------------------
+
+
+async def add_entries(sm: Sessionmaker, *entries: dict) -> None:
+    """Insert audit rows directly, with explicit timestamps."""
+    async with sm() as session, session.begin():
+        for values in entries:
+            session.add(AuditLog(actor_type=ActorType.system, **values))
+
+
+@pytest.mark.db
+async def test_admin_sees_every_file_as_metadata(
+    client: httpx.AsyncClient,
+    root: User,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    file_factory: FileFactory,
+) -> None:
+    """All users' files, newest first, without blob names; the admin owns none."""
+    anna = await user_factory(username="anna")
+    bob = await user_factory(username="bob")
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    await file_factory(anna.id, filename="a.txt", created_at=start)
+    await file_factory(bob.id, filename="b.txt", created_at=start + timedelta(hours=1))
+
+    body = (await client.get("/api/v1/admin/files", headers=await bearer_for(root))).json()
+    assert body["total"] == 2
+    assert [(i["filename"], i["owner"]["username"]) for i in body["items"]] == [
+        ("b.txt", "bob"),
+        ("a.txt", "anna"),
+    ]
+    assert all(i["is_owner"] is False and "blob_name" not in i for i in body["items"])
+
+
+@pytest.mark.db
+async def test_audit_is_newest_first_and_filterable(
+    client: httpx.AsyncClient,
+    root: User,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Filters on action, outcome and time window; newest first; paginated."""
+    headers = await bearer_for(root)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    await add_entries(
+        db_sessionmaker,
+        {"action": "team.create", "outcome": Outcome.success, "created_at": start},
+        {
+            "action": "auth.login",
+            "outcome": Outcome.failed,
+            "created_at": start + timedelta(hours=1),
+        },
+        {
+            "action": "auth.login",
+            "outcome": Outcome.success,
+            "created_at": start + timedelta(hours=2),
+        },
+    )
+
+    async def query(params: str) -> dict:
+        response = await client.get(f"/api/v1/admin/audit?{params}", headers=headers)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    logins = await query("action=auth.login")
+    assert [i["outcome"] for i in logins["items"]] == ["success", "failed"]
+    assert (await query("action=auth.login&outcome=failed"))["total"] == 1
+
+    window = await query("from=2026-01-01T00:30:00Z&to=2026-01-01T02:00:00Z&action=auth.login")
+    assert [i["outcome"] for i in window["items"]] == ["failed"]
+
+    # Empty fields (as a GET form sends them) are ignored; page 2 of one entry is empty.
+    paged = await query("page=2&size=1&target_type=&action=team.create")
+    assert (paged["total"], paged["items"]) == (1, [])
+
+
+@pytest.mark.db
+async def test_audit_entries_carry_actor_target_and_ip(
+    client: httpx.AsyncClient, root: User, bearer_for: BearerFor
+) -> None:
+    """Entries written by real actions carry actor, target and IP as strings."""
+    headers = await bearer_for(root)
+    await client.post("/api/v1/auth/logout-all", headers=headers)
+    headers = await bearer_for(root)
+
+    body = (await client.get("/api/v1/admin/audit?action=auth.logout_all", headers=headers)).json()
+    entry = body["items"][0]
+    assert entry["actor_type"] == "user"
+    assert (entry["actor_id"], entry["actor_username"]) == (root.id, "root")
+    assert entry["ip"] == "127.0.0.1"
