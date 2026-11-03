@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: scripts/smoke-test.sh <dev|staging|prod>
+# Usage: scripts/smoke-test.sh <dev|prod>
 # End-to-end check of a deployed environment through Traefik, PostgreSQL and Azure Blob:
 # health, admin login, register + approve a throwaway user, team, upload, download (same bytes),
 # share, public link (works without login, stops after revoke). The throwaway user and
@@ -10,9 +10,9 @@
 # Needs: kubectl, curl, jq, openssl, sha256sum.
 set -euo pipefail
 
-ENV_NAME="${1:?Usage: $0 <dev|staging|prod>}"
+ENV_NAME="${1:?Usage: $0 <dev|prod>}"
 case "$ENV_NAME" in
-  dev|staging|prod) ;;
+  dev|prod) ;;
   *) echo "Environment must be dev, staging, or prod." >&2; exit 1 ;;
 esac
 

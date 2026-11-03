@@ -1,0 +1,12 @@
+image: postgres:17
+storage: 2Gi
+storageClass: local-path
+
+secrets:
+  db: silo-db
+  azure: silo-azure
+
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  image: mcr.microsoft.com/azure-cli:2.91.0

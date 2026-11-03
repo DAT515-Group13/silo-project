@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_NAME="${1:?Usage: $0 <dev|staging|prod>}"
+ENV_NAME="${1:?Usage: $0 <dev|prod>}"
 
 case "$ENV_NAME" in
-  dev|staging|prod) ;;
+  dev|prod) ;;
   *)
     echo "Environment must be dev, staging, or prod." >&2
     exit 1
