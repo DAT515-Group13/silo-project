@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Usage: scripts/k8s-create-app-secret.sh <dev|staging|prod>
+# Usage: scripts/k8s-create-app-secret.sh <dev|prod>
 # Creates silo-app (DATABASE_URL, JWT_SECRET, CSRF_SECRET, INITIAL_ADMIN_PASSWORD).
 # Skips if it exists, so a re-run never logs users out or changes the admin password.
 # The admin password is written to $SECRETS_DIR/admin-<env>.txt (mode 600), never printed.
 set -euo pipefail
 
-ENV_NAME="${1:?Usage: $0 <dev|staging|prod>}"
+ENV_NAME="${1:?Usage: $0 <dev|prod>}"
 case "$ENV_NAME" in
-  dev|staging|prod) ;;
-  *) echo "Environment must be dev, staging, or prod." >&2; exit 1 ;;
+  dev|prod) ;;
+  *) echo "Environment must be dev or prod." >&2; exit 1 ;;
 esac
 
 SECRETS_DIR="${SECRETS_DIR:-$HOME/silo-secrets}"
