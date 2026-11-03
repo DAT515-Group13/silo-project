@@ -4,7 +4,7 @@ umask 077
 
 LOCATION="${LOCATION:-polandcentral}"
 RG="${RG:-rg-silo}"
-ENVS="${ENVS:-dev staging prod}"
+ENVS="${ENVS:-dev prod}"
 CONTAINER="${CONTAINER:-files}"
 SECRETS_DIR="${SECRETS_DIR:-$HOME/silo-secrets}"
 SUFFIX_FILE="$SECRETS_DIR/azure-suffix"

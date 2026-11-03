@@ -9,7 +9,7 @@ ENV_NAME="${1:?Usage: $0 <dev|prod>}"
 case "$ENV_NAME" in
   dev|prod) ;;
   *)
-    echo "Environment must be dev, staging, or prod." >&2
+    echo "Environment must be dev or prod." >&2
     exit 1
     ;;
 esac
