@@ -2,7 +2,6 @@ name: Project CI/CD
 
 # pull request to main -> test, build image, migrate and deploy to dev
 # push to main         -> same, deployed to prod
-# manual run           -> deploy the selected branch to the chosen environment (use it for staging)
 # No path filters: required checks must always report, or docs-only PRs could never merge.
 on:
   pull_request:
@@ -14,7 +13,7 @@ on:
       environment:
         description: "Deploy the selected branch to this environment"
         type: choice
-        options: [dev, staging, prod]
+        options: [dev, prod]
         default: dev
 
 permissions:
