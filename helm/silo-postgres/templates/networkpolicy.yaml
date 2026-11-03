@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  labels:
+    {{- include "silo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [silo, silo-migrate, postgres-backup, silo-cleanup]
+      ports:
+        - { port: 5432, protocol: TCP }
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-backup
+  labels:
+    {{- include "silo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-backup
+  policyTypes: [Egress]
+  egress:
+    {{- include "silo.egressPostgres" . | nindent 4 }}
+    {{- include "silo.egressHttps" . | nindent 4 }}

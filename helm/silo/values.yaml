@@ -1,0 +1,47 @@
+image:
+  repository: ghcr.io/dat515-group13/silo-project/silo
+  tag: ""
+imagePullSecrets:
+  - name: ghcr-pull
+
+host: dev.152.94.171.92.nip.io
+tlsSecret: silo-tls
+
+replicas: 1
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+  cpu: 70
+
+config:
+  APP_ENV: dev
+  BASE_URL: https://dev.152.94.171.92.nip.io:30443
+  AZURE_STORAGE_CONTAINER: files
+  JWT_ISSUER: silo
+  JWT_AUDIENCE: silo-dev
+  INITIAL_ADMIN_USERNAME: admin
+  MAX_FILE_SIZE_BYTES: "104857600"
+  COOKIE_SECURE: "true"
+  FORWARDED_ALLOW_IPS: 10.244.0.0/16
+  METRICS_PORT: "9000"
+
+secrets:
+  app: silo-app
+  azure: silo-azure
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { cpu: 500m, memory: 512Mi }
+
+internalRanges: [10.0.0.0/8, 172.16.0.0/16]
+
+cleanup:
+  enabled: true
+  schedule: "30 3 * * *"
+
+podMonitor:
+  enabled: true
+
+networkPolicies:
+  enabled: true

@@ -1,0 +1,8 @@
+host: prod.152.94.171.92.nip.io
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 4
+config:
+  APP_ENV: prod
+  BASE_URL: https://prod.152.94.171.92.nip.io:30443
+  JWT_AUDIENCE: silo-prod

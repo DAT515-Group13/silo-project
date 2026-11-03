@@ -121,30 +121,20 @@ jobs:
       IMAGE: ${{ needs.plan.outputs.image }}:${{ github.sha }}
     steps:
       - uses: actions/checkout@v5
-      - name: Render manifests
-        run: |
-          set -euo pipefail
-          kubectl kustomize "k8s/overlays/${TARGET}" \
-            | sed "s|IMAGE_PLACEHOLDER|${IMAGE}|g" > "$RUNNER_TEMP/manifest.yaml"
-      - name: Migrate database
-        run: |
-          set -euo pipefail
-          # Jobs are immutable: remove the previous one, then apply config + job only.
-          kubectl -n "$TARGET" delete job silo-migrate --ignore-not-found --wait=true
-          kubectl apply -f "$RUNNER_TEMP/manifest.yaml" -l 'app.kubernetes.io/component in (config,migrate)'
-          if ! kubectl -n "$TARGET" wait --for=condition=complete job/silo-migrate --timeout=180s; then
-            kubectl -n "$TARGET" logs job/silo-migrate --tail=50 || true
-            exit 1
-          fi
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
       - name: Deploy
+        env:
+          HELM_DRIVER: configmap
         run: |
           set -euo pipefail
-          echo "Deploying $IMAGE to $TARGET"
-          kubectl apply -f "$RUNNER_TEMP/manifest.yaml" -l 'app.kubernetes.io/component notin (migrate)'
-          if ! kubectl -n "$TARGET" rollout status deployment/silo --timeout=480s; then
-            kubectl -n "$TARGET" describe deployment/silo | tail -n 20
+          if ! helm upgrade --install silo helm/silo -n "$TARGET" \
+              -f "helm/silo/values-${TARGET}.yaml" \
+              --set image.repository="${IMAGE%:*}" --set image.tag="${GITHUB_SHA}" \
+              --atomic --wait --timeout 10m --history-max 5; then
+            kubectl -n "$TARGET" logs job/silo-migrate --tail=50 || true
             kubectl -n "$TARGET" get pods -l app.kubernetes.io/name=silo
-            kubectl -n "$TARGET" logs -l app.kubernetes.io/name=silo --tail=30 --prefix || true
             exit 1
           fi
       - name: Verify running image

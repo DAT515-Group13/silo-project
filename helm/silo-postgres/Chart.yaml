@@ -1,0 +1,6 @@
+apiVersion: v2
+name: silo-postgres
+description: PostgreSQL for Silo, with a nightly backup to Azure Blob
+type: application
+version: 0.1.0
+appVersion: "17"
