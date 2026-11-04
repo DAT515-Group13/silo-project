@@ -1,0 +1,5 @@
+uid=10001(silo) gid=10001(silo) groups=10001(silo)
+{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true}
+NAME   STATUS   AGE   LABELS
+dev    Active   19d   app.kubernetes.io/part-of=silo,kubernetes.io/metadata.name=dev,pod-security.kubernetes.io/enforce=baseline,pod-security.kubernetes.io/warn=restricted
+prod   Active   19d   app.kubernetes.io/part-of=silo,kubernetes.io/metadata.name=prod,pod-security.kubernetes.io/enforce=baseline,pod-security.kubernetes.io/warn=restricted

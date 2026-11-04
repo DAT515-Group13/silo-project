@@ -1,0 +1,7 @@
+create deployments -n prod     yes
+get secrets -n prod            yes
+list secrets -n prod           no
+create pods -n kube-system     no
+delete namespaces              Warning: resource 'namespaces' is not namespace scoped
+
+no
