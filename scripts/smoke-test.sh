@@ -13,7 +13,7 @@ set -euo pipefail
 ENV_NAME="${1:?Usage: $0 <dev|prod>}"
 case "$ENV_NAME" in
   dev|prod) ;;
-  *) echo "Environment must be dev, staging, or prod." >&2; exit 1 ;;
+  *) echo "Environment must be dev or prod." >&2; exit 1 ;;
 esac
 
 # The floating IP is not always reachable from inside the cloud network, so the request goes
