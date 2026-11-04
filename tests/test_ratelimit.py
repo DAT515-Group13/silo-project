@@ -9,8 +9,19 @@ from fastapi import FastAPI, Request
 from app import ratelimit
 from app.errors import RateLimited
 from app.ratelimit import ConcurrencyGuard, limit
+from app.routers import admin_pages, file_pages, health, pages, public, team_pages
+from app.routers.api import admin, auth, files, links, teams
 
 pytestmark = pytest.mark.anyio
+
+# Open on purpose: health probes, and pages that only show a form or redirect.
+UNLIMITED_ROUTES = {
+    "app.routers.health.healthz",
+    "app.routers.health.readyz",
+    "app.routers.pages.index",
+    "app.routers.pages.login_page",
+    "app.routers.pages.register_page",
+}
 
 
 _route_numbers = itertools.count()
@@ -60,15 +71,47 @@ async def test_eleventh_request_in_a_minute_is_429_per_ip(app: FastAPI) -> None:
         assert (await other.get("/api/v1/_limited")).status_code == 200
 
 
-def test_both_login_routes_use_the_auth_limit() -> None:
-    """The login page and the login API are limited to 10 a minute per IP (class `auth`).
+@pytest.mark.parametrize(
+    "name",
+    [
+        "app.routers.api.auth.login",
+        "app.routers.pages.login_submit",
+        "app.routers.api.files.upload_file",
+        "app.routers.file_pages.upload_submit",
+    ],
+)
+def test_login_and_upload_routes_allow_10_a_minute(name: str) -> None:
+    """Login (class `auth`, per IP) and upload (class `upload`, per user), on API and page.
 
     The 429 itself is tested with a stand-in route above; this checks that the real routes carry
     the limit. It reads slowapi's registry, which is pinned in pyproject.toml.
     """
-    registered = ratelimit.limiter._route_limits
-    for name in ("app.routers.api.auth.login", "app.routers.pages.login_submit"):
-        assert [str(limit.limit) for limit in registered[name]] == ["10 per 1 minute"], name
+    registered = ratelimit.limiter._route_limits[name]
+    assert [str(limit.limit) for limit in registered] == ["10 per 1 minute"]
+
+
+def test_every_route_has_a_rate_limit_except_the_open_ones() -> None:
+    """No route may forget ``@limit``; the exceptions are the short list above."""
+    routers = (
+        auth.router,
+        files.router,
+        links.router,
+        teams.router,
+        admin.router,
+        pages.router,
+        team_pages.router,
+        file_pages.router,
+        admin_pages.router,
+        public.router,
+        health.router,
+    )
+    names = {
+        f"{route.endpoint.__module__}.{route.endpoint.__name__}"
+        for router in routers
+        for route in router.routes
+    }
+    assert len(names) > 60, "the test no longer finds the routes"
+    assert names - set(ratelimit.limiter._route_limits) == UNLIMITED_ROUTES
 
 
 async def test_concurrency_guard_is_per_user_and_releases_slots() -> None:

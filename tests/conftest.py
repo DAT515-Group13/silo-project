@@ -47,6 +47,13 @@ from tests.fakes import InMemoryBlobStore
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def alembic_config() -> Config:
+    """Alembic configuration with absolute paths, so pytest can be started from any directory."""
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    return config
+
+
 def sample(name: str, **labels: str) -> float:
     """Current value of one Prometheus time series; 0 if it does not exist yet."""
     return REGISTRY.get_sample_value(name, labels) or 0.0
@@ -167,10 +174,7 @@ def database_url() -> Iterator[str]:
     previous = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = url
     try:
-        # Absolute paths, so pytest can be started from any directory.
-        config = Config(str(ROOT / "alembic.ini"))
-        config.set_main_option("script_location", str(ROOT / "migrations"))
-        command.upgrade(config, "head")
+        command.upgrade(alembic_config(), "head")
     finally:
         if previous is None:
             os.environ.pop("DATABASE_URL", None)
@@ -559,11 +563,16 @@ async def open_link(client: httpx.AsyncClient, token: str) -> httpx.Response:
     return await client.get(f"/s/{token}", follow_redirects=False)
 
 
+def assert_public_headers(response: httpx.Response) -> None:
+    """The privacy headers every answer of ``/s/{token}`` carries."""
+    for name, value in PUBLIC_HEADERS.items():
+        assert response.headers[name] == value
+
+
 def assert_same_404(response: httpx.Response) -> None:
     """The one 404 every failing public link gives, with the privacy headers."""
     assert response.status_code == 404
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
+    assert_public_headers(response)
 
 
 def assert_secure(response: httpx.Response, *, csp: bool = True) -> None:

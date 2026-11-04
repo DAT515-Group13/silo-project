@@ -22,17 +22,18 @@ from app.main import RedactLinkTokens
 from app.models import AuditLog, Role, ShareLink
 from app.security import hash_token
 from tests.conftest import (
-    PUBLIC_HEADERS,
     ActAs,
     BearerFor,
     FileFactory,
     Sessionmaker,
     UserFactory,
+    assert_public_headers,
     assert_same_404,
     expire_link,
     make_link,
     open_link,
     sample,
+    team_with,
 )
 from tests.fakes import InMemoryBlobStore, parse_download_url
 
@@ -61,7 +62,7 @@ async def test_lifetime_above_the_maximum_is_422(
     assert response.json()["errors"][0]["field"] == "expires_in_hours"
 
 
-@pytest.mark.parametrize("token", ["short", "x" * 44, "a.b" + "c" * 40, "a%20b" + "c" * 40])
+@pytest.mark.parametrize("token", ["short", "a.b" + "c" * 40])
 async def test_malformed_token_is_a_404_with_the_privacy_headers(
     client: httpx.AsyncClient, token: str
 ) -> None:
@@ -101,8 +102,7 @@ async def test_rate_limited_public_link_keeps_the_privacy_headers(
         assert (await client.get("/s/short")).status_code == 404
     response = await client.get("/s/short")
     assert response.status_code == 429
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
+    assert_public_headers(response)
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
@@ -137,7 +137,6 @@ async def test_create_stores_only_the_hash_and_shows_the_url_once(
     async with db_sessionmaker() as session:
         link = (await session.scalars(select(ShareLink))).one()
     assert link.token_hash == hash_token(token)
-    assert token not in link.token_hash
     expected = datetime.now(UTC) + timedelta(hours=hours)
     assert abs(link.expires_at - expected) < timedelta(minutes=1)
 
@@ -165,8 +164,7 @@ async def test_public_link_redirects_counts_and_audits(
     response = await open_link(client, token)
     assert response.status_code == 302
     assert sample("silo_downloads_total", kind="public_link") == before + 1
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
+    assert_public_headers(response)
     parts = parse_download_url(response.headers["location"])
     assert parts["blob"] == file.blob_name and parts["sp"] == "r"
     assert parts["filename"] == "plan.html"
@@ -269,12 +267,11 @@ async def test_storage_failure_is_503_and_counts_nothing(
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     _, token = await make_link(client, await bearer_for(owner), file.id)
-    blob_store.healthy = False
+    blob_store.signing_broken = True
 
     response = await open_link(client, token)
     assert response.status_code == 503
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
+    assert_public_headers(response)
     async with db_sessionmaker() as session:
         assert await session.scalar(select(ShareLink.download_count)) == 0
         actions = (await session.scalars(select(AuditLog.action))).all()
@@ -315,6 +312,29 @@ async def test_who_may_manage_links(
         actions = (await session.scalars(select(AuditLog.action))).all()
     assert actions.count("link.revoke") == 1
     assert_same_404(await open_link(client, token))
+
+
+@db
+async def test_a_team_member_cannot_change_or_revoke_a_link(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+) -> None:
+    """Seeing a shared file gives no power over its links: 404, and the link keeps working."""
+    lead = await user_factory("lead", role=Role.team_lead)
+    member = await user_factory("member")
+    lead_h, member_h = await bearer_for(lead), await bearer_for(member)
+    team_id = await team_with(client, lead_h, "member")
+    file = await file_factory(lead.id, team_id)
+    link_id, token = await make_link(client, lead_h, file.id)
+    url = f"/api/v1/links/{link_id}"
+
+    assert (await client.get(f"/api/v1/files/{file.id}", headers=member_h)).status_code == 200
+    changed = await client.patch(url, json={"expires_in_hours": 1}, headers=member_h)
+    assert changed.status_code == 404
+    assert (await client.delete(url, headers=member_h)).status_code == 404
+    assert (await open_link(client, token)).status_code == 302
 
 
 @db

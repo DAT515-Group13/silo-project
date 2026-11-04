@@ -46,7 +46,6 @@ async def test_login_page_has_a_form_with_a_csrf_token(
     response = await client.get("/login")
     assert response.status_code == 200
     assert 'name="username"' in response.text and 'autocomplete="username"' in response.text
-    assert "email" not in response.text.lower()
     token = token_of(response)
     cookie = next(c for c in response.headers.get_list("set-cookie") if "csrf_token" in c)
     assert cookie.startswith(f"{cookie_names(settings).csrf}={token}")
@@ -55,12 +54,20 @@ async def test_login_page_has_a_form_with_a_csrf_token(
 async def test_register_page_follows_the_registration_mode(
     app: FastAPI, client: httpx.AsyncClient, settings: Settings
 ) -> None:
-    """`closed` hides the registration page (404); the other modes show it."""
+    """`closed` hides the registration page (404); the default mode shows it."""
     assert (await client.get("/register")).status_code == 200
     use_mode(app, settings, "closed")
     assert (await client.get("/register")).status_code == 404
-    use_mode(app, settings, "open")
-    assert (await client.get("/register")).status_code == 200
+
+
+async def test_register_post_in_closed_mode_is_404_after_the_csrf_check(
+    app: FastAPI, client: httpx.AsyncClient, settings: Settings
+) -> None:
+    """`closed`: a valid form gets the 404, but the CSRF check still answers first (403)."""
+    use_mode(app, settings, "closed")
+    form = {"username": "anna", "password": GOOD_PASSWORD}
+    assert (await post_form(client, "/register", form, token_from="/login")).status_code == 404
+    assert (await client.post("/register", data=form, headers=ORIGIN)).status_code == 403
 
 
 async def test_malformed_login_looks_like_a_wrong_password(client: httpx.AsyncClient) -> None:

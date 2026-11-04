@@ -3,7 +3,9 @@
 It follows the protocol exactly: an upload stream that raises leaves no blob, ``delete`` is
 idempotent, and ``download_url`` returns a fake URL that encodes its parameters so tests can
 assert on them (``parse_download_url``). Switching ``healthy`` to False makes every operation
-raise ``StorageUnavailable``, like an Azure outage.
+that calls Azure raise ``StorageUnavailable``, like an Azure outage. ``download_url`` is not one
+of them: the real store signs the URL locally, so an outage cannot stop it. Only
+``signing_broken`` makes that call fail.
 """
 
 from collections.abc import AsyncIterator
@@ -15,6 +17,14 @@ from app.errors import StorageUnavailable
 from app.storage.base import BlobInfo
 
 FAKE_HOST = "https://fake-blob.test"
+
+
+async def stream(*chunks: bytes, then: Exception | None = None) -> AsyncIterator[bytes]:
+    """An upload stream over ``chunks`` that optionally raises afterwards."""
+    for chunk in chunks:
+        yield chunk
+    if then is not None:
+        raise then
 
 
 @dataclass
@@ -33,6 +43,7 @@ class InMemoryBlobStore:
         self.container = container
         self.blobs: dict[str, StoredBlob] = {}
         self.healthy = True
+        self.signing_broken = False
         self.closed = False
         self.deleted: list[str] = []  # names passed to delete(), in order
 
@@ -74,7 +85,8 @@ class InMemoryBlobStore:
         self, blob_name: str, *, filename: str, content_type: str, ttl_seconds: int
     ) -> str:
         """Return ``https://fake-blob.test/<container>/<blob>?filename=...&ttl=...``."""
-        self._check()
+        if self.signing_broken:
+            raise StorageUnavailable
         query = urlencode(
             {"filename": filename, "content_type": content_type, "ttl": ttl_seconds, "sp": "r"}
         )

@@ -1,12 +1,14 @@
 """Pagination and ID parameters shared by the endpoints, and small router helpers."""
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
+from fastapi import Request
 
 from app.models import Role
-from app.routers.common import page_count
+from app.routers.common import client_ip, declared_size, page_count, utc_time
 from app.routers.file_pages import _file_id_of
 from tests.conftest import ActAs
 
@@ -52,6 +54,41 @@ async def test_sort_and_scope_are_validated(client: httpx.AsyncClient, act_as: A
 def test_page_count_rounds_up_and_is_at_least_one(total: int, pages: int) -> None:
     """An empty list is "page 1 of 1"; 26 rows at 25 per page are 2 pages."""
     assert page_count(total, 25) == pages
+
+
+@pytest.mark.parametrize(
+    ("client", "expected"),
+    [
+        (("203.0.113.5", 1), "203.0.113.5"),
+        (("2001:db8::1", 1), "2001:db8::1"),
+        (("not-an-ip", 1), None),
+        (None, None),
+    ],
+    ids=["ipv4", "ipv6", "not an address", "no client"],
+)
+def test_client_ip_keeps_only_real_addresses(
+    client: tuple[str, int] | None, expected: str | None
+) -> None:
+    """The value goes into an ``inet`` column, so anything else becomes None instead of a 500."""
+    assert client_ip(Request({"type": "http", "headers": [], "client": client})) == expected
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [([(b"content-length", b"12")], 12), ([(b"content-length", b"abc")], None), ([], None)],
+    ids=["number", "not a number", "missing"],
+)
+def test_declared_size_is_only_a_hint(headers: list, expected: int | None) -> None:
+    """A missing or false Content-Length is None, never an error."""
+    assert declared_size(Request({"type": "http", "headers": headers})) == expected
+
+
+def test_utc_time_shows_the_moment_in_utc() -> None:
+    """A time from any zone is rendered in UTC; ``datetime`` carries the exact moment."""
+    moment = datetime(2026, 1, 2, 4, 30, tzinfo=timezone(timedelta(hours=1)))
+    assert str(utc_time(moment)) == (
+        '<time datetime="2026-01-02T03:30:00+00:00" data-local>2026-01-02 03:30 UTC</time>'
+    )
 
 
 FILE_ID = uuid.uuid4()

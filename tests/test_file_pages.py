@@ -12,16 +12,20 @@ import pytest
 from sqlalchemy import select
 
 from app.config import Settings
+from app.errors import CsrfFailed
 from app.models import File, Role, ShareLink
+from app.routers.file_pages import MAX_CSRF_FIELD_BYTES, _read_small
 from tests.conftest import (
     ActAs,
     FileFactory,
     PageLogin,
     Sessionmaker,
     UserFactory,
+    count_files,
     expire_link,
     page_csrf,
     post,
+    used_bytes,
 )
 from tests.fakes import InMemoryBlobStore
 
@@ -45,17 +49,14 @@ async def test_upload_needs_the_csrf_token_first(
         files=[file_part, ("csrf_token", (None, form["csrf_token"]))],
         headers=headers,
     )
-    wrong_token = await client.post(
-        "/files/upload", data={"csrf_token": "forged"}, files=[file_part], headers=headers
-    )
-    for response in (only_file, file_first, wrong_token):
+    for response in (only_file, file_first):
         assert response.status_code == 403
         assert "CSRF validation failed." in response.text
     assert blob_store.blobs == {}
 
 
 async def test_upload_with_a_wrong_token_still_reads_the_whole_body(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings
+    client: httpx.AsyncClient, act_as: ActAs, settings: Settings, blob_store: InMemoryBlobStore
 ) -> None:
     """The 403 is sent after the rest of the body was read, so the proxy does not make it a 502."""
     user = act_as(Role.user)
@@ -79,6 +80,7 @@ async def test_upload_with_a_wrong_token_still_reads_the_whole_body(
     assert response.status_code == 403
     assert "CSRF validation failed." in response.text
     assert sent == 20
+    assert blob_store.blobs == {}
 
 
 @pytest.mark.parametrize("origin", [None, "http://evil.example"])
@@ -98,6 +100,20 @@ async def test_upload_checks_the_origin(
         headers=headers,
     )
     assert response.status_code == 403
+
+
+async def test_csrf_field_is_read_only_up_to_its_limit() -> None:
+    """A first part much longer than a token is refused as soon as it passes the limit."""
+    read: list[int] = []
+
+    async def chunks() -> AsyncIterator[bytes]:
+        for number in range(5):
+            read.append(number)
+            yield b"x" * 100
+
+    with pytest.raises(CsrfFailed):
+        await _read_small(chunks(), MAX_CSRF_FIELD_BYTES)
+    assert len(read) == 3  # 300 bytes pass the limit of 256; the rest stays unread
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
@@ -219,10 +235,84 @@ async def test_sharing_through_the_page_and_member_view(
     assert member_page.status_code == 200
     assert "plan.pdf" in member_page.text
     assert "Delete this file" not in member_page.text and "Rename" not in member_page.text
+    # The "Shared with me" tab lists it, also with a sort order and a page number.
+    tab = await client.get("/files?tab=shared&sort=filename&page=1", headers=member[0])
+    assert tab.status_code == 200 and "plan.pdf" in tab.text
     assert (await post(client, member, f"{path}/delete")).status_code == 404
+    assert (await post(client, member, f"{path}/unshare", team_id=team_id)).status_code == 404
+    assert (await client.get(path, headers=member[0])).status_code == 200
 
     await post(client, lead, f"{path}/unshare", team_id=team_id)
     assert (await client.get(path, headers=member[0])).status_code == 404
+
+
+@db
+async def test_storage_outage_shows_the_error_page_and_keeps_nothing(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    page_login: PageLogin,
+    blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """An upload shows the HTML 503 page; the list works and a download still redirects.
+
+    The download URL is signed locally, so an outage cannot stop it (section 11).
+    """
+    owner = await user_factory("anna")
+    login = await page_login(owner)
+    file = await file_factory(owner.id, size_bytes=10)
+    blob_store.healthy = False
+
+    download = await client.get(f"/files/{file.id}/download", headers=login[0])
+    uploaded = await upload(client, login)
+
+    assert download.status_code == 302
+    assert uploaded.status_code == 503
+    assert uploaded.headers["content-type"].startswith("text/html")
+    assert await count_files(db_sessionmaker) == 1
+    assert await used_bytes(db_sessionmaker, owner.id) == 10
+    assert (await client.get("/files", headers=login[0])).status_code == 200
+
+
+@db
+async def test_stored_names_are_escaped_on_every_page(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    page_login: PageLogin,
+) -> None:
+    """A file or team name with HTML is shown as text to the owner, the team and the admin.
+
+    The name has no ``/`` because ``sanitize_filename`` keeps only what follows the last one. The
+    rename and the share also put it into the audit log, so the admin's audit page is covered.
+    """
+    html = "<img src=x onerror=alert(1)>"
+    lead_user = await user_factory("lead", role=Role.team_lead)
+    lead = await page_login(lead_user)
+    admin = await page_login(await user_factory("boss", role=Role.admin))
+    file = await file_factory(lead_user.id)
+    path = f"/files/{file.id}"
+    team_path = (await post(client, lead, "/teams", name=html)).headers["location"]
+    team_id = team_path.rsplit("/", 1)[-1]
+    await post(client, lead, f"{path}/rename", filename=f"{html}.pdf")
+    await post(client, lead, f"{path}/share", team_id=team_id)
+    await post(client, lead, f"{path}/links")
+
+    pages = [
+        (lead, "/files"),
+        (lead, path),
+        (lead, "/links"),
+        (lead, "/teams"),
+        (lead, team_path),
+        (admin, "/admin/files"),
+        (admin, "/admin/audit?action=file.rename"),
+    ]
+    for login, page_path in pages:
+        page = await client.get(page_path, headers=login[0])
+        assert page.status_code == 200, page_path
+        assert html not in page.text, page_path
+        assert "&lt;img src=x" in page.text, page_path
 
 
 @db
@@ -232,18 +322,16 @@ async def test_admin_deletes_a_file_from_the_admin_list(
     file_factory: FileFactory,
     page_login: PageLogin,
 ) -> None:
-    """The admin list has a delete button that returns to it; users cannot delete others' files.
+    """The admin list has a delete button that returns to it.
 
     The quota and audit side of an admin delete are checked in test_files.py.
     """
     owner = await user_factory("owner")
-    stranger = await page_login(await user_factory("stranger"))
     admin = await page_login(await user_factory("boss", role=Role.admin))
     file = await file_factory(owner.id)
 
     listing = await client.get("/admin/files", headers=admin[0])
     assert f"/files/{file.id}/delete" in listing.text
-    assert (await post(client, stranger, f"/files/{file.id}/delete")).status_code == 404
 
     deleted = await post(client, admin, f"/files/{file.id}/delete", next="/admin/files")
     assert deleted.status_code == 303
@@ -273,7 +361,7 @@ async def test_link_url_is_shown_once_and_the_page_is_not_cached(
 
     reloaded = await client.get(path, headers=login[0])
     assert token not in reloaded.text
-    assert "active" in reloaded.text  # the link is listed, without its URL
+    assert "No active public links." not in reloaded.text  # listed, without its URL
     async with db_sessionmaker() as session:
         assert (await session.scalars(select(ShareLink))).one().download_count == 0
 

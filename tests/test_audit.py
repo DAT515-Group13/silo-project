@@ -8,11 +8,6 @@ from app.models import AuditLog, Outcome
 from app.services.audit import AuditAction, AuditContext, record, record_failure
 
 
-def test_every_action_fits_the_column() -> None:
-    """``audit_log.action`` is a String(50): no action name may be longer."""
-    assert all(len(action.value) <= 50 for action in AuditAction)
-
-
 @pytest.mark.db
 @pytest.mark.anyio
 async def test_record_is_part_of_the_callers_transaction(

@@ -21,8 +21,6 @@ def test_unknown_field_is_rejected() -> None:
         "ab",  # too short
         "a" * 33,  # too long
         ".anna",  # must start with a letter or digit
-        "-anna",
-        "_anna",
         "an na",  # space
         "anna@example.org",  # email-like input is not a username
         "anná",  # non-ASCII

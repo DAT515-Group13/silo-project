@@ -170,10 +170,12 @@ async def test_inactive_account_is_revealed_only_after_the_right_password(
 ) -> None:
     """Right password: 403 with the account state. Wrong password: the usual 401."""
     await user_factory(username="anna", status=status)
+    before = sample("silo_login_attempts_total", result="inactive")
     with pytest.raises(InvalidCredentials):
         await attempt(db_sessionmaker, settings, "anna", "wrong-password-123")
     with pytest.raises(error):
         await attempt(db_sessionmaker, settings, "anna", TEST_PASSWORD)
+    assert sample("silo_login_attempts_total", result="inactive") == before + 1
 
 
 @pytest.mark.db

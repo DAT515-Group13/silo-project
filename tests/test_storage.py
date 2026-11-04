@@ -23,6 +23,7 @@ from app.storage.azure_blob import (
     parse_connection_string,
 )
 from tests.conftest import make_settings, sample
+from tests.fakes import stream
 
 pytestmark = pytest.mark.anyio
 
@@ -31,14 +32,6 @@ CONNECTION_STRING = (
     f"DefaultEndpointsProtocol=https;AccountName=acct;AccountKey={ACCOUNT_KEY};"
     "EndpointSuffix=core.windows.net"
 )
-
-
-async def stream(*chunks: bytes, then: Exception | None = None) -> AsyncIterator[bytes]:
-    """An async iterator over ``chunks`` that optionally raises afterwards."""
-    for chunk in chunks:
-        yield chunk
-    if then is not None:
-        raise then
 
 
 # --- Azure implementation with a stand-in for the SDK --------------------------------------------
@@ -138,8 +131,9 @@ async def test_azure_aborted_upload_never_commits() -> None:
 
 
 async def test_azure_errors_become_storage_unavailable() -> None:
-    """SDK errors are re-raised as StorageUnavailable, chained to the cause."""
+    """SDK errors are re-raised as StorageUnavailable, chained to the cause, and counted."""
     store, container = make_store()
+    before = sample("silo_storage_errors_total", operation="upload")
     container.failures["stage"] = HttpResponseError("boom")
     with pytest.raises(StorageUnavailable) as error:
         await store.upload_stream("b1", stream(b"abcdef"), content_type="x/y")
@@ -149,6 +143,7 @@ async def test_azure_errors_become_storage_unavailable() -> None:
     container.failures = {"commit": HttpResponseError("boom")}
     with pytest.raises(StorageUnavailable):
         await store.upload_stream("b2", stream(b"ab"), content_type="x/y")
+    assert sample("silo_storage_errors_total", operation="upload") == before + 2
 
 
 async def test_azure_too_many_blocks_is_refused() -> None:
@@ -200,9 +195,11 @@ async def test_azure_lists_old_blobs_and_translates_errors() -> None:
     found = [b async for b in store.list_blobs(older_than=now - timedelta(hours=24))]
     assert [(b.name, b.size) for b in found] == [("old", 3)]
 
+    before = sample("silo_storage_errors_total", operation="list")
     container.failures["list"] = HttpResponseError("boom")
     with pytest.raises(StorageUnavailable):
         _ = [b async for b in store.list_blobs(older_than=now)]
+    assert sample("silo_storage_errors_total", operation="list") == before + 1
 
 
 # --- SAS URLs (signed locally, no network) -------------------------------------------------------

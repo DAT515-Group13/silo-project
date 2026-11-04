@@ -3,13 +3,10 @@
 Nothing is built or started here: the files are only read.
 """
 
-from pathlib import Path
-
 import pytest
 
 from app.config import Settings
-
-ROOT = Path(__file__).resolve().parent.parent
+from tests.conftest import ROOT
 
 
 def read(name: str) -> str:

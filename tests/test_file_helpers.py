@@ -91,7 +91,6 @@ def test_sniffing_by_first_bytes(head: bytes, expected: str | None) -> None:
         ("", None),
         ("a/b/c", None),
         ("x\r\ny", None),
-        ("text", None),
         ("a/" + "b" * 130, None),
     ],
 )

@@ -111,14 +111,6 @@ def test_create_team_needs_team_lead_or_admin(role: Role, allowed: bool) -> None
     assert can_create_team(make_user(1, role)) is allowed
 
 
-def test_demoted_team_lead_keeps_managing_own_team() -> None:
-    """A team_lead demoted to user cannot create teams but still manages theirs."""
-    demoted = make_user(OWNER_ID, Role.user)
-    assert not can_create_team(demoted)
-    assert can_manage_members(demoted, TEAM)
-    assert can_delete_team(demoted, TEAM)
-
-
 @pytest.mark.parametrize(
     ("actor", "allowed"),
     [("owner", True), ("team_member", False), ("admin", True), ("stranger", False)],

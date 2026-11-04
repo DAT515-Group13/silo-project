@@ -25,7 +25,9 @@ async def test_lead_creates_a_team_and_sees_its_page(
     assert created.status_code == 303
     page = await client.get(created.headers["location"], headers=lead[0])
     assert page.status_code == 200
-    assert "Design" in page.text and "lead" in page.text
+    assert "Design" in page.text
+    # The table, not the whole page: the navigation bar shows the username too.
+    assert "lead" in page.text.split("<tbody>")[1]
 
     listing = await client.get("/teams", headers=lead[0])
     assert "Design" in listing.text
