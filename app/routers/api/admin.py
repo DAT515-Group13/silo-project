@@ -25,7 +25,7 @@ from app.routers.common import (
     Store,
     file_out,
 )
-from app.schemas.common import Page
+from app.schemas.common import NulFreeText, Page
 from app.schemas.files import FileOut
 from app.schemas.users import AdminUserOut, AdminUserPatchIn, AuditEntryOut, RejectIn
 from app.services import admin, users
@@ -193,11 +193,11 @@ async def list_audit(
     request: Request,
     user: ApiUser,
     session: DbSession,
-    action: str | None = None,
+    action: NulFreeText | None = None,
     outcome: Outcome | None = None,
     actor_id: Annotated[int | None, Query(ge=1, le=MAX_ID)] = None,
-    target_type: str | None = None,
-    target_id: str | None = None,
+    target_type: NulFreeText | None = None,
+    target_id: NulFreeText | None = None,
     from_: Annotated[datetime | None, Query(alias="from")] = None,
     to: datetime | None = None,
     page: PageNumber = 1,

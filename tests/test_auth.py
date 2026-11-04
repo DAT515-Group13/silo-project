@@ -23,6 +23,7 @@ from app.services import auth
 from app.services.users import ensure_initial_admin
 from tests.conftest import (
     TEST_PASSWORD,
+    FakeSession,
     Sessionmaker,
     UserFactory,
     make_settings,
@@ -60,6 +61,28 @@ def test_lock_duration_doubles_and_is_capped(failures: int, minutes: int) -> Non
 
 
 # --- Login -------------------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_nul_in_a_login_username_is_an_unknown_user_without_a_query(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PostgreSQL refuses NUL in a query, so it must not get one: the normal 401, with a hash."""
+    checked: list[str] = []
+
+    async def dummy(password: str) -> None:
+        checked.append(password)
+
+    async def no_audit(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(auth, "verify_dummy_password", dummy)
+    monkeypatch.setattr(auth.audit, "record_failure", no_audit)
+    session = FakeSession()
+    with pytest.raises(InvalidCredentials):
+        await auth.login(session, settings, "an\x00na", TEST_PASSWORD)  # type: ignore[arg-type]
+    assert session.statements == []
+    assert checked == [TEST_PASSWORD]
 
 
 @pytest.mark.db

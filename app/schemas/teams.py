@@ -3,12 +3,16 @@
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import AfterValidator, BaseModel, StringConstraints
 
-from app.schemas.common import InputModel, Username
+from app.schemas.common import InputModel, Username, reject_nul
 
-# 1-100 characters after trimming.
-TeamName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+# 1-100 characters after trimming. The constraints must come first, directly on `str`.
+TeamName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+    AfterValidator(reject_nul),
+]
 
 
 class TeamIn(InputModel):

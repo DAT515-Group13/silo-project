@@ -165,9 +165,12 @@ async def login(
     username = username.strip().lower()
     anonymous = AuditContext.anonymous(ip=ip, request_id=request_id)
 
-    # Look up the user. Unknown username: spend the time of a real check anyway.
-    async with session.begin():
-        user = await session.scalar(select(User).where(User.username == username))
+    # Look up the user. Unknown username: spend the time of a real check anyway. PostgreSQL
+    # refuses a NUL character in a query, and no stored username has one, so that is unknown too.
+    user = None
+    if "\x00" not in username:
+        async with session.begin():
+            user = await session.scalar(select(User).where(User.username == username))
     if user is None:
         await verify_dummy_password(password)
         await audit.record_failure(

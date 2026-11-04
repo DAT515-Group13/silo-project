@@ -34,10 +34,24 @@ def normalize_username(value: str) -> str:
     return normalized
 
 
+def reject_nul(value: str) -> str:
+    """Refuse a NUL character: PostgreSQL cannot store one in text or JSONB, which would be a 500.
+
+    Raises:
+        ValueError: if the value contains one. Pydantic turns this into a 422.
+    """
+    if "\x00" in value:
+        raise ValueError("Text must not contain a NUL character.")
+    return value
+
+
 def _normalize_login_username(value: str) -> str:
     """Strip and lowercase a username for lookup without applying the registration pattern."""
     return value.strip().lower()
 
+
+# Free text that reaches PostgreSQL: stored, or compared in a query.
+NulFreeText = Annotated[str, AfterValidator(reject_nul)]
 
 # Full username rule: used wherever a username is created or looked up by a user-facing form
 # other than login (register, add team member, initial admin).

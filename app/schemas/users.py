@@ -3,10 +3,10 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, StringConstraints, field_validator
+from pydantic import AfterValidator, BaseModel, StringConstraints, field_validator
 
 from app.models import ActorType, Outcome, Role, UserStatus
-from app.schemas.common import InputModel
+from app.schemas.common import InputModel, reject_nul
 
 
 class AdminUserOut(BaseModel):
@@ -46,7 +46,14 @@ class RejectIn(InputModel):
     """Optional body of ``POST /admin/users/{id}/reject``."""
 
     # Stored in the audit details; the cap keeps a single entry small.
-    reason: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None = None
+    reason: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, max_length=500),
+            AfterValidator(reject_nul),
+        ]
+        | None
+    ) = None
 
 
 class AuditEntryOut(BaseModel):

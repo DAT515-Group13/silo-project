@@ -1,12 +1,13 @@
 """Validation rules of the input schemas."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.schemas.auth import LoginIn, RefreshIn, RegisterIn
 from app.schemas.common import normalize_username
 from app.schemas.links import LinkCreateIn, LinkUpdateIn
 from app.schemas.teams import AddMemberIn, TeamIn
+from app.schemas.users import RejectIn
 
 
 def test_unknown_field_is_rejected() -> None:
@@ -72,6 +73,15 @@ def test_team_name_is_trimmed_and_length_limited() -> None:
     for bad in ("", "   ", "a" * 101):
         with pytest.raises(ValidationError):
             TeamIn(name=bad)
+
+
+@pytest.mark.parametrize(
+    ("schema", "field"), [(TeamIn, "name"), (RejectIn, "reason")], ids=["team name", "reason"]
+)
+def test_text_for_postgresql_refuses_a_nul_character(schema: type[BaseModel], field: str) -> None:
+    """PostgreSQL cannot store a NUL character in text or JSONB: a 422, not a 500."""
+    with pytest.raises(ValidationError, match="NUL character"):
+        schema.model_validate({field: "a\x00b"})
 
 
 def test_link_hours_must_be_positive() -> None:

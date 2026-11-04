@@ -156,6 +156,7 @@ async def test_failed_logins_have_one_shape(
         ("nobody", TEST_PASSWORD),
         ("anna", "wrong-password-123"),
         ("not a valid name!", TEST_PASSWORD),
+        ("an\x00na", TEST_PASSWORD),
     ]:
         response = await login(client, username, password)
         assert (response.status_code, response.json()) == (401, expected), username

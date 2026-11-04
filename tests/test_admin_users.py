@@ -102,6 +102,20 @@ async def test_patch_only_switches_between_active_and_disabled(
     assert "<UserStatus" not in response.text
 
 
+@pytest.mark.parametrize("name", ["action", "target_type", "target_id"])
+async def test_audit_text_filters_refuse_a_nul_character(
+    client: httpx.AsyncClient, act_as: ActAs, name: str
+) -> None:
+    """A NUL character is a 422, not a 500 from PostgreSQL; non-admins still get the 404."""
+    path = f"/api/v1/admin/audit?{name}=a%00b"
+    act_as(Role.admin)
+    response = await client.get(path)
+    assert (response.status_code, response.json()["code"]) == (422, "validation_error")
+
+    act_as(Role.user)
+    assert (await client.get(path)).status_code == 404
+
+
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 

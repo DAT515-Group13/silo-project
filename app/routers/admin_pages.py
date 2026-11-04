@@ -33,6 +33,7 @@ from app.routers.common import (
     see_other,
     validation_messages,
 )
+from app.schemas.common import NulFreeText
 from app.schemas.users import AdminUserPatchIn, RejectIn
 from app.services import admin, users
 from app.services.admin import AuditFilters
@@ -232,11 +233,11 @@ async def audit_page(
     user: AdminUser,
     session: DbSession,
     settings: SettingsDep,
-    action: str = "",
+    action: NulFreeText = "",
     outcome: str = "",
     actor_id: str = "",
-    target_type: str = "",
-    target_id: str = "",
+    target_type: NulFreeText = "",
+    target_id: NulFreeText = "",
     from_: Annotated[str, Query(alias="from")] = "",
     to: str = "",
     page: PageNumber = 1,
