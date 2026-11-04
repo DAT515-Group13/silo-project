@@ -333,7 +333,7 @@ async def test_file_over_the_size_limit_leaves_no_blob(
     blob_store: InMemoryBlobStore,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """MAX_FILE_SIZE_BYTES + 1 is 413 file_too_large and nothing is stored."""
+    """MAX_FILE_SIZE_BYTES + 1 is 413 file_too_large, nothing is stored and it is audited."""
     settings.max_file_size_bytes = 1000
     user = await user_factory("anna")
     headers = await bearer_for(user)
@@ -346,6 +346,13 @@ async def test_file_over_the_size_limit_leaves_no_blob(
     assert sample("silo_uploads_total", result="too_large") == large_before + 1
     assert len(blob_store.blobs) == 1
     assert await count_files(db_sessionmaker) == 1
+    async with db_sessionmaker() as session:
+        codes = (
+            await session.scalars(
+                select(AuditLog.details["code"].astext).where(AuditLog.outcome == "denied")
+            )
+        ).all()
+    assert codes == ["file_too_large"]
 
 
 @db

@@ -161,14 +161,14 @@ async def test_owner_cannot_leave_but_members_can(
 
 
 @pytest.mark.db
-async def test_leaving_removes_only_the_leavers_shares(
+async def test_removing_a_member_removes_only_their_shares(
     client: httpx.AsyncClient,
     user_factory: UserFactory,
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
     file_factory: FileFactory,
 ) -> None:
-    """Leaving deletes the leaver's shares with that team in the same step."""
+    """Removing a member deletes that member's shares with the team in the same step."""
     lead = await user_factory(username="lead", role=Role.team_lead)
     owner = await bearer_for(lead)
     anna = await user_factory(username="anna")

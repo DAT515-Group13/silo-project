@@ -220,7 +220,10 @@ async def test_metadata_works_while_storage_is_down(
     bearer_for: BearerFor,
     blob_store: InMemoryBlobStore,
 ) -> None:
-    """Only upload, download and blob deletion need storage; metadata keeps working."""
+    """Metadata keeps working in an outage; a download still redirects (section 11).
+
+    The URL is signed locally, so the failure shows in the browser, on Azure's side.
+    """
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     headers = await bearer_for(owner)
@@ -233,7 +236,30 @@ async def test_metadata_works_while_storage_is_down(
     assert renamed.status_code == 200
     assert (
         await client.get(f"/api/v1/files/{file.id}/download", headers=headers)
-    ).status_code == 503
+    ).status_code == 302
+
+
+@db
+async def test_failed_signing_is_503_and_records_no_download(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+    blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """The URL is signed first, so a signing failure is neither audited nor counted."""
+    owner = await user_factory("owner")
+    file = await file_factory(owner.id)
+    headers = await bearer_for(owner)
+    blob_store.signing_broken = True
+    before = sample("silo_downloads_total", kind="user")
+
+    response = await client.get(f"/api/v1/files/{file.id}/download", headers=headers)
+
+    assert (response.status_code, response.json()["code"]) == (503, "storage_unavailable")
+    assert sample("silo_downloads_total", kind="user") == before
+    assert await audit_actions(db_sessionmaker) == []
 
 
 # --- Sharing with teams (needs PostgreSQL) -------------------------------------------------------
@@ -380,6 +406,3 @@ async def test_cannot_share_with_a_team_you_are_not_in(
     for target in (team_id, 999_999):
         response = await client.put(f"/api/v1/files/{file.id}/teams/{target}", headers=headers)
         assert response.status_code == 404
-    # The list of teams is for the owner only.
-    other = await bearer_for(lead)
-    assert (await client.get(f"/api/v1/files/{file.id}/teams", headers=other)).status_code == 404

@@ -5,7 +5,6 @@ Run with ``pytest -m azure`` and ``AZURE_STORAGE_CONNECTION_STRING`` plus
 """
 
 import os
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -15,17 +14,11 @@ from app.errors import FileTooLarge, StorageUnavailable
 from app.storage.azure_blob import create_blob_store
 from app.storage.base import BlobStore
 from tests.conftest import make_settings
+from tests.fakes import stream
 
 pytestmark = pytest.mark.anyio
 
 PAYLOAD = bytes(range(256)) * 20  # 5,120 bytes: five 1 KiB blocks
-
-
-async def stream(*chunks: bytes, then: Exception | None = None) -> AsyncIterator[bytes]:
-    for chunk in chunks:
-        yield chunk
-    if then is not None:
-        raise then
 
 
 async def status_of(url: str) -> int:

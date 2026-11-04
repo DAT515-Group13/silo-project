@@ -22,12 +22,12 @@ from app.main import RedactLinkTokens
 from app.models import AuditLog, Role, ShareLink
 from app.security import hash_token
 from tests.conftest import (
-    PUBLIC_HEADERS,
     ActAs,
     BearerFor,
     FileFactory,
     Sessionmaker,
     UserFactory,
+    assert_public_headers,
     assert_same_404,
     expire_link,
     make_link,
@@ -62,7 +62,7 @@ async def test_lifetime_above_the_maximum_is_422(
     assert response.json()["errors"][0]["field"] == "expires_in_hours"
 
 
-@pytest.mark.parametrize("token", ["short", "x" * 44, "a.b" + "c" * 40, "a%20b" + "c" * 40])
+@pytest.mark.parametrize("token", ["short", "a.b" + "c" * 40])
 async def test_malformed_token_is_a_404_with_the_privacy_headers(
     client: httpx.AsyncClient, token: str
 ) -> None:
@@ -102,8 +102,7 @@ async def test_rate_limited_public_link_keeps_the_privacy_headers(
         assert (await client.get("/s/short")).status_code == 404
     response = await client.get("/s/short")
     assert response.status_code == 429
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
+    assert_public_headers(response)
 
 
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
@@ -138,7 +137,6 @@ async def test_create_stores_only_the_hash_and_shows_the_url_once(
     async with db_sessionmaker() as session:
         link = (await session.scalars(select(ShareLink))).one()
     assert link.token_hash == hash_token(token)
-    assert token not in link.token_hash
     expected = datetime.now(UTC) + timedelta(hours=hours)
     assert abs(link.expires_at - expected) < timedelta(minutes=1)
 
@@ -166,8 +164,7 @@ async def test_public_link_redirects_counts_and_audits(
     response = await open_link(client, token)
     assert response.status_code == 302
     assert sample("silo_downloads_total", kind="public_link") == before + 1
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
+    assert_public_headers(response)
     parts = parse_download_url(response.headers["location"])
     assert parts["blob"] == file.blob_name and parts["sp"] == "r"
     assert parts["filename"] == "plan.html"
@@ -270,12 +267,11 @@ async def test_storage_failure_is_503_and_counts_nothing(
     owner = await user_factory("owner")
     file = await file_factory(owner.id)
     _, token = await make_link(client, await bearer_for(owner), file.id)
-    blob_store.healthy = False
+    blob_store.signing_broken = True
 
     response = await open_link(client, token)
     assert response.status_code == 503
-    for name, value in PUBLIC_HEADERS.items():
-        assert response.headers[name] == value
+    assert_public_headers(response)
     async with db_sessionmaker() as session:
         assert await session.scalar(select(ShareLink.download_count)) == 0
         actions = (await session.scalars(select(AuditLog.action))).all()

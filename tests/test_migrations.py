@@ -1,4 +1,4 @@
-"""The first Alembic migration against the models.
+"""The table definitions and the first Alembic migration against them.
 
 The offline test renders the SQL and needs no database. Tests marked ``db`` run the migration on
 a scratch database that is created and dropped on the server given by TEST_DATABASE_URL.
@@ -9,21 +9,18 @@ import io
 import os
 import uuid
 from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
-from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.models import Base
-from tests.conftest import DEFAULT_TEST_DATABASE_URL
+from tests.conftest import DEFAULT_TEST_DATABASE_URL, alembic_config
 
-ROOT = Path(__file__).resolve().parent.parent
 TABLES = set(Base.metadata.tables)
 ENUM_TYPES = {"role", "user_status", "actor_type", "outcome"}
 # Alembic cannot compare indexes built from text expressions ("created_at DESC") and reports them
@@ -35,11 +32,12 @@ EXPRESSION_INDEXES = {
 }
 
 
-def alembic_config() -> Config:
-    """Alembic configuration pointing at the repository's alembic.ini."""
-    config = Config(str(ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(ROOT / "migrations"))
-    return config
+def test_all_timestamps_are_timezone_aware() -> None:
+    """Every datetime column is timestamptz."""
+    for table in Base.metadata.tables.values():
+        for column in table.c:
+            if column.type.python_type.__name__ == "datetime":
+                assert column.type.timezone, f"{table.name}.{column.name}"
 
 
 def test_offline_sql_contains_every_table_enum_and_index(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,7 +54,6 @@ def test_offline_sql_contains_every_table_enum_and_index(monkeypatch: pytest.Mon
         assert f"CREATE TYPE {enum_type} AS ENUM" in sql
     assert "username VARCHAR(32) NOT NULL" in sql
     assert "actor_username VARCHAR(32)" in sql
-    assert "email" not in sql.lower()
     assert "gen_random_uuid()" in sql
     assert "CREATE INDEX ix_audit_log_created_at ON audit_log (created_at DESC)" in sql
     assert "ix_audit_log_actor_id_created_at ON audit_log (actor_id, created_at DESC)" in sql

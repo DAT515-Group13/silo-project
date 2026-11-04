@@ -58,7 +58,6 @@ async def test_create_session_stores_only_the_hash(
     async with db_sessionmaker() as db:
         stored = (await db.scalars(select(RefreshToken))).one()
     assert stored.token_hash == hash_token(tokens.refresh_token)
-    assert stored.token_hash != tokens.refresh_token
     assert stored.used_at is None
 
 

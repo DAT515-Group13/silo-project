@@ -13,11 +13,10 @@ import pytest
 from app import security
 from app.errors import InvalidToken, ValidationFailed
 
-SECRET = "s" * 40
+SECRET = "s" * 64  # long enough for HS512 too, so the wrong-algorithm case gives no warning
 ISSUER = "silo"
 AUDIENCE = "silo-test"
 SESSION_ID = uuid.UUID("c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f")
-NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
 
 def make_token(secret: str = SECRET, *, now: datetime | None = None, **kwargs: object) -> str:
@@ -87,6 +86,10 @@ def _claims(**overrides: object) -> Callable[[], str]:
     "build_token",
     [
         pytest.param(lambda: raw_token({}, key=None, algorithm="none"), id="alg none"),
+        pytest.param(lambda: raw_token({}, algorithm="HS512"), id="other algorithm"),
+        pytest.param(
+            lambda: raw_token({"nbf": datetime.now(UTC) + timedelta(minutes=5)}), id="not valid yet"
+        ),
         pytest.param(_claims(aud="silo-prod"), id="wrong audience"),
         pytest.param(_claims(iss="someone-else"), id="wrong issuer"),
         pytest.param(_claims(typ="refresh"), id="typ refresh"),
@@ -94,6 +97,10 @@ def _claims(**overrides: object) -> Callable[[], str]:
         pytest.param(_claims(sid=None), id="missing sid"),
         pytest.param(_claims(sub=None), id="missing sub"),
         pytest.param(_claims(exp=None), id="missing exp"),
+        pytest.param(_claims(iat=None), id="missing iat"),
+        pytest.param(_claims(nbf=None), id="missing nbf"),
+        pytest.param(_claims(iss=None), id="missing iss"),
+        pytest.param(_claims(aud=None), id="missing aud"),
         pytest.param(_claims(sid="not-a-uuid"), id="sid is not a uuid"),
         pytest.param(lambda: "a.b.c", id="three dots, not a JWT"),
     ],
