@@ -12,9 +12,10 @@ import pytest
 from sqlalchemy import select
 
 from app.config import Settings
-from app.errors import CsrfFailed
+from app.errors import CsrfFailed, StorageUnavailable
 from app.models import File, Role, ShareLink
 from app.routers.file_pages import MAX_CSRF_FIELD_BYTES, _read_small
+from app.services import files
 from tests.conftest import (
     ActAs,
     FileFactory,
@@ -81,6 +82,41 @@ async def test_upload_with_a_wrong_token_still_reads_the_whole_body(
     assert "CSRF validation failed." in response.text
     assert sent == 20
     assert blob_store.blobs == {}
+
+
+async def test_upload_in_a_storage_outage_still_reads_the_whole_body(
+    client: httpx.AsyncClient,
+    act_as: ActAs,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 503 error page is sent after the rest of the body was read, so it does not become 502."""
+    user = act_as(Role.user)
+    headers, form = page_csrf(settings, user)
+    sent = 0
+
+    async def outage(*args: object, **kwargs: object) -> None:
+        raise StorageUnavailable
+
+    async def body() -> AsyncIterator[bytes]:
+        nonlocal sent
+        head = '--b\r\nContent-Disposition: form-data; name="csrf_token"\r\n\r\n'
+        yield f"{head}{form['csrf_token']}\r\n".encode()
+        yield b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
+        for _ in range(20):
+            sent += 1
+            yield b"x" * 1000
+        yield b"\r\n--b--\r\n"
+
+    monkeypatch.setattr(files, "upload", outage)
+    response = await client.post(
+        "/files/upload",
+        content=body(),
+        headers={**headers, "content-type": "multipart/form-data; boundary=b"},
+    )
+    assert response.status_code == 503
+    assert "Storage is temporarily unavailable." in response.text
+    assert sent == 20
 
 
 @pytest.mark.parametrize("origin", [None, "http://evil.example"])

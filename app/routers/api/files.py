@@ -11,7 +11,13 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from app.errors import FileTooLarge, QuotaExceeded, RateLimited, ValidationFailed
+from app.errors import (
+    FileTooLarge,
+    QuotaExceeded,
+    RateLimited,
+    StorageUnavailable,
+    ValidationFailed,
+)
 from app.ratelimit import limit, upload_slot
 from app.routers.common import (
     ApiUser,
@@ -87,7 +93,7 @@ async def upload_file(
                 chunks=reader.iter_data(),
                 declared_size=declared_size(request),
             )
-    except (FileTooLarge, QuotaExceeded, RateLimited, ValidationFailed):
+    except (FileTooLarge, QuotaExceeded, RateLimited, StorageUnavailable, ValidationFailed):
         # Let the client finish sending, or the proxy may turn this answer into a 502.
         await drain_refused_upload(
             body, declared_size=declared_size(request), max_file_bytes=settings.max_file_size_bytes

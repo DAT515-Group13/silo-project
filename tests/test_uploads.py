@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import Settings
-from app.errors import FileTooLarge, StorageFull
+from app.errors import FileTooLarge, StorageFull, StorageUnavailable
 from app.models import AuditLog, Role
 from app.permissions import CurrentUser
 from app.ratelimit import _FALLBACK_RETRY_AFTER as FALLBACK_RETRY_AFTER
@@ -158,6 +158,7 @@ async def test_fourth_parallel_upload_is_429(
         ("busy", 429, "rate_limited"),
         ("wrong part", 422, "validation_error"),
         ("service full", 507, "storage_full"),
+        ("storage outage", 503, "storage_unavailable"),
     ],
 )
 async def test_refused_upload_still_reads_the_whole_body(
@@ -171,7 +172,8 @@ async def test_refused_upload_still_reads_the_whole_body(
     """A refused upload is answered after the rest of the body was read (no proxy 502).
 
     "service full" stands for the global cap: ``StorageFull`` is a ``QuotaExceeded``, so the
-    route drains the body and answers 507 without any route change.
+    route drains the body and answers 507 without any route change. "storage outage" fails
+    before reading the file too, so the whole body is left to drain.
     """
     user = act_as(Role.user)
     field = "other" if case == "wrong part" else "file"  # a part that is not `file` is a 422
@@ -180,8 +182,13 @@ async def test_refused_upload_still_reads_the_whole_body(
     async def full(*args: object, **kwargs: object) -> None:
         raise StorageFull  # refused before reading the file, like the quota check before the upload
 
+    async def outage(*args: object, **kwargs: object) -> None:
+        raise StorageUnavailable
+
     if case == "service full":
         monkeypatch.setattr(files, "upload", full)
+    elif case == "storage outage":
+        monkeypatch.setattr(files, "upload", outage)
 
     async def body() -> AsyncIterator[bytes]:
         nonlocal sent
