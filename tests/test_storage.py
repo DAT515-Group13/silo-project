@@ -5,6 +5,7 @@ SAS URL is signed locally. Tests against real Azure are in ``tests/integration/`
 """
 
 import base64
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -84,14 +85,16 @@ class FakeContainer:
         return generate()
 
 
-def make_store(block_bytes: int = 4) -> tuple[AzureBlobStore, FakeContainer]:
+def make_store(
+    block_bytes: int = 4, account_key: str = ACCOUNT_KEY
+) -> tuple[AzureBlobStore, FakeContainer]:
     container = FakeContainer()
     service = SimpleNamespace(get_container_client=lambda name: container)
     store = AzureBlobStore(
         service,  # type: ignore[arg-type]
         "silo-test",
         account_name="acct",
-        account_key=ACCOUNT_KEY,
+        account_key=account_key,
         block_bytes=block_bytes,
     )
     return store, container
@@ -171,6 +174,23 @@ async def test_azure_delete_is_idempotent_but_reports_real_errors() -> None:
     with pytest.raises(StorageUnavailable):
         await store.delete("b1")
     assert sample("silo_storage_errors_total", operation="delete") == before + 1
+
+
+async def test_azure_signing_failure_is_storage_unavailable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A key that is not base64 gives 503, not 500, and leaves a log line without the key.
+
+    The startup check only sees that a key exists. The real SDK raises ``ValueError`` here, which
+    the fake store cannot show: its ``signing_broken`` switch raises the final error directly.
+    """
+    bad_key = "abcde"
+    store, _ = make_store(account_key=bad_key)
+    with caplog.at_level(logging.ERROR, logger="silo"), pytest.raises(StorageUnavailable) as error:
+        await store.download_url("b1", filename="a.txt", content_type="text/plain", ttl_seconds=60)
+    assert isinstance(error.value.__cause__, ValueError)
+    assert "Signing a download URL failed" in caplog.text
+    assert bad_key not in caplog.text
 
 
 async def test_azure_ping() -> None:

@@ -161,22 +161,30 @@ class AzureBlobStore:
 
         Signed locally, so it needs no request to Azure and cannot fail because of the network.
         The URL is never logged or stored.
+
+        Raises:
+            StorageUnavailable: signing failed, for example the account key is not valid base64.
         """
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         now = datetime.now(UTC)
-        sas = generate_blob_sas(
-            account_name=self._account_name,
-            container_name=self._container_name,
-            blob_name=blob_name,
-            account_key=self._account_key,
-            permission=BlobSasPermissions(read=True),  # no write, delete or list
-            start=now - SAS_CLOCK_SKEW,
-            expiry=now + timedelta(seconds=ttl_seconds),
-            protocol="https",
-            content_disposition=content_disposition(filename),
-            content_type=content_type,
-        )
+        try:
+            sas = generate_blob_sas(
+                account_name=self._account_name,
+                container_name=self._container_name,
+                blob_name=blob_name,
+                account_key=self._account_key,
+                permission=BlobSasPermissions(read=True),  # no write, delete or list
+                start=now - SAS_CLOCK_SKEW,
+                expiry=now + timedelta(seconds=ttl_seconds),
+                protocol="https",
+                content_disposition=content_disposition(filename),
+                content_type=content_type,
+            )
+        except ValueError as exc:
+            # The 503 is not logged anywhere else. Only the type: the key must never be shown.
+            logger.error("Signing a download URL failed (%s)", type(exc).__name__)
+            raise StorageUnavailable from exc
         return f"{self._container.get_blob_client(blob_name).url}?{sas}"
 
     async def ping(self) -> None:
