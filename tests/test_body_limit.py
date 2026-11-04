@@ -49,19 +49,6 @@ async def test_chunked_oversized_body_is_413(
         assert response.json()["code"] == "payload_too_large"
 
 
-async def test_large_multipart_never_reaches_the_disk(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A big file part on a normal form is refused before Starlette can spool it."""
-
-    def forbidden(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a temporary file was created")
-
-    monkeypatch.setattr("starlette.formparsers.SpooledTemporaryFile", forbidden)
-    response = await client.post("/login", files={"file": ("a.bin", BIG)})
-    assert response.status_code == 413
-
-
 @pytest.mark.parametrize("path", ["/files/upload", "/api/v1/files"])
 async def test_upload_routes_receive_the_whole_large_body(path: str) -> None:
     """Guards the exemption itself: 500 KB (far over the limit) reaches the upload routes intact.

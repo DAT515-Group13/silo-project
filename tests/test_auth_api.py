@@ -107,7 +107,6 @@ async def test_register_approval_answers_the_same_for_new_and_taken(
     assert reasons == [{"reason": "username_taken"}]
 
 
-@db
 async def test_register_closed_is_404(
     app: FastAPI, client: httpx.AsyncClient, settings: Settings
 ) -> None:

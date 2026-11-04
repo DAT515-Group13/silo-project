@@ -296,26 +296,44 @@ async def test_admin_cannot_demote_disable_or_delete_themself(
 
 
 @pytest.mark.db
-async def test_admin_can_disable_and_delete_another_admin(
+async def test_admin_can_demote_disable_and_delete_another_admin(
     client: httpx.AsyncClient,
     root: User,
     user_factory: UserFactory,
     bearer_for: BearerFor,
     db_sessionmaker: Sessionmaker,
 ) -> None:
-    """The rule protects only yourself and the last admin: other admins can go."""
-    disabled = await user_factory(username="second", role=Role.admin)
-    deleted = await user_factory(username="third", role=Role.admin)
-    headers = await bearer_for(root)
+    """The rule protects only yourself and the last admin: other admins can go.
 
+    A demoted admin loses the admin area (404) with the same token: the role is read from the
+    database.
+    """
+    demoted = await user_factory(username="second", role=Role.admin)
+    disabled = await user_factory(username="third", role=Role.admin)
+    deleted = await user_factory(username="fourth", role=Role.admin)
+    headers = await bearer_for(root)
+    demoteds = await bearer_for(demoted)
+
+    response = await client.patch(
+        f"/api/v1/admin/users/{demoted.id}", json={"role": "user"}, headers=headers
+    )
+    assert response.status_code == 200
     response = await client.patch(
         f"/api/v1/admin/users/{disabled.id}", json={"status": "disabled"}, headers=headers
     )
     assert response.status_code == 200
     response = await client.delete(f"/api/v1/admin/users/{deleted.id}", headers=headers)
     assert response.status_code == 204
+    assert await status_of(db_sessionmaker, demoted.id) == (Role.user, UserStatus.active)
     assert await status_of(db_sessionmaker, disabled.id) == (Role.admin, UserStatus.disabled)
     assert await status_of(db_sessionmaker, deleted.id) is None
+
+    # `demoted` is no admin any more, so the admin area is gone for them.
+    gone = await client.patch(
+        f"/api/v1/admin/users/{root.id}", json={"role": "user"}, headers=demoteds
+    )
+    assert gone.status_code == 404
+    assert await status_of(db_sessionmaker, root.id) == (Role.admin, UserStatus.active)
 
 
 @pytest.mark.db
@@ -335,34 +353,6 @@ async def test_patch_without_a_change_writes_no_audit_entry(
     )
     assert response.status_code == 200
     assert await audit_actions(db_sessionmaker) == []
-
-
-@pytest.mark.db
-async def test_admin_can_demote_another_admin(
-    client: httpx.AsyncClient,
-    root: User,
-    user_factory: UserFactory,
-    bearer_for: BearerFor,
-    db_sessionmaker: Sessionmaker,
-) -> None:
-    """One admin may demote another; the demoted user then loses the admin area (404).
-
-    The same token gets the new rights at once: the role is read from the database.
-    """
-    second = await user_factory(username="second", role=Role.admin)
-    roots = await bearer_for(root)
-    seconds = await bearer_for(second)
-
-    demote = await client.patch(
-        f"/api/v1/admin/users/{second.id}", json={"role": "user"}, headers=roots
-    )
-    assert demote.status_code == 200
-    # `second` is no admin any more, so the admin area is gone for them.
-    gone = await client.patch(
-        f"/api/v1/admin/users/{root.id}", json={"role": "user"}, headers=seconds
-    )
-    assert gone.status_code == 404
-    assert await status_of(db_sessionmaker, root.id) == (Role.admin, UserStatus.active)
 
 
 @pytest.mark.db
