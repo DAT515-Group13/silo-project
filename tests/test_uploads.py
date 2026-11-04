@@ -8,6 +8,7 @@ parallel uploads, and a refused or failed upload leaves no blob.
 """
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 
@@ -18,14 +19,17 @@ from sqlalchemy import select
 from app.config import Settings
 from app.errors import FileTooLarge, StorageFull
 from app.models import AuditLog, Role
+from app.permissions import CurrentUser
 from app.ratelimit import _FALLBACK_RETRY_AFTER as FALLBACK_RETRY_AFTER
 from app.ratelimit import MAX_CONCURRENT_UPLOADS, upload_slot
 from app.services import files
 from app.services import users as users_service
+from app.services.audit import AuditContext
 from app.services.users import QuotaStatus
 from tests.conftest import (
     ActAs,
     BearerFor,
+    FakeSession,
     Sessionmaker,
     UserFactory,
     audit_actions,
@@ -204,6 +208,40 @@ async def test_refused_upload_still_reads_the_whole_body(
     assert sent == CHUNK_COUNT + 2  # the client could send everything
 
 
+async def test_cancelled_request_deletes_the_blob_it_already_stored(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, blob_store: InMemoryBlobStore
+) -> None:
+    """A request cancelled after the blob was stored (the client left) removes the blob again."""
+
+    async def free_quota(*args: object, **kwargs: object) -> QuotaStatus:
+        return QuotaStatus(used_bytes=0, quota_bytes=100)
+
+    async def cancelled(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b"hello"
+
+    monkeypatch.setattr(users_service, "get_quota_status", free_quota)
+    monkeypatch.setattr(users_service, "reserve_quota", cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await files.upload(
+            FakeSession(),
+            settings,
+            blob_store,
+            CurrentUser(1, "anna", Role.user, uuid.uuid4()),
+            AuditContext.system(),
+            filename="a.txt",
+            client_type=None,
+            chunks=chunks(),
+            declared_size=None,
+        )
+
+    assert blob_store.blobs == {}
+    assert len(blob_store.deleted) == 1
+
+
 # --- Needs PostgreSQL ----------------------------------------------------------------------------
 
 
@@ -361,6 +399,40 @@ async def test_unavailable_storage_is_503_and_changes_nothing(
     assert response.json()["code"] == "storage_unavailable"
     assert await count_files(db_sessionmaker) == 0
     assert await used_bytes(db_sessionmaker, user.id) == 0
+
+
+@db
+async def test_interrupted_upload_leaves_nothing_and_frees_its_slot(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """A body cut off inside the file is a 422 and changes nothing.
+
+    It is repeated once per upload slot: a slot that was not released would make the last upload
+    a 429.
+    """
+    user = await user_factory("anna")
+    headers = await bearer_for(user)
+
+    async def cut_off() -> AsyncIterator[bytes]:
+        yield b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
+        yield b"x" * 1000  # the closing boundary never comes
+
+    for _ in range(MAX_CONCURRENT_UPLOADS):
+        response = await client.post(
+            "/api/v1/files",
+            content=cut_off(),
+            headers={**headers, "Content-Type": "multipart/form-data; boundary=b"},
+        )
+        assert (response.status_code, response.json()["code"]) == (422, "validation_error")
+
+    assert blob_store.blobs == {}
+    assert await count_files(db_sessionmaker) == 0
+    assert await used_bytes(db_sessionmaker, user.id) == 0
+    assert (await post_file(client, headers, b"hello")).status_code == 201
 
 
 @db

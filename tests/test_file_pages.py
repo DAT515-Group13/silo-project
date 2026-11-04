@@ -19,9 +19,11 @@ from tests.conftest import (
     PageLogin,
     Sessionmaker,
     UserFactory,
+    count_files,
     expire_link,
     page_csrf,
     post,
+    used_bytes,
 )
 from tests.fakes import InMemoryBlobStore
 
@@ -220,9 +222,77 @@ async def test_sharing_through_the_page_and_member_view(
     assert "plan.pdf" in member_page.text
     assert "Delete this file" not in member_page.text and "Rename" not in member_page.text
     assert (await post(client, member, f"{path}/delete")).status_code == 404
+    assert (await post(client, member, f"{path}/unshare", team_id=team_id)).status_code == 404
+    assert (await client.get(path, headers=member[0])).status_code == 200
 
     await post(client, lead, f"{path}/unshare", team_id=team_id)
     assert (await client.get(path, headers=member[0])).status_code == 404
+
+
+@db
+async def test_storage_outage_shows_the_error_page_and_keeps_nothing(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    page_login: PageLogin,
+    blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Upload and download show the HTML 503 page; the file list still works during an outage."""
+    owner = await user_factory("anna")
+    login = await page_login(owner)
+    file = await file_factory(owner.id, size_bytes=10)
+    blob_store.healthy = False
+
+    download = await client.get(f"/files/{file.id}/download", headers=login[0])
+    uploaded = await upload(client, login)
+
+    for response in (download, uploaded):
+        assert response.status_code == 503
+        assert response.headers["content-type"].startswith("text/html")
+    assert await count_files(db_sessionmaker) == 1
+    assert await used_bytes(db_sessionmaker, owner.id) == 10
+    assert (await client.get("/files", headers=login[0])).status_code == 200
+
+
+@db
+async def test_stored_names_are_escaped_on_every_page(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    page_login: PageLogin,
+) -> None:
+    """A file or team name with HTML is shown as text to the owner, the team and the admin.
+
+    The name has no ``/`` because ``sanitize_filename`` keeps only what follows the last one. The
+    rename and the share also put it into the audit log, so the admin's audit page is covered.
+    """
+    html = "<img src=x onerror=alert(1)>"
+    lead_user = await user_factory("lead", role=Role.team_lead)
+    lead = await page_login(lead_user)
+    admin = await page_login(await user_factory("boss", role=Role.admin))
+    file = await file_factory(lead_user.id)
+    path = f"/files/{file.id}"
+    team_path = (await post(client, lead, "/teams", name=html)).headers["location"]
+    team_id = team_path.rsplit("/", 1)[-1]
+    await post(client, lead, f"{path}/rename", filename=f"{html}.pdf")
+    await post(client, lead, f"{path}/share", team_id=team_id)
+    await post(client, lead, f"{path}/links")
+
+    pages = [
+        (lead, "/files"),
+        (lead, path),
+        (lead, "/links"),
+        (lead, "/teams"),
+        (lead, team_path),
+        (admin, "/admin/files"),
+        (admin, "/admin/audit?action=file.rename"),
+    ]
+    for login, page_path in pages:
+        page = await client.get(page_path, headers=login[0])
+        assert page.status_code == 200, page_path
+        assert html not in page.text, page_path
+        assert "&lt;img src=x" in page.text, page_path
 
 
 @db

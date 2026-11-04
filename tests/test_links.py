@@ -33,6 +33,7 @@ from tests.conftest import (
     make_link,
     open_link,
     sample,
+    team_with,
 )
 from tests.fakes import InMemoryBlobStore, parse_download_url
 
@@ -315,6 +316,29 @@ async def test_who_may_manage_links(
         actions = (await session.scalars(select(AuditLog.action))).all()
     assert actions.count("link.revoke") == 1
     assert_same_404(await open_link(client, token))
+
+
+@db
+async def test_a_team_member_cannot_change_or_revoke_a_link(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+) -> None:
+    """Seeing a shared file gives no power over its links: 404, and the link keeps working."""
+    lead = await user_factory("lead", role=Role.team_lead)
+    member = await user_factory("member")
+    lead_h, member_h = await bearer_for(lead), await bearer_for(member)
+    team_id = await team_with(client, lead_h, "member")
+    file = await file_factory(lead.id, team_id)
+    link_id, token = await make_link(client, lead_h, file.id)
+    url = f"/api/v1/links/{link_id}"
+
+    assert (await client.get(f"/api/v1/files/{file.id}", headers=member_h)).status_code == 200
+    changed = await client.patch(url, json={"expires_in_hours": 1}, headers=member_h)
+    assert changed.status_code == 404
+    assert (await client.delete(url, headers=member_h)).status_code == 404
+    assert (await open_link(client, token)).status_code == 302
 
 
 @db

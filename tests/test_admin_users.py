@@ -4,20 +4,31 @@ Tests without the ``db`` marker stop at the admin check or at validation. The ``
 through HTTP with real tokens.
 """
 
+import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 from sqlalchemy import func, select
 
+from app.config import Settings
+from app.errors import LastAdmin
 from app.models import ActorType, AuditLog, File, Outcome, Role, Team, User, UserStatus
+from app.permissions import CurrentUser
+from app.services import users as users_service
+from app.services.audit import AuditContext
 from tests.conftest import (
     ActAs,
     BearerFor,
     FileFactory,
     Sessionmaker,
     UserFactory,
+    add_member,
     audit_actions,
+    bearer,
+    issue_session,
+    team_with,
 )
 from tests.fakes import InMemoryBlobStore
 
@@ -273,6 +284,109 @@ async def test_admin_can_demote_another_admin(
 
 
 @pytest.mark.db
+async def test_role_change_applies_to_the_same_token(
+    client: httpx.AsyncClient,
+    root: User,
+    settings: Settings,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Promotion and demotion work on the next request, without a new login.
+
+    The quota follows the role. A demoted team lead can create no new team, but keeps managing
+    the team they own, because those rules look at ownership.
+    """
+    anna = await user_factory(username="anna")
+    await user_factory(username="bob")
+    annas = await bearer_for(anna)
+    headers = await bearer_for(root)
+    path = f"/api/v1/admin/users/{anna.id}"
+
+    async def create_team(name: str) -> httpx.Response:
+        return await client.post("/api/v1/teams", json={"name": name}, headers=annas)
+
+    async def quota() -> int:
+        return (await client.get("/api/v1/me", headers=annas)).json()["quota_bytes"]
+
+    assert (await create_team("Before")).status_code == 403
+    assert await quota() == settings.quota_user_bytes
+
+    promote = await client.patch(path, json={"role": "team_lead"}, headers=headers)
+    assert promote.status_code == 200
+    created = await create_team("Design")
+    assert created.status_code == 201
+    assert await quota() == settings.quota_team_lead_bytes
+
+    demote = await client.patch(path, json={"role": "user"}, headers=headers)
+    assert demote.status_code == 200
+    assert (await create_team("After")).status_code == 403
+    assert await quota() == settings.quota_user_bytes
+
+    team_id = created.json()["id"]
+    assert await add_member(client, annas, team_id, "bob") == 204
+    deleted = await client.delete(f"/api/v1/teams/{team_id}", headers=annas)
+    assert deleted.status_code == 204
+    assert (await audit_actions(db_sessionmaker)).count("user.role_change") == 2
+
+
+@pytest.mark.db
+async def test_two_admins_demoting_each_other_leave_one_admin(
+    client: httpx.AsyncClient,
+    root: User,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Both requests run at once, and the row locks keep one active admin.
+
+    The loser waits for the locks and gets 409 last_admin. If it starts after the winner
+    committed, it is no admin any more and gets 404.
+    """
+    second = await user_factory(username="second", role=Role.admin)
+    roots, seconds = await bearer_for(root), await bearer_for(second)
+
+    async def demote(target: User, headers: dict[str, str]) -> httpx.Response:
+        return await client.patch(
+            f"/api/v1/admin/users/{target.id}", json={"role": "user"}, headers=headers
+        )
+
+    results = await asyncio.gather(demote(second, roots), demote(root, seconds))
+
+    assert sorted(r.status_code for r in results) in ([200, 404], [200, 409])
+    async with db_sessionmaker() as session, session.begin():
+        admins = await session.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(User.role == Role.admin, User.status == UserStatus.active)
+        )
+    assert admins == 1
+
+
+@pytest.mark.db
+async def test_an_admin_demoted_meanwhile_cannot_remove_the_last_admin(
+    root: User, user_factory: UserFactory, db_sessionmaker: Sessionmaker
+) -> None:
+    """The same race without timing: the second request was authorized before the first ended.
+
+    Its ``actor`` still says admin, so only the count under the row locks can refuse it.
+    """
+    second = await user_factory(username="second", role=Role.admin)
+    ctx = AuditContext.system()
+
+    def actor(user: User) -> CurrentUser:
+        return CurrentUser(user.id, user.username, Role.admin, uuid.uuid4())
+
+    async with db_sessionmaker() as session:
+        await users_service.update_user(session, actor(root), second.id, ctx, role=Role.user)
+    async with db_sessionmaker() as session:
+        with pytest.raises(LastAdmin):
+            await users_service.update_user(session, actor(second), root.id, ctx, role=Role.user)
+
+    assert await status_of(db_sessionmaker, root.id) == (Role.admin, UserStatus.active)
+
+
+@pytest.mark.db
 async def test_delete_user_deletes_the_user_then_the_blobs(
     client: httpx.AsyncClient,
     root: User,
@@ -414,3 +528,44 @@ async def test_audit_entries_carry_actor_target_and_ip(
     assert entry["actor_type"] == "user"
     assert (entry["actor_id"], entry["actor_username"]) == (root.id, "root")
     assert entry["ip"] == "127.0.0.1"
+
+
+@pytest.mark.db
+async def test_session_and_team_actions_are_audited_with_their_actor(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    user_factory: UserFactory,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Refresh, ending a session, logout and the team changes each leave an entry of the user."""
+    lead = await user_factory(username="lead", role=Role.team_lead)
+    anna = await user_factory(username="anna")
+    first = await issue_session(db_sessionmaker, settings, lead)
+    second = await issue_session(db_sessionmaker, settings, lead)
+    third = await issue_session(db_sessionmaker, settings, lead)
+    headers = bearer(first.access_token)
+
+    refreshed = await client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": first.refresh_token}
+    )
+    assert refreshed.status_code == 200
+    ended = await client.delete(f"/api/v1/auth/sessions/{second.session_id}", headers=headers)
+    assert ended.status_code == 204
+    logout = await client.post("/api/v1/auth/logout", headers=bearer(third.access_token))
+    assert logout.status_code == 204
+    team_id = await team_with(client, headers, "anna")
+    removed = await client.delete(f"/api/v1/teams/{team_id}/members/{anna.id}", headers=headers)
+    assert removed.status_code == 204
+    assert (await client.delete(f"/api/v1/teams/{team_id}", headers=headers)).status_code == 204
+
+    async with db_sessionmaker() as session, session.begin():
+        rows = await session.execute(select(AuditLog.action, AuditLog.actor_username))
+        entries = {tuple(row) for row in rows}
+    expected = (
+        "auth.refresh",
+        "auth.session_revoke",
+        "auth.logout",
+        "team.member_remove",
+        "team.delete",
+    )
+    assert {(action, "lead") for action in expected} <= entries

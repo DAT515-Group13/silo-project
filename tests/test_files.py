@@ -4,6 +4,8 @@ The tests go through HTTP with real tokens and check the permission matrix: no a
 is always 404, never 403. Uploads are in ``test_uploads.py``.
 """
 
+import asyncio
+
 import httpx
 import pytest
 from sqlalchemy import select
@@ -15,6 +17,7 @@ from tests.conftest import (
     FileFactory,
     Sessionmaker,
     UserFactory,
+    add_member,
     audit_actions,
     make_team,
     sample,
@@ -91,6 +94,37 @@ async def test_delete_still_succeeds_when_the_blob_cannot_be_deleted(
         assert await session.scalar(select(File).where(File.id == file.id)) is None
     assert await used_bytes(db_sessionmaker, owner.id) == 0
     assert file.blob_name in blob_store.blobs  # the orphan that cleanup will remove
+
+
+@db
+async def test_parallel_deletes_free_the_quota_once(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+    blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
+) -> None:
+    """Two deletes of one file at once: the row lock lets one win, the other gets 404.
+
+    The second file keeps the counter high, so a double release would show as a wrong number
+    instead of being stopped by the ``used_bytes >= 0`` constraint.
+    """
+    owner = await user_factory("owner")
+    await file_factory(owner.id, size_bytes=100)
+    file = await file_factory(owner.id, size_bytes=30)
+    blob_store.put(file.blob_name, b"x" * 30)
+    headers = await bearer_for(owner)
+    path = f"/api/v1/files/{file.id}"
+
+    results = await asyncio.gather(
+        client.delete(path, headers=headers), client.delete(path, headers=headers)
+    )
+
+    assert sorted(r.status_code for r in results) == [204, 404]
+    assert await used_bytes(db_sessionmaker, owner.id) == 100
+    assert blob_store.deleted == [file.blob_name]
+    assert (await audit_actions(db_sessionmaker)).count("file.delete") == 1
 
 
 @db
@@ -245,7 +279,7 @@ async def test_unshare_and_leaving_end_access(
     file_factory: FileFactory,
     bearer_for: BearerFor,
 ) -> None:
-    """After unsharing, or after the member leaves the team, the member gets 404 again."""
+    """Unsharing, leaving, being removed and a deleted team each give the member 404 again."""
     lead = await user_factory("lead", role=Role.team_lead)
     member = await user_factory("member")
     file = await file_factory(lead.id)
@@ -262,6 +296,42 @@ async def test_unshare_and_leaving_end_access(
     left = await client.delete(f"/api/v1/teams/{team_id}/members/{member.id}", headers=member_h)
     assert left.status_code == 204
     assert (await client.get(path, headers=member_h)).status_code == 404
+
+    assert await add_member(client, lead_h, team_id, "member") == 204
+    assert (await client.get(path, headers=member_h)).status_code == 200
+    removed = await client.delete(f"/api/v1/teams/{team_id}/members/{member.id}", headers=lead_h)
+    assert removed.status_code == 204
+    assert (await client.get(path, headers=member_h)).status_code == 404
+
+    assert await add_member(client, lead_h, team_id, "member") == 204
+    assert (await client.get(path, headers=member_h)).status_code == 200
+    assert (await client.delete(f"/api/v1/teams/{team_id}", headers=lead_h)).status_code == 204
+    assert (await client.get(path, headers=member_h)).status_code == 404
+
+
+@db
+async def test_only_the_owner_can_unshare_a_file(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    file_factory: FileFactory,
+    bearer_for: BearerFor,
+) -> None:
+    """A team member, a stranger and an admin get 404, and the share stays in place."""
+    lead = await user_factory("lead", role=Role.team_lead)
+    member = await user_factory("member")
+    stranger = await user_factory("stranger")
+    admin = await user_factory("boss", role=Role.admin)
+    file = await file_factory(lead.id)
+    lead_h = await bearer_for(lead)
+    team_id = await team_with(client, lead_h, "member")
+    url = f"/api/v1/files/{file.id}/teams/{team_id}"
+    assert (await client.put(url, headers=lead_h)).status_code == 204
+
+    for who in (member, stranger, admin):
+        assert (await client.delete(url, headers=await bearer_for(who))).status_code == 404
+
+    teams = await client.get(f"/api/v1/files/{file.id}/teams", headers=lead_h)
+    assert [team["id"] for team in teams.json()] == [team_id]
 
 
 @db
