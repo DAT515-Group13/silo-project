@@ -13,6 +13,7 @@ from fastapi.responses import RedirectResponse
 
 from app.errors import (
     FileTooLarge,
+    FileTypeRefused,
     QuotaExceeded,
     RateLimited,
     StorageUnavailable,
@@ -93,7 +94,14 @@ async def upload_file(
                 chunks=reader.iter_data(),
                 declared_size=declared_size(request),
             )
-    except (FileTooLarge, QuotaExceeded, RateLimited, StorageUnavailable, ValidationFailed):
+    except (
+        FileTooLarge,
+        FileTypeRefused,
+        QuotaExceeded,
+        RateLimited,
+        StorageUnavailable,
+        ValidationFailed,
+    ):
         # Let the client finish sending, or the proxy may turn this answer into a 502.
         await drain_refused_upload(
             body, declared_size=declared_size(request), max_file_bytes=settings.max_file_size_bytes

@@ -25,6 +25,7 @@ from app.config import Settings
 from app.errors import (
     CsrfFailed,
     FileTooLarge,
+    FileTypeRefused,
     LinkLimit,
     QuotaExceeded,
     RateLimited,
@@ -200,6 +201,7 @@ async def upload_submit(
             )
     except (
         FileTooLarge,
+        FileTypeRefused,
         QuotaExceeded,
         ValidationFailed,
         RateLimited,

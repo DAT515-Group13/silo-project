@@ -8,6 +8,7 @@ characters, at most 255 characters.
 import unicodedata
 import uuid
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel
@@ -16,6 +17,34 @@ from app.schemas.common import InputModel, UserRefOut
 
 MAX_FILENAME_LENGTH = 255
 NO_FILE_MESSAGE = "Choose a file to upload."
+
+
+# Allowlist of extensions (OWASP File Upload Cheat Sheet: a blocklist is weak on its own). Programs,
+# scripts, HTML, SVG and XML are left out on purpose; so are names without an extension.
+ALLOWED_EXTENSIONS = frozenset(
+    ".pdf .doc .docx .xls .xlsx .ppt .pptx .odt .ods .odp .rtf .txt .md .csv .tsv .json "
+    ".png .jpg .jpeg .gif .webp .bmp .tif .tiff .heic "
+    ".mp3 .wav .ogg .flac .m4a .mp4 .mov .webm .mkv .avi "
+    ".zip .gz .tar .7z .rar "
+    ".bin".split()  # .bin: scripts/smoke-test.sh uploads smoke.bin
+)
+
+
+def file_extension(filename: str) -> str:
+    """Lower-case extension with its dot, ignoring trailing dots and spaces (Windows drops them)."""
+    return PurePosixPath(filename.rstrip(". ")).suffix.lower()
+
+
+def has_allowed_extension(filename: str) -> bool:
+    """True if the extension of ``filename`` is on the allowlist."""
+    return file_extension(filename) in ALLOWED_EXTENSIONS
+
+
+def _require_allowed_extension(value: str) -> str:
+    """Rename validator: the new name needs an allowed extension (a 422)."""
+    if not has_allowed_extension(value):
+        raise ValueError("This file type is not allowed.")
+    return value
 
 
 def sanitize_filename(value: str) -> str:
@@ -30,8 +59,9 @@ def sanitize_filename(value: str) -> str:
     """
     name = value.replace("\\", "/").rsplit("/", 1)[-1]
     # Categories Cc (control) and Cf (format, e.g. U+202E "right-to-left override", which can
-    # make "invoice<U+202E>fdp.exe" look like "invoiceexe.pdf") are removed.
-    name = "".join(ch for ch in name if unicodedata.category(ch) not in ("Cc", "Cf")).strip()
+    # make "invoice<U+202E>fdp.exe" look like "invoiceexe.pdf") are removed. So is Cs: half of a
+    # two-part character, which PostgreSQL cannot store.
+    name = "".join(ch for ch in name if unicodedata.category(ch) not in ("Cc", "Cf", "Cs")).strip()
     if name in ("", ".", ".."):
         raise ValueError("Filename must not be empty.")
     if len(name) > MAX_FILENAME_LENGTH:
@@ -62,7 +92,7 @@ class FileOut(BaseModel):
 class FileRenameIn(InputModel):
     """Body of ``PATCH /files/{id}``."""
 
-    filename: Filename
+    filename: Annotated[Filename, AfterValidator(_require_allowed_extension)]
 
 
 class FileTeamOut(BaseModel):

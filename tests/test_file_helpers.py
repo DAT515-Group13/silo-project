@@ -10,6 +10,7 @@ import pytest
 
 from app.errors import (
     FileTooLarge,
+    FileTypeRefused,
     QuotaExceeded,
     StorageFull,
     StorageUnavailable,
@@ -20,6 +21,7 @@ from app.services.files import (
     _count_failed_upload,
     _limited,
     _with_head,
+    check_file_type,
     choose_content_type,
     download_content_type,
     normalize_content_type,
@@ -39,6 +41,7 @@ from tests.conftest import sample
         ("zażółć.txt", "zażółć.txt"),
         ("invoice\u202efdp.exe", "invoicefdp.exe"),  # right-to-left override is invisible
         ("a\x85b\u200b.txt", "ab.txt"),  # C1 control and zero-width space
+        ("a\ud800b.txt", "ab.txt"),  # half a two-part character cannot be stored
     ],
 )
 def test_filename_is_cleaned(raw: str, expected: str) -> None:
@@ -46,7 +49,7 @@ def test_filename_is_cleaned(raw: str, expected: str) -> None:
     assert sanitize_filename(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["", "   ", "..", ".", "a/", "\x00\x01"])
+@pytest.mark.parametrize("raw", ["", "   ", "..", ".", "a/", "\x00\x01", "\ud800"])
 def test_unusable_filename_is_refused(raw: str) -> None:
     """A name with nothing left after cleaning is a validation error."""
     with pytest.raises(ValueError, match="empty"):
@@ -111,6 +114,33 @@ def test_choice_prefers_detection_over_the_client() -> None:
     assert choose_content_type(b"PK\x03\x04rest", None) == "application/zip"
     assert choose_content_type(b"PK\x03\x04rest", "not valid") == "application/zip"
     assert choose_content_type(b"PK\x03\x04rest", "text/html") == "application/zip"
+
+
+@pytest.mark.parametrize(
+    ("head", "client", "expected"),
+    [
+        (b"MZ\x90\x00", "image/png", "application/octet-stream"),  # a Windows program
+        (b"<html><script>", "image/png", "application/octet-stream"),
+        (b"MZ\x90\x00", "application/pdf", "application/octet-stream"),
+        (b"MZ\x90\x00", "video/mp4", "video/mp4"),  # no proof either way; a program never gets here
+        (b"\xff\xfb\x90\x44", "audio/mpeg", "audio/mpeg"),  # an MP3 without a tag
+        (b"\x00\x00\x00\x20ftypiso5", "video/mp4", "video/mp4"),  # an MP4 with another brand
+        (b"MZ\x90\x00", "image/webp", "application/octet-stream"),
+        (b"MZ\x90\x00", "application/zip", "application/octet-stream"),
+        (b"%PDF-1.7", "image/png", "application/pdf"),  # a different proven type wins
+        (b"PK\x03\x04rest", "image/png", "application/zip"),  # no exception for a ZIP
+        (b"\x89PNG\r\n\x1a\nrest", "image/png", "image/png"),  # honest files keep their type
+        (b"%PDF-1.7", "application/pdf", "application/pdf"),
+        (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp", "image/webp"),
+        (b"\x00\x00\x00\x18ftypmp42", "video/mp4", "video/mp4"),
+        (b"PK\x03\x04rest", "application/zip", "application/zip"),
+    ],
+)
+def test_claim_is_believed_only_if_the_bytes_prove_it(
+    head: bytes, client: str, expected: str
+) -> None:
+    """A type the signature table could prove is kept only if the first bytes match."""
+    assert choose_content_type(head, client) == expected
 
 
 @pytest.mark.parametrize(
@@ -220,3 +250,39 @@ def test_failed_upload_is_counted_under_one_label(exc: Exception, label: str | N
     _count_failed_upload(exc)
     change = {name: sample("silo_uploads_total", result=name) - before[name] for name in labels}
     assert change == {name: (1 if name == label else 0) for name in labels}
+
+
+@pytest.mark.parametrize(
+    ("filename", "head"),
+    [
+        ("report.exe", b"anything"),
+        ("a.exe.", b"anything"),  # Windows drops the trailing dot
+        ("page.html", b"<html>"),
+        ("no_extension", b"hello"),
+        ("notes.txt", b"MZ\x90\x00"),  # a renamed Windows program
+        ("notes.txt", b"\x7fELF\x02"),  # a renamed Linux program
+        ("photo.png", b"just text"),  # bytes do not fit the extension
+        ("doc.pdf", b"not a pdf"),
+    ],
+)
+def test_check_file_type_refuses(filename: str, head: bytes) -> None:
+    """Unlisted extensions, programs and bytes that do not fit the extension are refused."""
+    with pytest.raises(FileTypeRefused):
+        check_file_type(filename, head)
+
+
+@pytest.mark.parametrize(
+    ("filename", "head"),
+    [
+        ("notes.txt", b"hello"),
+        ("NOTES.TXT", b"MZ is a text note"),  # only the full program signature counts
+        ("photo.jpg", b"\x89PNG\r\n\x1a\nrest"),  # a real image with another extension
+        ("song.mp3", b"\xff\xfb\x90\x44"),  # MP3 and Office files are not checked by bytes
+        ("report.docx", b"PK\x03\x04rest"),
+        ("empty.png", b""),  # an empty file holds nothing to check
+        ("smoke.bin", b"\x00\x01random"),
+    ],
+)
+def test_check_file_type_allows(filename: str, head: bytes) -> None:
+    """Listed extensions pass, and the client's content type is not part of the decision."""
+    check_file_type(filename, head)

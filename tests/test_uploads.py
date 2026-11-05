@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import Settings
-from app.errors import FileTooLarge, StorageFull, StorageUnavailable
+from app.errors import FileTooLarge, StorageFull
 from app.models import AuditLog, Role
 from app.permissions import CurrentUser
 from app.ratelimit import _FALLBACK_RETRY_AFTER as FALLBACK_RETRY_AFTER
@@ -35,6 +35,7 @@ from tests.conftest import (
     audit_actions,
     count_files,
     sample,
+    storage_outage,
     used_bytes,
 )
 from tests.fakes import InMemoryBlobStore
@@ -44,6 +45,11 @@ db = pytest.mark.db
 
 BOUNDARY = "testboundary"
 CHUNK_COUNT = 20
+
+
+async def nothing_used_yet(*args: object, **kwargs: object) -> QuotaStatus:
+    """Stand-in for ``get_quota_status``: 100 bytes free, whatever the database says."""
+    return QuotaStatus(used_bytes=0, quota_bytes=100)
 
 
 # --- No database needed --------------------------------------------------------------------------
@@ -118,6 +124,7 @@ async def test_fourth_parallel_upload_is_429(
     client: httpx.AsyncClient, act_as: ActAs, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Three uploads of one user run at once; the fourth is 429 rate_limited until one ends."""
+    assert MAX_CONCURRENT_UPLOADS == 3  # written out: the test below reads the constant
     act_as(Role.user)
     release = asyncio.Event()
     all_running = asyncio.Event()
@@ -182,13 +189,10 @@ async def test_refused_upload_still_reads_the_whole_body(
     async def full(*args: object, **kwargs: object) -> None:
         raise StorageFull  # refused before reading the file, like the quota check before the upload
 
-    async def outage(*args: object, **kwargs: object) -> None:
-        raise StorageUnavailable
-
     if case == "service full":
         monkeypatch.setattr(files, "upload", full)
     elif case == "storage outage":
-        monkeypatch.setattr(files, "upload", outage)
+        monkeypatch.setattr(files, "upload", storage_outage)
 
     async def body() -> AsyncIterator[bytes]:
         nonlocal sent
@@ -220,16 +224,13 @@ async def test_cancelled_request_deletes_the_blob_it_already_stored(
 ) -> None:
     """A request cancelled after the blob was stored (the client left) removes the blob again."""
 
-    async def free_quota(*args: object, **kwargs: object) -> QuotaStatus:
-        return QuotaStatus(used_bytes=0, quota_bytes=100)
-
     async def cancelled(*args: object, **kwargs: object) -> None:
         raise asyncio.CancelledError
 
     async def chunks() -> AsyncIterator[bytes]:
         yield b"hello"
 
-    monkeypatch.setattr(users_service, "get_quota_status", free_quota)
+    monkeypatch.setattr(users_service, "get_quota_status", nothing_used_yet)
     monkeypatch.setattr(users_service, "reserve_quota", cancelled)
 
     with pytest.raises(asyncio.CancelledError):
@@ -294,6 +295,44 @@ async def test_upload_stores_blob_row_quota_and_audit(
     assert await used_bytes(db_sessionmaker, user.id) == 14
     actions = await audit_actions(db_sessionmaker)
     assert actions == ["file.upload"]
+
+
+@db
+@pytest.mark.parametrize(
+    ("name", "data"),
+    [
+        ("tool.exe", b"hello"),  # extension not on the allowlist
+        ("notes.txt", b"MZ\x90\x00rest"),  # a Windows program with a harmless name
+        ("photo.png", b"this is text"),  # bytes do not fit the extension
+    ],
+)
+async def test_refused_file_type_is_415_and_leaves_no_blob(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    bearer_for: BearerFor,
+    blob_store: InMemoryBlobStore,
+    db_sessionmaker: Sessionmaker,
+    name: str,
+    data: bytes,
+) -> None:
+    """A refused type creates no blob, no row and no usage; the attempt is audited as denied."""
+    user = await user_factory("anna")
+    headers = await bearer_for(user)
+    before = sample("silo_uploads_total", result="refused_type")
+    # The client claims an image: its content type must not matter either way.
+    response = await post_file(client, headers, data, name, "image/png")
+    assert response.status_code == 415
+    assert response.json()["code"] == "file_type_refused"
+    assert sample("silo_uploads_total", result="refused_type") == before + 1
+    assert blob_store.blobs == {}
+    assert await used_bytes(db_sessionmaker, user.id) == 0
+    async with db_sessionmaker() as session:
+        codes = (
+            await session.scalars(
+                select(AuditLog.details["code"].astext).where(AuditLog.outcome == "denied")
+            )
+        ).all()
+    assert codes == ["file_type_refused"]
 
 
 @db
@@ -381,10 +420,7 @@ async def test_parallel_uploads_at_the_edge_never_exceed_the_quota(
     user = await user_factory("anna")
     headers = await bearer_for(user)
 
-    async def stale_status(*args: object, **kwargs: object) -> QuotaStatus:
-        return QuotaStatus(used_bytes=0, quota_bytes=100)
-
-    monkeypatch.setattr(users_service, "get_quota_status", stale_status)
+    monkeypatch.setattr(users_service, "get_quota_status", nothing_used_yet)
 
     results = await asyncio.gather(
         post_file(client, headers, b"a" * 70, "a.txt"),

@@ -14,6 +14,7 @@ EXPECTED = {
     errors.QuotaExceeded: (413, "quota_exceeded"),
     errors.StorageFull: (507, "storage_full"),
     errors.FileTooLarge: (413, "file_too_large"),
+    errors.FileTypeRefused: (415, "file_type_refused"),
     errors.NotFound: (404, "not_found"),
     errors.LastAdmin: (409, "last_admin"),
     errors.OwnerCannotLeave: (409, "owner_cannot_leave"),

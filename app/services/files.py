@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.errors import (
     FileTooLarge,
+    FileTypeRefused,
     NotFound,
     QuotaExceeded,
     StorageFull,
@@ -43,7 +44,7 @@ from app.permissions import (
     can_share_with_team,
     can_view_file,
 )
-from app.schemas.files import sanitize_filename
+from app.schemas.files import file_extension, has_allowed_extension, sanitize_filename
 from app.services import audit, teams, users
 from app.services.audit import AuditAction, AuditContext, Outcome
 from app.services.pagination import fetch_page
@@ -68,6 +69,11 @@ _MP4_BRANDS = {b"isom", b"iso2", b"mp41", b"mp42", b"avc1"}
 # Signatures that many formats share (.docx, .xlsx, .odt and .jar are all ZIP files): a clean
 # type from the client is more precise there, so it wins.
 _SHARED_SIGNATURES = {"application/zip"}
+# Types the first bytes can prove: a client that claims one is believed only if the bytes match.
+# MP3 (a tag is optional) and MP4 (many brands) are not here: missing bytes prove nothing for them.
+_PROVABLE_TYPES = {
+    content_type for _, content_type in _SIGNATURES if content_type != "audio/mpeg"
+} | {"image/webp"}
 
 # A plain "type/subtype" without parameters.
 _CONTENT_TYPE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
@@ -117,14 +123,37 @@ def normalize_content_type(client_value: str | None) -> str | None:
 def choose_content_type(head: bytes, client_value: str | None) -> str:
     """Pick the content type: detected type, else the client's clean value, else octet-stream.
 
-    For signatures shared by many formats (ZIP) the client's clean value is preferred, unless
-    it is a type a browser would render: a ZIP file is never stored as ``text/html``.
+    A client value the first bytes could prove but do not (an .exe sent as ``image/png``) is
+    ignored. For signatures shared by many formats (ZIP) the client's clean value is preferred,
+    unless it is a type a browser would render: a ZIP file is never stored as ``text/html``.
     """
     sniffed = sniff_content_type(head)
     client = normalize_content_type(client_value)
+    if client in _PROVABLE_TYPES:
+        return sniffed or DEFAULT_CONTENT_TYPE
     if sniffed in _SHARED_SIGNATURES and client and download_content_type(client) == client:
         return client
     return sniffed or client or DEFAULT_CONTENT_TYPE
+
+
+# Programs for Windows, Linux and macOS: a renamed program is refused by its first bytes.
+_PROGRAM_SIGNATURES = (b"MZ\x90\x00", b"\x7fELF", b"\xcf\xfa\xed\xfe")
+# Extensions whose format the first bytes can show.
+_CHECKED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".zip", ".gz"}
+
+
+def check_file_type(filename: str, head: bytes) -> None:
+    """Allow only listed extensions, and refuse bytes that do not fit the extension.
+
+    The client's Content-Type plays no part: it is trivial to fake.
+
+    Raises:
+        FileTypeRefused: no blob has been created yet.
+    """
+    if not has_allowed_extension(filename) or head.startswith(_PROGRAM_SIGNATURES):
+        raise FileTypeRefused
+    if head and file_extension(filename) in _CHECKED_EXTENSIONS and not sniff_content_type(head):
+        raise FileTypeRefused
 
 
 def download_content_type(stored: str) -> str:
@@ -220,6 +249,8 @@ def _count_failed_upload(exc: BaseException) -> None:
         UPLOADS.labels("storage_full").inc()
     elif isinstance(exc, QuotaExceeded):
         UPLOADS.labels("quota_exceeded").inc()
+    elif isinstance(exc, FileTypeRefused):
+        UPLOADS.labels("refused_type").inc()
     elif isinstance(exc, StorageUnavailable):
         UPLOADS.labels("storage_error").inc()
 
@@ -276,6 +307,7 @@ async def upload(
 
         # Detect the type from the first bytes; stream the rest to blob storage.
         head, stream = await _with_head(chunks)
+        check_file_type(clean_name, head)
         content_type = choose_content_type(head, client_type)
         size = await store.upload_stream(
             blob_name,
@@ -324,7 +356,7 @@ async def upload(
         with anyio.CancelScope(shield=True):
             if blob_stored:
                 await delete_quietly(store, blob_name)
-            if isinstance(exc, FileTooLarge | QuotaExceeded):
+            if isinstance(exc, FileTooLarge | QuotaExceeded | FileTypeRefused):
                 await _audit_denied(session, ctx, clean_name, exc.code)
         raise
 

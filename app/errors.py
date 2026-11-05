@@ -118,6 +118,14 @@ class StorageFull(QuotaExceeded):
     detail = "The service storage is full. Contact an admin."
 
 
+class FileTypeRefused(SiloError):
+    """The file name or the first bytes of an upload are not allowed."""
+
+    status_code = 415
+    code = "file_type_refused"
+    detail = "This file type is not allowed."
+
+
 class FileTooLarge(SiloError):
     """The upload is larger than ``MAX_FILE_SIZE_BYTES``."""
 
