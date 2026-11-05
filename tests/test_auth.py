@@ -45,6 +45,18 @@ def fail() -> User:
     raise AssertionError("expected a row")
 
 
+@pytest.fixture
+def dummy_checks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record each dummy hash check instead of spending its time; returns the passwords."""
+    checked: list[str] = []
+
+    async def dummy(password: str) -> None:
+        checked.append(password)
+
+    monkeypatch.setattr(auth, "verify_dummy_password", dummy)
+    return checked
+
+
 async def attempt(sm: Sessionmaker, settings: Settings, username: str, password: str, **kwargs):
     """One login attempt with a fresh database session, like one request."""
     async with sm() as db:
@@ -65,24 +77,36 @@ def test_lock_duration_doubles_and_is_capped(failures: int, minutes: int) -> Non
 
 @pytest.mark.anyio
 async def test_nul_in_a_login_username_is_an_unknown_user_without_a_query(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, dummy_checks: list[str]
 ) -> None:
     """PostgreSQL refuses NUL in a query, so it must not get one: the normal 401, with a hash."""
-    checked: list[str] = []
-
-    async def dummy(password: str) -> None:
-        checked.append(password)
 
     async def no_audit(*args: object, **kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(auth, "verify_dummy_password", dummy)
     monkeypatch.setattr(auth.audit, "record_failure", no_audit)
     session = FakeSession()
     with pytest.raises(InvalidCredentials):
         await auth.login(session, settings, "an\x00na", TEST_PASSWORD)  # type: ignore[arg-type]
     assert session.statements == []
-    assert checked == [TEST_PASSWORD]
+    assert dummy_checks == [TEST_PASSWORD]
+
+
+@pytest.mark.anyio
+async def test_half_a_character_in_a_login_username_is_an_unknown_user_without_a_query(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, dummy_checks: list[str]
+) -> None:
+    """Such a name cannot be sent to PostgreSQL: the normal 401, with a hash, and no query."""
+
+    async def no_audit(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(auth.audit, "record_failure", no_audit)
+    session = FakeSession()
+    with pytest.raises(InvalidCredentials):
+        await auth.login(session, settings, "an\ud800na", TEST_PASSWORD)  # type: ignore[arg-type]
+    assert session.statements == []
+    assert dummy_checks == [TEST_PASSWORD]
 
 
 @pytest.mark.db
@@ -207,23 +231,17 @@ async def test_unknown_or_locked_account_still_spends_a_hash(
     db_sessionmaker: Sessionmaker,
     settings: Settings,
     user_factory: UserFactory,
-    monkeypatch: pytest.MonkeyPatch,
+    dummy_checks: list[str],
 ) -> None:
     """An unknown username and a locked account check the password against a dummy hash.
 
     Without it the 401 would come back faster, and the timing would tell which names exist.
     """
-    checked: list[str] = []
-
-    async def dummy(password: str) -> None:
-        checked.append(password)
-
-    monkeypatch.setattr(auth, "verify_dummy_password", dummy)
     await user_factory(username="anna", locked_until=datetime.now(UTC) + timedelta(minutes=5))
     for username in ("nobody", "anna"):
         with pytest.raises(InvalidCredentials):
             await attempt(db_sessionmaker, settings, username, TEST_PASSWORD)
-    assert checked == [TEST_PASSWORD, TEST_PASSWORD]
+    assert dummy_checks == [TEST_PASSWORD, TEST_PASSWORD]
 
 
 @pytest.mark.db

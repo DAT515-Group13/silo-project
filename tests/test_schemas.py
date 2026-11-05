@@ -3,8 +3,8 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from app.schemas.auth import LoginIn, RefreshIn, RegisterIn
-from app.schemas.common import normalize_username
+from app.schemas.auth import LoginIn, PasswordChangeIn, RefreshIn, RegisterIn
+from app.schemas.common import has_broken_character, normalize_username
 from app.schemas.links import LinkCreateIn, LinkUpdateIn
 from app.schemas.teams import AddMemberIn, TeamIn
 from app.schemas.users import RejectIn
@@ -57,6 +57,43 @@ def test_password_has_hard_upper_limit_only() -> None:
     with pytest.raises(ValidationError):
         RegisterIn(username="anna", password="x" * 129)
     assert RegisterIn(username="anna", password="x" * 128)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("\ud800", True),  # the lowest half of a two-part character
+        ("abc\udfff", True),  # the highest
+        ("\ud7ff", False),  # just below the range
+        ("\ue000", False),  # just above the range
+        ("café 😀", False),  # real text, an emoji included
+        ("", False),
+    ],
+)
+def test_has_broken_character_finds_only_the_reserved_range(value: str, expected: bool) -> None:
+    """Only U+D800 to U+DFFF count, so no real character is ever refused."""
+    assert has_broken_character(value) is expected
+
+
+@pytest.mark.parametrize(
+    ("schema", "values"),
+    [
+        (RegisterIn, {"username": "anna", "password": "\ud800" + "x" * 12}),
+        (LoginIn, {"username": "anna", "password": "\ud800" + "x" * 12}),
+        (PasswordChangeIn, {"current_password": "\ud800", "new_password": "x" * 12}),
+        (PasswordChangeIn, {"current_password": "x" * 12, "new_password": "\ud800" + "x" * 12}),
+    ],
+    ids=["register", "login", "current password", "new password"],
+)
+def test_password_refuses_half_a_character(schema: type[BaseModel], values: dict[str, str]) -> None:
+    """Half a two-part character cannot be encoded, so it cannot be hashed: a 422, not a 500."""
+    with pytest.raises(ValidationError, match="invalid character"):
+        schema.model_validate(values)
+
+
+def test_password_keeps_real_text_outside_ascii() -> None:
+    """Refusing broken characters must not refuse real ones, such as an emoji."""
+    assert LoginIn(username="anna", password="café 😀").password == "café 😀"
 
 
 def test_refresh_token_has_a_size_limit() -> None:

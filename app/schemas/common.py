@@ -45,6 +45,26 @@ def reject_nul(value: str) -> str:
     return value
 
 
+def has_broken_character(value: str) -> bool:
+    """True if the text has half of a two-part character, which cannot be encoded as UTF-8.
+
+    JSON can carry one (written like ``\\ud800``). Python accepts it as text, but Argon2 and
+    PostgreSQL need UTF-8 bytes, so it would be a 500. No real character is in this range.
+    """
+    return any("\ud800" <= char <= "\udfff" for char in value)
+
+
+def reject_broken_character(value: str) -> str:
+    """Refuse half a two-part character, so it is a 422 and never a 500.
+
+    Raises:
+        ValueError: if the value contains one. Pydantic turns this into a 422.
+    """
+    if has_broken_character(value):
+        raise ValueError("Text must not contain an invalid character.")
+    return value
+
+
 def _normalize_login_username(value: str) -> str:
     """Strip and lowercase a username for lookup without applying the registration pattern."""
     return value.strip().lower()
@@ -70,6 +90,7 @@ Password = Annotated[
     str,
     BeforeValidator(lambda value: normalize_password(value) if isinstance(value, str) else value),
     Field(max_length=PASSWORD_MAX_LENGTH),
+    AfterValidator(reject_broken_character),
 ]
 
 

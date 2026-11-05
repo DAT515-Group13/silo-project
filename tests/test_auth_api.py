@@ -330,3 +330,18 @@ async def test_password_change_refuses_a_wrong_current_or_weak_new_password(
         assert response.status_code == 422
         assert response.json()["errors"][0]["field"] == "new_password"
     assert (await login(client, "anna", TEST_PASSWORD)).status_code == 200
+
+
+@pytest.mark.parametrize("route", ["register", "login"])
+async def test_half_a_character_in_a_password_is_422_not_500(
+    client: httpx.AsyncClient, route: str
+) -> None:
+    """JSON can carry half of a two-part character; hashing it would crash, so it is refused."""
+    response = await client.post(
+        f"/api/v1/auth/{route}",
+        content='{"username": "anna", "password": "\\ud800aaaaaaaaaaaaaaaa"}',
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+    assert "ud800" not in response.text
