@@ -3,8 +3,10 @@
 Tests without the ``db`` marker never reach the database (no valid cookie is involved).
 """
 
+import json
 import logging
 import re
+import sys
 import uuid
 from pathlib import Path
 
@@ -14,8 +16,9 @@ from fastapi import FastAPI, Request, Response
 
 from app.config import Settings
 from app.errors import CsrfFailed, InvalidToken, RefreshInProgress
-from app.main import LOG_FORMAT
+from app.main import JsonFormatter
 from app.middleware import (
+    SECURITY_HEADERS,
     check_origin,
     cookie_names,
     mark_logged_out,
@@ -102,6 +105,20 @@ async def test_every_response_has_the_headers_and_is_not_cached(
     assert (await client.get(path)).headers["x-request-id"] != request_id
 
 
+def test_security_headers_have_the_exact_values() -> None:
+    """Written out here: ``assert_secure`` reads the constant, so it cannot see a weaker value."""
+    assert SECURITY_HEADERS == {
+        "Content-Security-Policy": (
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        ),
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    }
+
+
 async def test_request_id_reaches_the_audit_context(
     client: httpx.AsyncClient, app: FastAPI, act_as: ActAs
 ) -> None:
@@ -137,7 +154,8 @@ async def test_a_crash_is_logged_with_the_request_id_of_its_500(
         assert response.json() == {"detail": "Internal server error.", "code": "internal_error"}
     request_id = response.headers["x-request-id"]
     record = next(r for r in caplog.records if r.getMessage() == "Unhandled error")
-    assert f"[{request_id}]" in logging.Formatter(LOG_FORMAT).format(record)
+    record.request_id = request_id  # set by the handler's AddRequestId filter in production
+    assert json.loads(JsonFormatter().format(record))["request_id"] == request_id
 
 
 async def test_static_files_stay_cacheable_but_get_the_other_headers(
@@ -305,6 +323,7 @@ def test_cookie_names_without_secure_drop_the_host_prefix() -> None:
         ("", "/files"),
         ("files", "/files"),
         ("//evil.example", "/files"),
+        ("///evil.example", "/files"),  # browsers read extra slashes like //
         ("/\\evil.example", "/files"),
         ("https://evil.example", "/files"),
         ("javascript:alert(1)", "/files"),
@@ -567,3 +586,20 @@ def test_origin_comparison_ignores_default_ports(base_url: str, sender: str, all
     else:
         with pytest.raises(CsrfFailed):
             check_origin(request, settings)
+
+
+def test_a_log_record_is_one_line_of_json() -> None:
+    """A line break in a message cannot start a second log line, and a stack trace stays inside."""
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        record = logging.LogRecord(
+            "silo", logging.ERROR, __file__, 1, "bad\nINFO fake line", None, sys.exc_info()
+        )
+    record.request_id = "abc"
+    line = JsonFormatter().format(record)
+    assert "\n" not in line
+    entry = json.loads(line)
+    assert entry["message"] == "bad\nINFO fake line"
+    assert entry["level"] == "ERROR" and entry["request_id"] == "abc"
+    assert "ValueError: boom" in entry["exception"]
