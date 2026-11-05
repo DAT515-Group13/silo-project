@@ -250,6 +250,8 @@ async def test_sas_url_is_read_only_single_blob_https_and_short_lived() -> None:
     assert "sig" in query
     expiry = datetime.strptime(query["se"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     assert timedelta(seconds=290) < expiry - before < timedelta(seconds=310)
+    start = datetime.strptime(query["st"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    assert timedelta(seconds=50) < before - start < timedelta(seconds=70)  # clock skew
     assert query["rsct"] == "application/pdf"
     assert query["rscd"].startswith("attachment;")
     assert "filename*=UTF-8''R%C3%A9sum%C3%A9.pdf" in query["rscd"]

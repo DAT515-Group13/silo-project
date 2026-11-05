@@ -12,7 +12,12 @@ import pytest
 from starlette.requests import ClientDisconnect
 
 from app.errors import ValidationFailed
-from app.routers.multipart import MultipartReader, PartInfo, discard_body
+from app.routers.multipart import (
+    DISCARD_TIMEOUT_SECONDS,
+    MultipartReader,
+    PartInfo,
+    discard_body,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -168,6 +173,7 @@ async def test_discard_body_gives_up_when_the_client_is_too_slow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A client that stops sending cannot hold the request open for long."""
+    assert DISCARD_TIMEOUT_SECONDS == 60  # the real value; the test itself runs with less
     monkeypatch.setattr("app.routers.multipart.DISCARD_TIMEOUT_SECONDS", 0.05)
 
     async def body() -> AsyncIterator[bytes]:
