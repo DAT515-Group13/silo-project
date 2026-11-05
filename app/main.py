@@ -4,6 +4,7 @@ Run with: ``uvicorn app.main:create_app --factory``. The lifespan owns the datab
 the BlobStore. Errors are rendered as JSON under ``/api/`` and as HTML pages elsewhere.
 """
 
+import json
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -41,7 +42,25 @@ from app.storage.base import BlobStore
 
 logger = logging.getLogger("silo")
 
-LOG_FORMAT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
+
+class JsonFormatter(logging.Formatter):
+    """Write one JSON object per log record, so Loki can filter on each field.
+
+    ``json.dumps`` escapes line breaks, so a request cannot forge a second log line.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Return the record as one line of JSON; a stack trace stays inside that line."""
+        entry = {
+            "time": self.formatTime(record),
+            "level": record.levelname,
+            "request_id": getattr(record, "request_id", "-"),
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(entry)
 
 
 class AddRequestId(logging.Filter):
@@ -71,20 +90,26 @@ class RedactLinkTokens(logging.Filter):
 
 
 def configure_logging() -> None:
-    """Send the app's log records (logger ``silo``, INFO and up) to stderr.
+    """Send the app's and uvicorn's log records to stderr as JSON lines.
 
-    Uvicorn configures only its own loggers, so without this the app's INFO messages were
-    dropped and warnings printed without time or level. Records still propagate to the root
-    logger, where nothing is attached in production and pytest's ``caplog`` listens in tests.
-    The handler is added once, however many apps a process creates (the tests create many).
+    Uvicorn configures its own loggers (plain text) before it calls the app factory, so their
+    handlers get the JSON formatter here too. The ``silo`` logger gets a handler of its own, at
+    INFO and up. Records still propagate to the root logger, where nothing is attached in
+    production and pytest's ``caplog`` listens in tests. Everything is done once, however many
+    apps a process creates (the tests create many).
     """
     access_logger = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, RedactLinkTokens) for f in access_logger.filters):
         access_logger.addFilter(RedactLinkTokens())
+    for name in ("uvicorn", "uvicorn.access"):
+        for handler in logging.getLogger(name).handlers:
+            if not isinstance(handler.formatter, JsonFormatter):
+                handler.setFormatter(JsonFormatter())
+                handler.addFilter(AddRequestId())
     if any(getattr(handler, "_silo", False) for handler in logger.handlers):
         return
     handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.setFormatter(JsonFormatter())
     # On the handler, not the logger: a logger's filters skip records of its child loggers.
     handler.addFilter(AddRequestId())
     handler._silo = True  # type: ignore[attr-defined]  # marks the handler as ours

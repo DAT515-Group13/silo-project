@@ -148,6 +148,7 @@ async def test_same_text_in_different_unicode_forms_is_the_same_password() -> No
 @pytest.mark.anyio
 async def test_password_checks_wait_for_the_hash_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
     """With the limiter at 1, two parallel verifications never run at the same time."""
+    assert security.MAX_PARALLEL_HASHES == 4  # 64 MiB each must fit into the pod's 512 MiB
     running = 0
     most = 0
     lock = threading.Lock()

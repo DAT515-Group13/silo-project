@@ -290,7 +290,9 @@ async def test_member_sees_and_downloads_but_cannot_change(
     assert [f["id"] for f in listed.json()["items"]] == [str(file.id)]
     mine = await client.get("/api/v1/files", headers=member_h)
     assert mine.json()["total"] == 0
-    assert (await client.patch(path, json={"filename": "x"}, headers=member_h)).status_code == 404
+    assert (
+        await client.patch(path, json={"filename": "x.txt"}, headers=member_h)
+    ).status_code == 404
     assert (await client.delete(path, headers=member_h)).status_code == 404
     assert (await client.put(f"{path}/teams/{team_id}", headers=member_h)).status_code == 404
     # Links are for the owner only: a member can neither create nor list them.

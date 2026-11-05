@@ -27,6 +27,7 @@ from app.errors import (
 from app.metrics import LOGIN_ATTEMPTS
 from app.models import Outcome, Role, User, UserStatus
 from app.permissions import CurrentUser
+from app.schemas.common import has_broken_character
 from app.security import (
     check_password_policy,
     hash_password,
@@ -165,9 +166,13 @@ async def login(
     username = username.strip().lower()
     anonymous = AuditContext.anonymous(ip=ip, request_id=request_id)
 
-    # Look up the user. Unknown username: spend the time of a real check anyway.
-    async with session.begin():
-        user = await session.scalar(select(User).where(User.username == username))
+    # Look up the user. Unknown username: spend the time of a real check anyway. PostgreSQL
+    # refuses a NUL character or half a two-part character in a query, and no stored username
+    # has one, so that is unknown too.
+    user = None
+    if "\x00" not in username and not has_broken_character(username):
+        async with session.begin():
+            user = await session.scalar(select(User).where(User.username == username))
     if user is None:
         await verify_dummy_password(password)
         await audit.record_failure(

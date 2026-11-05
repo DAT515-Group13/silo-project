@@ -15,6 +15,7 @@ from app.config import Settings
 from app.errors import CsrfFailed
 from app.models import File, Role, ShareLink
 from app.routers.file_pages import MAX_CSRF_FIELD_BYTES, _read_small
+from app.services import files
 from tests.conftest import (
     ActAs,
     FileFactory,
@@ -25,6 +26,7 @@ from tests.conftest import (
     expire_link,
     page_csrf,
     post,
+    storage_outage,
     used_bytes,
 )
 from tests.fakes import InMemoryBlobStore
@@ -55,30 +57,48 @@ async def test_upload_needs_the_csrf_token_first(
     assert blob_store.blobs == {}
 
 
-async def test_upload_with_a_wrong_token_still_reads_the_whole_body(
-    client: httpx.AsyncClient, act_as: ActAs, settings: Settings, blob_store: InMemoryBlobStore
+@pytest.mark.parametrize(
+    ("case", "status", "message"),
+    [
+        ("wrong token", 403, "CSRF validation failed."),
+        ("storage outage", 503, "Storage is temporarily unavailable."),
+    ],
+)
+async def test_refused_page_upload_still_reads_the_whole_body(
+    client: httpx.AsyncClient,
+    act_as: ActAs,
+    settings: Settings,
+    blob_store: InMemoryBlobStore,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    status: int,
+    message: str,
 ) -> None:
-    """The 403 is sent after the rest of the body was read, so the proxy does not make it a 502."""
+    """The error page is sent after the rest of the body was read, so it does not become a 502."""
     user = act_as(Role.user)
-    headers, _ = page_csrf(settings, user)
+    headers, form = page_csrf(settings, user)
+    token = "forged" if case == "wrong token" else form["csrf_token"]
     sent = 0
 
     async def body() -> AsyncIterator[bytes]:
         nonlocal sent
-        yield b'--b\r\nContent-Disposition: form-data; name="csrf_token"\r\n\r\nforged\r\n'
+        head = '--b\r\nContent-Disposition: form-data; name="csrf_token"\r\n\r\n'
+        yield f"{head}{token}\r\n".encode()
         yield b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'
         for _ in range(20):
             sent += 1
             yield b"x" * 1000
         yield b"\r\n--b--\r\n"
 
+    if case == "storage outage":
+        monkeypatch.setattr(files, "upload", storage_outage)
     response = await client.post(
         "/files/upload",
         content=body(),
         headers={**headers, "content-type": "multipart/form-data; boundary=b"},
     )
-    assert response.status_code == 403
-    assert "CSRF validation failed." in response.text
+    assert response.status_code == status
+    assert message in response.text
     assert sent == 20
     assert blob_store.blobs == {}
 
@@ -206,6 +226,28 @@ async def test_refused_upload_shows_the_message_and_keeps_nothing(
     assert response.status_code == status
     assert message in response.text
     assert blob_store.blobs == {}
+
+
+@db
+async def test_refused_type_and_rename_show_a_message(
+    client: httpx.AsyncClient,
+    user_factory: UserFactory,
+    page_login: PageLogin,
+    file_factory: FileFactory,
+    blob_store: InMemoryBlobStore,
+) -> None:
+    """The upload page and the rename form both refuse a name without an allowed extension."""
+    user = await user_factory("anna")
+    login = await page_login(user)
+    refused = await upload(client, login, b"hello", "tool.exe")
+    assert refused.status_code == 415
+    assert "This file type is not allowed." in refused.text
+    assert blob_store.blobs == {}
+
+    file = await file_factory(user.id)
+    renamed = await post(client, login, f"/files/{file.id}/rename", filename="tool.exe")
+    assert renamed.status_code == 422
+    assert "This file type is not allowed." in renamed.text
 
 
 @db

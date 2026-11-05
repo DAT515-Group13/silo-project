@@ -193,7 +193,7 @@ CACHEABLE_PREFIX = "/static/"
 class SecurityHeadersMiddleware:
     """Add the response security headers to every response.
 
-    Outermost middleware, so error pages and the 413 of ``BodyLimitMiddleware`` get them too.
+    Wraps ``BodyLimitMiddleware``, so error pages and its 413 get the headers too.
     A header a route set itself (for example the ``no-store`` of ``/s/{token}``) is kept.
     Responses of Starlette's own last-resort 500 handler sit outside every middleware and do not
     get them.

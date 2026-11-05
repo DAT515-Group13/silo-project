@@ -35,6 +35,7 @@ from sqlalchemy.pool import NullPool
 
 from app.config import Settings, get_settings
 from app.db import get_db
+from app.errors import StorageUnavailable
 from app.main import create_app
 from app.middleware import SECURITY_HEADERS, cookie_names
 from app.models import AuditLog, Base, File, FileShare, Role, ShareLink, User, UserStatus
@@ -52,6 +53,11 @@ def alembic_config() -> Config:
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     return config
+
+
+async def storage_outage(*args: object, **kwargs: object) -> None:
+    """Stand-in for a service function while blob storage is down."""
+    raise StorageUnavailable
 
 
 def sample(name: str, **labels: str) -> float:

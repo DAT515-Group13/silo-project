@@ -61,10 +61,11 @@ def test_see_in_lists_and_download(actor: str, allowed: bool) -> None:
     ("actor", "allowed"),
     [("owner", True), ("team_member", False), ("admin", True), ("stranger", False)],
 )
-def test_delete(actor: str, allowed: bool) -> None:
-    """Owner and admin delete; a team member cannot delete a shared file."""
+def test_delete_and_revoke_link(actor: str, allowed: bool) -> None:
+    """Owner and admin delete a file and revoke its links; a team member does neither."""
     user, _ = ACTORS[actor]
     assert can_delete_file(user, FILE) is allowed
+    assert can_revoke_link(user, FILE) is allowed
 
 
 @pytest.mark.parametrize(
@@ -76,16 +77,6 @@ def test_rename_share_and_create_links(actor: str, allowed: bool) -> None:
     user, _ = ACTORS[actor]
     assert can_modify_file(user, FILE) is allowed
     assert can_share_with_team(user, FILE, user_is_member=True) is allowed
-
-
-@pytest.mark.parametrize(
-    ("actor", "allowed"),
-    [("owner", True), ("team_member", False), ("admin", True), ("stranger", False)],
-)
-def test_revoke_link(actor: str, allowed: bool) -> None:
-    """A link is revoked by the file owner or an admin."""
-    user, _ = ACTORS[actor]
-    assert can_revoke_link(user, FILE) is allowed
 
 
 def test_admin_who_is_a_team_member_downloads_like_a_member() -> None:
