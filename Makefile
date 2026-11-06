@@ -2,7 +2,7 @@ ENV ?= dev
 TAG ?= $(shell git rev-parse HEAD)
 export HELM_DRIVER := configmap
 
-.PHONY: lint secrets db deploy status verify uninstall
+.PHONY: lint secrets db deploy status verify uninstall cluster
 
 lint:
 	helm lint helm/silo -f helm/silo/values-$(ENV).yaml --set image.tag=$(TAG)
@@ -30,3 +30,6 @@ verify:
 uninstall:
 	helm -n $(ENV) uninstall silo
 	helm -n $(ENV) uninstall silo-postgres
+
+cluster:
+	scripts/cluster-setup.sh
