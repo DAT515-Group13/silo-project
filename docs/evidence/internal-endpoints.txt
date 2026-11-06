@@ -1,0 +1,4 @@
+readyz: 403
+healthz: 403
+metrics: 404
+login: 200

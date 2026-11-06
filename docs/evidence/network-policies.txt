@@ -1,0 +1,18 @@
+--- random pod -> postgres (must time out):
+Warning: would violate PodSecurity "restricted:latest": allowPrivilegeEscalation != false (container "np-test" must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container "np-test" must set securityContext.capabilities.drop=["ALL"]), runAsNonRoot != true (pod or container "np-test" must set securityContext.runAsNonRoot=true), seccompProfile (pod or container "np-test" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")
+If you don't see a command prompt, try pressing enter.
+warning: couldn't attach to pod/np-test, falling back to streaming logs: unable to upgrade connection: container np-test not found in pod np-test_dev
+nc: postgres (10.244.1.15:5432): Connection timed out
+pod "np-test" deleted
+pod dev/np-test terminated (Error)
+--- app -> postgres (must work):
+open
+--- prod app -> dev postgres (must time out):
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/usr/local/lib/python3.12/socket.py", line 865, in create_connection
+    raise exceptions[0]
+  File "/usr/local/lib/python3.12/socket.py", line 850, in create_connection
+    sock.connect(sa)
+TimeoutError: timed out
+command terminated with exit code 1

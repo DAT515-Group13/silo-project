@@ -1,0 +1,22 @@
+job.batch/backup-smoke-test created
+job.batch/backup-smoke-test condition met
+Alive[################################################################]  100.0000%Finished[#############################################################]  100.0000%
+backup: silo-2026-11-04-0201.dump (8h old, 52K)
+NOTICE:  database "silo_backup_check" does not exist, skipping
+users: 4
+teams: 2
+files: 2
+share_links: 3
+audit_log: 430
+OK
+job.batch/backup-smoke-test created
+job.batch/backup-smoke-test condition met
+Alive[################################################################]  100.0000%Finished[#############################################################]  100.0000%
+backup: silo-2026-11-04-0201.dump (8h old, 32K)
+NOTICE:  database "silo_backup_check" does not exist, skipping
+users: 1
+teams: 0
+files: 0
+share_links: 0
+audit_log: 6
+OK

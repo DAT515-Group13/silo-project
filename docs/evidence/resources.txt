@@ -1,0 +1,12 @@
+POD                              REQUESTS                     LIMITS
+postgres-0                       map[cpu:100m memory:256Mi]   map[memory:512Mi]
+postgres-backup-29891640-7rklj   <none>                       <none>
+postgres-backup-29893080-bstbw   <none>                       <none>
+postgres-backup-29894520-qnmjz   <none>                       <none>
+silo-744588747c-5g2pj            map[cpu:50m memory:128Mi]    map[cpu:500m memory:512Mi]
+silo-744588747c-b65wl            map[cpu:50m memory:128Mi]    map[cpu:500m memory:512Mi]
+silo-cleanup-29891730-v6k4h      map[cpu:50m memory:128Mi]    map[memory:256Mi]
+silo-cleanup-29893170-779xx      map[cpu:50m memory:128Mi]    map[memory:256Mi]
+silo-cleanup-29893170-kp678      map[cpu:50m memory:128Mi]    map[memory:256Mi]
+silo-cleanup-29894610-nlrlr      map[cpu:50m memory:128Mi]    map[memory:256Mi]
+silo-migrate-nn7r4               map[cpu:50m memory:128Mi]    map[memory:256Mi]

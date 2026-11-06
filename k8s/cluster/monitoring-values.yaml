@@ -57,3 +57,8 @@ kubeProxy: { enabled: false }
 
 alertmanager:
   enabled: false
+
+kube-state-metrics:
+  livenessProbe:
+    timeoutSeconds: 10
+    failureThreshold: 10

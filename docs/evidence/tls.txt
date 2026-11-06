@@ -1,0 +1,9 @@
+* SSL connection using TLSv1.3 / TLS_AES_128_GCM_SHA256 / X25519 / RSASSA-PSS
+*  subject: CN=TRAEFIK DEFAULT CERT
+*  expire date: Nov  3 12:57:50 2027 GMT
+--- TLS 1.1 must fail:
+exit code 35
+--- services:
+NAME              TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)         AGE
+traefik           NodePort    10.110.7.3     <none>        443:30443/TCP   8d
+traefik-metrics   ClusterIP   10.106.60.61   <none>        9100/TCP        6d11h

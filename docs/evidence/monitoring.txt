@@ -1,0 +1,27 @@
+2026-11-03, request to /login from dat515-2026; the app log shows the client IP 152.94.171.171
+INFO:     152.94.171.171:0 - "GET /login HTTP/1.1" 200 OKNAME                                                   READY   STATUS              RESTARTS          AGE
+alloy-5bbbb47849-q7tqc                                 2/2     Running             0                 6d2h
+loki-0                                                 2/2     Running             0                 6d2h
+monitoring-grafana-75859df6fb-hscr9                    3/3     Running             0                 6d1h
+monitoring-kube-prometheus-admission-create-2gdlt      0/1     ContainerCreating   0                 16s
+monitoring-kube-prometheus-operator-748ccbc546-xgbcj   1/1     Running             0                 6d12h
+monitoring-kube-state-metrics-764584797b-sw2f6         0/1     CrashLoopBackOff    897 (2m25s ago)   6d12h
+monitoring-prometheus-node-exporter-4nmbd              1/1     Running             0                 6d12h
+monitoring-prometheus-node-exporter-sjxb4              1/1     Running             0                 6d12h
+monitoring-prometheus-node-exporter-xb6qz              1/1     Running             0                 6d12h
+prometheus-monitoring-kube-prometheus-prometheus-0     2/2     Running             0                 6d12h
+NAME   AGE
+silo   5d11h
+--- after upgrade 2026-11-04
+NAME                                                   READY   STATUS    RESTARTS       AGE
+alloy-5bbbb47849-q7tqc                                 2/2     Running   0              6d13h
+loki-0                                                 2/2     Running   0              6d13h
+monitoring-grafana-75859df6fb-hscr9                    3/3     Running   0              6d12h
+monitoring-kube-prometheus-operator-748ccbc546-xgbcj   1/1     Running   0              6d23h
+monitoring-kube-state-metrics-666785d8cb-kt64h         1/1     Running   1 (142m ago)   11h
+monitoring-prometheus-node-exporter-4nmbd              1/1     Running   0              6d23h
+monitoring-prometheus-node-exporter-sjxb4              1/1     Running   0              6d23h
+monitoring-prometheus-node-exporter-xb6qz              1/1     Running   0              6d23h
+prometheus-monitoring-kube-prometheus-prometheus-0     2/2     Running   0              6d23h
+NAME   AGE
+silo   5d22h
