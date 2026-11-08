@@ -6,3 +6,4 @@ config:
   APP_ENV: prod
   BASE_URL: https://prod.152.94.171.92.nip.io:30443
   JWT_AUDIENCE: silo-prod
+  STORAGE_TOTAL_MAX_BYTES: "21474836480"   # 20 GiB
