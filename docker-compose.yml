@@ -6,7 +6,7 @@
 
 services:
   db:
-    image: postgres:16
+    image: postgres:17
     env_file: .env.dev # POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
     volumes:
       - silo-db:/var/lib/postgresql/data

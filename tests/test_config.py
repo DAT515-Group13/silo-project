@@ -91,7 +91,7 @@ def test_missing_required_variable_is_refused(monkeypatch: pytest.MonkeyPatch, n
     """The startup stops when a secret, connection, environment or audience setting is missing.
 
     A default for APP_ENV would skip the prod checks; a shared JWT_AUDIENCE default would let
-    staging and prod accept each other's tokens.
+    dev and prod accept each other's tokens.
     """
     assert name.lower() in error_text(monkeypatch, **{name: None})
 
@@ -142,19 +142,14 @@ PLACEHOLDER = "CHANGE-me-" + "x" * 40
 def test_unsafe_setting_is_refused_in_prod(
     monkeypatch: pytest.MonkeyPatch, variable: str, value: str
 ) -> None:
-    """prod refuses dev conveniences and CHANGE placeholders, one setting at a time.
-
-    staging uses the same code path, so one environment is enough.
-    """
+    """prod refuses dev conveniences and CHANGE placeholders, one setting at a time."""
     safe = {"APP_ENV": "prod", "COOKIE_SECURE": "true", "BASE_URL": "https://silo.example"}
     assert variable in error_text(monkeypatch, **{**safe, variable: value})
 
 
 def test_safe_and_local_configurations_are_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """staging with safe settings starts; the settings prod refuses are fine for APP_ENV=local."""
-    assert make(
-        monkeypatch, APP_ENV="staging", COOKIE_SECURE="true", BASE_URL="https://silo.example"
-    )
+    """prod with safe settings starts; the settings prod refuses are fine for APP_ENV=local."""
+    assert make(monkeypatch, APP_ENV="prod", COOKIE_SECURE="true", BASE_URL="https://silo.example")
     assert make(
         monkeypatch,
         ENABLE_DOCS="true",

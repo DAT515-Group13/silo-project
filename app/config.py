@@ -20,8 +20,6 @@ _GIB = 1024**3
 _MIB = 1024**2
 _MIN_SECRET_BYTES = 32
 
-# Environments where the safe settings are enforced.
-_STRICT_ENVS = {"staging", "prod"}
 # Marks the values to replace in .env.dev.example.
 _PLACEHOLDER_MARK = "CHANGE"
 
@@ -32,7 +30,7 @@ class Settings(BaseSettings):
     # hide_input_in_errors: a validation error must never echo a secret value back.
     model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
 
-    app_env: Literal["local", "test", "dev", "staging", "prod"]
+    app_env: Literal["local", "test", "dev", "prod"]
     base_url: str
     database_url: SecretStr
     azure_storage_connection_string: SecretStr
@@ -124,8 +122,8 @@ class Settings(BaseSettings):
         except ValidationFailed:
             problems.append("INITIAL_ADMIN_PASSWORD does not meet the password policy.")
 
-        # Staging and prod must not run with development conveniences.
-        if self.app_env in _STRICT_ENVS:
+        # Prod must not run with development conveniences.
+        if self.app_env == "prod":
             # Placeholders copied from .env.dev.example are long enough to pass the checks above.
             placeholders = {
                 "DATABASE_URL": self.database_url,
