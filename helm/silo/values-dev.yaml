@@ -4,3 +4,4 @@ config:
   BASE_URL: https://dev.152.94.171.92.nip.io:30443
   JWT_AUDIENCE: silo-dev
   ENABLE_DOCS: "true"
+  STORAGE_TOTAL_MAX_BYTES: "5368709120"    # 5 GiB
